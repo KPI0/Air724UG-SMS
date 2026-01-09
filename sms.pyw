@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from serial.tools import list_ports
 
 
-# ====== 版本说明 V3.1 ======
+# ====== 版本说明 V3.1.0 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
 # - 识别不到时回退到配置串口（手动指定）
 # - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
@@ -110,7 +110,7 @@ def resource_path(relative):
 
 root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1")
+root.title("四川安播中心预警短信接收显示 V3.1.0")
 root.geometry("760x520")
 
 def center_window(win, parent):
@@ -141,7 +141,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1",
+        text="版本：V3.1.0",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -732,3 +732,4 @@ else:
 
 threading.Thread(target=read_serial, daemon=True).start()
 root.mainloop()
+
