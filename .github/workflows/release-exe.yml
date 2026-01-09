@@ -49,8 +49,17 @@ jobs:
             --add-data "icon.ico;." `
             sms.pyw
 
-      - name: Create GitHub Release & upload EXE
+      - name: Zip EXE
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          $zipName = "sms-$tag-win64.zip"
+          Compress-Archive -Path "dist\sms.exe" -DestinationPath "dist\$zipName" -Force
+
+      - name: Create GitHub Release & upload ZIP
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/sms.exe
+          files: dist/sms-*-win64.zip
           generate_release_notes: true
+
+          
