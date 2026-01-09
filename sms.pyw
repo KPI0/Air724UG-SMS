@@ -1,17 +1,18 @@
 import serial
 import threading
 import tkinter as tk
-from tkinter.scrolledtext import ScrolledText
-from tkinter import messagebox, ttk
-from datetime import datetime, timedelta
 import os
+import sys
 import winsound
 import pyttsx3
 import configparser
-from serial.tools import list_ports
 import time
 import webbrowser
-import tkinter as tk
+from tkinter.scrolledtext import ScrolledText
+from tkinter import messagebox, ttk
+from datetime import datetime, timedelta
+from serial.tools import list_ports
+
 
 # ====== 版本说明 V3.1 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
@@ -101,6 +102,14 @@ generate_alert_voice()
 
 # ================= GUI =================
 root = tk.Tk()
+
+def resource_path(relative):
+    if getattr(sys, 'frozen', False):
+        return os.path.join(sys._MEIPASS, relative)
+    return os.path.join(os.path.abspath("."), relative)
+
+root.iconbitmap(resource_path("icon.ico"))
+
 root.title("四川安播中心预警短信接收显示 V3.1")
 root.geometry("760x520")
 
