@@ -36,6 +36,7 @@ jobs:
             --onefile `
             --windowed `
             --name "sms" `
+            --icon "icon.ico" `
             sms.pyw
 
       - name: Upload artifact
