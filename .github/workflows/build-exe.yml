@@ -37,6 +37,7 @@ jobs:
             --windowed `
             --name "sms" `
             --icon "icon.ico" `
+            --add-data "icon.ico;." `
             sms.pyw
 
       - name: Upload artifact
