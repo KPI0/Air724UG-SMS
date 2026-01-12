@@ -102,6 +102,7 @@ generate_alert_voice()
 
 # ================= GUI =================
 root = tk.Tk()
+root.withdraw()
 
 def resource_path(relative):
     if getattr(sys, 'frozen', False):
@@ -112,6 +113,9 @@ root.iconbitmap(resource_path("icon.ico"))
 
 root.title("四川安播中心预警短信接收显示 V3.1.1")
 root.geometry("760x520")
+
+root.update_idletasks()
+root.deiconify()
 
 def center_window(win, parent):
     """将子窗口居中到父窗口（主窗口）上。"""
