@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from serial.tools import list_ports
 
 
-# ====== 版本说明 V3.1.2 ======
+# ====== 版本说明 V3.1.3 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
 # - 识别不到时回退到配置串口（手动指定）
 # - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
@@ -115,7 +115,7 @@ def resource_path(relative):
 
 root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1.2")
+root.title("四川安播中心预警短信接收显示 V3.1.3")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -215,7 +215,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.2",
+        text="版本：V3.1.3",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -285,12 +285,17 @@ def play_alert():
     winsound.PlaySound(TTS_FILE, winsound.SND_FILENAME | winsound.SND_ASYNC)
 
 def show_sms_popup(msg: str):
-    """线程安全弹窗：必须在主线程弹出 messagebox"""
+    """弹窗确认后，自动显示主程序窗口"""
     global VOICE_ENABLED
     if not VOICE_ENABLED:
         return
+
+    def _popup_and_show():
+        messagebox.showinfo("预警短信", msg)  # 用户点“确定”前会阻塞
+        show_window()  # 👈 关键：确认后自动打开主窗口
+
     try:
-        root.after(0, lambda: messagebox.showinfo("预警短信", msg))
+        root.after(0, _popup_and_show)
     except Exception:
         pass
 
