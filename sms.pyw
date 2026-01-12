@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from serial.tools import list_ports
 
 
-# ====== 版本说明 V3.1.0 ======
+# ====== 版本说明 V3.1.1 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
 # - 识别不到时回退到配置串口（手动指定）
 # - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
@@ -110,7 +110,7 @@ def resource_path(relative):
 
 root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1.0")
+root.title("四川安播中心预警短信接收显示 V3.1.1")
 root.geometry("760x520")
 
 def center_window(win, parent):
@@ -141,7 +141,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.0",
+        text="版本：V3.1.1",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -223,6 +223,14 @@ def show_sms_popup(msg: str):
 # ================= 清空窗口 =================
 def clear_window():
     text_area.delete("1.0", tk.END)
+
+# ================= 打开日志目录 =================
+def open_log_dir():
+    log_path = os.path.abspath(LOG_DIR)
+    if os.path.exists(log_path):
+        os.startfile(log_path)   # Windows 下直接打开文件夹
+    else:
+        messagebox.showwarning("提示", "日志目录不存在")
 
 # ================= 每日清空 =================
 def clear_text_area_for_new_day():
@@ -699,6 +707,7 @@ menu_bar = tk.Menu(root)
 
 file_menu = tk.Menu(menu_bar, tearoff=0)
 file_menu.add_command(label="清空窗口", command=clear_window)
+file_menu.add_command(label="打开日志", command=open_log_dir)
 file_menu.add_separator()
 file_menu.add_command(label="退出", command=root.quit)
 menu_bar.add_cascade(label="文件", menu=file_menu)
