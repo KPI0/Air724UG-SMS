@@ -8,18 +8,22 @@ import pyttsx3
 import configparser
 import time
 import webbrowser
+import winreg
+import pystray
+from PIL import Image
 from tkinter.scrolledtext import ScrolledText
 from tkinter import messagebox, ttk
 from datetime import datetime, timedelta
 from serial.tools import list_ports
 
 
-# ====== 版本说明 V3.1.1 ======
+# ====== 版本说明 V3.1.2 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
 # - 识别不到时回退到配置串口（手动指定）
 # - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
 # - 串口设置/关于弹窗居中（模态）
 # - 左下角显示当前连接状态（颜色）
+# - 增加托盘功能
 
 # ================= 配置 =================
 CONFIG_FILE = "config.ini"
@@ -111,11 +115,77 @@ def resource_path(relative):
 
 root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1.1")
+root.title("四川安播中心预警短信接收显示 V3.1.2")
 root.geometry("760x520")
 
 root.update_idletasks()
 root.deiconify()
+
+
+# ================= 托盘 / 退出 / 隐藏 =================
+tray_icon = None
+is_exiting = False
+
+def show_window():
+    root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
+
+def hide_window():
+    root.after(0, root.withdraw)
+
+def cleanup_and_exit():
+    """真正退出：停止串口线程、关闭串口、停止托盘、销毁窗口"""
+    global serial_running, serial_obj, is_exiting, tray_icon
+    if is_exiting:
+        return
+    is_exiting = True
+
+    try:
+        serial_running = False
+    except Exception:
+        pass
+
+    try:
+        if serial_obj:
+            serial_obj.close()
+    except Exception:
+        pass
+
+    try:
+        if tray_icon:
+            tray_icon.stop()
+    except Exception:
+        pass
+
+    try:
+        root.after(0, root.destroy)
+    except Exception:
+        pass
+
+def on_close():
+    """点右上角×：隐藏到托盘，不退出"""
+    hide_window()
+
+root.protocol("WM_DELETE_WINDOW", on_close)
+
+def create_tray():
+    global tray_icon
+    try:
+        img = Image.open(resource_path("icon.ico"))
+    except Exception:
+        img = None
+
+    menu = pystray.Menu(
+        pystray.MenuItem("显示", lambda: show_window(), default=True),  # 双击托盘
+        pystray.MenuItem("隐藏", lambda: hide_window()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("退出", lambda: cleanup_and_exit()),
+    )
+
+    tray_icon = pystray.Icon("sms_tray", img, "短信接收系统", menu)
+    tray_icon.run_detached()
+
+
+threading.Thread(target=create_tray, daemon=True).start()
 
 def center_window(win, parent):
     """将子窗口居中到父窗口（主窗口）上。"""
@@ -145,7 +215,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.1",
+        text="版本：V3.1.2",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -724,7 +794,7 @@ file_menu = tk.Menu(menu_bar, tearoff=0)
 file_menu.add_command(label="清空窗口", command=clear_window)
 file_menu.add_command(label="打开日志", command=open_log_dir)
 file_menu.add_separator()
-file_menu.add_command(label="退出", command=root.quit)
+file_menu.add_command(label="退出", command=cleanup_and_exit)
 menu_bar.add_cascade(label="文件", menu=file_menu)
 
 # 一级菜单：串口设置

@@ -1,2 +1,4 @@
 pyttsx3
 pyserial
+pystray 
+pillow
