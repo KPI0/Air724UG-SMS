@@ -635,7 +635,7 @@ def open_keywords_setting():
 
     win = tk.Toplevel(root)
     win.title("关键词设置")
-    win.geometry("420x260")
+    win.geometry("420x290")
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -661,8 +661,19 @@ def open_keywords_setting():
     tk.Button(right, text="删除", width=10, command=del_kw).pack(anchor="w", pady=(0, 6))
     tk.Button(right, text="修改", width=10, command=edit_kw).pack(anchor="w")
 
+
+    # ===== 关键词规则提示 =====
+    tip = tk.Label(
+        frame,
+        text="提示：关键词为空时，全部短信都会显示",
+        fg="gray",
+        font=("微软雅黑", 9),
+        anchor="w"
+    )
+    tip.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 6))
+
     bottom = tk.Frame(frame)
-    bottom.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+    bottom.grid(row=6, column=0, columnspan=2, sticky="e", pady=(0, 10))
     tk.Button(bottom, text="关闭", width=10, command=win.destroy).pack()
 
     frame.grid_columnconfigure(0, weight=1)
