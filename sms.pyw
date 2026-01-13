@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from serial.tools import list_ports
 
 
-# ====== 版本说明 V3.1.3 ======
+# ====== 版本说明 V3.1.4 ======
 # - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
 # - 识别不到时回退到配置串口（手动指定）
 # - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
@@ -107,6 +107,7 @@ generate_alert_voice()
 # ================= GUI =================
 root = tk.Tk()
 root.withdraw()
+root.minsize(500, 200)
 
 def resource_path(relative):
     if getattr(sys, 'frozen', False):
@@ -115,7 +116,7 @@ def resource_path(relative):
 
 root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1.3")
+root.title("四川安播中心预警短信接收显示 V3.1.4")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -215,7 +216,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.3",
+        text="版本：V3.1.4",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -253,16 +254,26 @@ def show_about():
     win.update_idletasks()
     center_window(win, root)
 
-text_area = ScrolledText(root, font=("微软雅黑", 10))
-text_area.pack(fill=tk.BOTH, expand=True)
+# ===== 用 grid 布局：内容区永远不会盖住状态栏 =====
+root.grid_rowconfigure(0, weight=1)   # 内容区可伸缩
+root.grid_rowconfigure(1, weight=0)   # 状态栏固定
+root.grid_columnconfigure(0, weight=1)
 
-# ===== 左下角串口连接状态栏 =====
+# 中间内容区域
+main_frame = tk.Frame(root)
+main_frame.grid(row=0, column=0, sticky="nsew")
+
+text_area = ScrolledText(main_frame, font=("微软雅黑", 10))
+text_area.pack(fill=tk.BOTH, expand=True)  # 这里用 pack 没问题，因为只在 main_frame 内部
+
+# 底部状态栏
 status_frame = tk.Frame(root)
-status_frame.pack(fill=tk.X, side=tk.BOTTOM)
+status_frame.grid(row=1, column=0, sticky="ew")
 
 status_var = tk.StringVar(value="🔍 启动中…")
 status_label = tk.Label(status_frame, textvariable=status_var, anchor="w")
 status_label.pack(side=tk.LEFT, padx=6)
+
 
 def set_status(text, color="black"):
     root.after(0, lambda: (status_var.set(text), status_label.config(fg=color)))
