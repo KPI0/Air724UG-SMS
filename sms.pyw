@@ -43,7 +43,7 @@ if not os.path.exists(CONFIG_FILE):
     config["serial"] = {
         "port": "",
         "baud": "115200",
-        "mode": "auto",  # auto / manual
+        "mode": "Auto",  # Auto / Manual
     }
     config["ui"] = {"voice_enabled": "1"}
     # 新增：关键词配置（可选）
@@ -54,9 +54,9 @@ if not os.path.exists(CONFIG_FILE):
 config.read(CONFIG_FILE, encoding="utf-8")
 PORT = config.get("serial", "port", fallback="").strip()
 BAUD = config.getint("serial", "baud", fallback=115200)
-MODE = config.get("serial", "mode", fallback="auto").strip().lower()
-if MODE not in ("auto", "manual"):
-    MODE = "auto"
+MODE = config.get("serial", "mode", fallback="Auto").strip().lower()
+if MODE not in ("Auto", "Manual"):
+    MODE = "Auto"
 
 # ================= 语音播报开关（配置记忆） =================
 # 默认开启；若 config.ini 存在上次状态，则以配置为准
@@ -455,7 +455,7 @@ def read_serial():
 
     while serial_running:
         try:
-            if MODE == "auto":
+            if MODE == "Auto":
                 dev, desc = find_luat_best_port()
                 if not dev:
                     set_status("🔍 扫描 LUAT Modem 中…", "orange")
@@ -472,7 +472,7 @@ def read_serial():
 
             serial_obj = serial.Serial(PORT, BAUD, timeout=1)
             log(f"🔌 串口已连接：{PORT} @ {BAUD}")
-            if MODE == "auto":
+            if MODE == "Auto":
                 set_status(f"🟢 已连接 Modem：{PORT} @ {BAUD}", "green")
             else:
                 set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
@@ -530,7 +530,7 @@ def read_serial():
             except Exception:
                 pass
 
-            if MODE == "auto":
+            if MODE == "Auto":
                 PORT = ""
 
             time.sleep(RECONNECT_INTERVAL)
@@ -560,7 +560,7 @@ def open_serial_setting():
             messagebox.showerror("错误", "波特率必须是数字")
             return
 
-        if MODE == "manual":
+        if MODE == "Manual":
             if not port_var.get():
                 messagebox.showerror("错误", "手动模式必须选择串口")
                 return
@@ -581,12 +581,13 @@ def open_serial_setting():
         except:
             pass
 
-        log(f"⚙️ 串口设置已更新：mode={MODE} port={PORT or '(auto)'} baud={BAUD}")
+        log(f"⚙️ 串口设置已更新：mode={MODE} port={PORT or '(Auto)'} baud={BAUD}")
         win.destroy()
 
     win = tk.Toplevel(root)
     win.title("串口设置")
-    win.geometry("360x270")
+    win.geometry("340x240")
+    win.resizable(False, False)
     win.transient(root)
     win.grab_set()
 
@@ -595,7 +596,7 @@ def open_serial_setting():
 
     tk.Label(frame, text="连接模式：").grid(row=0, column=0, sticky="w", pady=(0, 6))
     mode_var = tk.StringVar(value=MODE)
-    mode_box = ttk.Combobox(frame, values=["auto", "manual"], textvariable=mode_var, state="readonly", width=18)
+    mode_box = ttk.Combobox(frame, values=["Auto", "Manual"], textvariable=mode_var, state="readonly", width=18)
     mode_box.grid(row=0, column=1, sticky="w", pady=(0, 6))
 
     tk.Label(frame, text="串口号（手动模式）：").grid(row=1, column=0, sticky="w", pady=(0, 6))
@@ -627,7 +628,7 @@ def open_serial_setting():
 
     tk.Label(
         tip_frame,
-        text="auto 会优先识别 LUAT Modem 口",
+        text="Auto 自动优先识别 LUAT Modem",
         fg="gray",
         font=("微软雅黑", 9),
         anchor="w",
@@ -635,7 +636,7 @@ def open_serial_setting():
 
     tk.Label(
         tip_frame,
-        text="manual 锁定所选 COM",
+        text="Manual 手动锁定所选 COM",
         fg="gray",
         font=("微软雅黑", 9),
         anchor="w",
@@ -813,13 +814,13 @@ file_menu.add_separator()
 file_menu.add_command(label="退出", command=cleanup_and_exit)
 menu_bar.add_cascade(label="文件", menu=file_menu)
 
-# 一级菜单：串口设置
+# 串口设置
 menu_bar.add_command(label="串口设置", command=open_serial_setting)
 
-# 新增：关键词设置（放在“串口设置”和“帮助”中间）
+# 关键词设置
 menu_bar.add_command(label="关键词设置", command=open_keywords_setting)
 
-# 语音播报（放在 帮助 前面）
+# 语音播报
 voice_menu_index = menu_bar.index("end") + 1
 menu_bar.add_command(label="🔊 语音播报", command=toggle_voice_broadcast)
 
@@ -835,7 +836,7 @@ update_voice_menu_label()
 # ================= 启动 =================
 schedule_next_midnight_clear()
 
-if MODE == "auto":
+if MODE == "Auto":
     set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
 else:
     set_status(f"🔒 手动模式：{PORT or '未指定'} @ {BAUD}", "orange")
