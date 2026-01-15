@@ -1,41 +1,141 @@
-import serial
-import threading
-import tkinter as tk
+# ---- 标准库 ----
 import os
 import sys
+import time
+import tempfile
+import threading
+import subprocess
+import webbrowser
+import configparser
+from datetime import datetime, timedelta
+
+# ---- 第三方库 ----
+import serial
+from serial.tools import list_ports
 import winsound
 import pyttsx3
-import configparser
-import time
-import webbrowser
-import winreg
 import pystray
 from PIL import Image
-from tkinter.scrolledtext import ScrolledText
+
+# ---- tkinter ----
+import tkinter as tk
 from tkinter import messagebox, ttk
-from datetime import datetime, timedelta
-from serial.tools import list_ports
+from tkinter.scrolledtext import ScrolledText
 
-
-# ====== 版本说明 V3.1.4 ======
-# - 严格优先自动识别 LUAT Modem 口（description + hwid 兜底）
-# - 识别不到时回退到配置串口（手动指定）
-# - 串口掉线/换设备/COM 变化：自动重连 + 自动重新扫描
-# - 串口设置/关于弹窗居中（模态）
-# - 左下角显示当前连接状态（颜色）
-# - 增加托盘功能
 
 # ================= 配置 =================
 CONFIG_FILE = "config.ini"
 KEYWORDS = ["【四川安播中心】"]
 LOG_DIR = "sms_logs"
-TTS_FILE = "sichuan_alert.wav"
+TTS_DIR = "tts"
+TTS_FILE = os.path.join(TTS_DIR, "sichuan_alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
 
+# 启动参数：开机自启时是否默认最小化到托盘
+AUTOSTART_FLAG = "--autostart"
+START_MINIMIZED = AUTOSTART_FLAG in sys.argv
+
+# ================= 开机自启 =================
+def get_startup_dir():
+    # 用环境变量 APPDATA 获取当前用户启动文件夹
+    appdata = os.environ.get("APPDATA", "")
+    return os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup")
+
+def get_startup_lnk():
+    return os.path.join(get_startup_dir(), "sms.lnk")
+
+def is_autostart_enabled():
+    return os.path.exists(get_startup_lnk())
+
+def _get_launch_target_and_args():
+    """
+    返回 (target_path, arguments, working_dir)
+    - 打包 exe：target=exe, args=""
+    - 脚本运行：target=pythonw.exe, args=脚本路径（不带引号）
+    """
+    if getattr(sys, "frozen", False):
+        exe_path = sys.executable
+        return exe_path, "", os.path.dirname(exe_path)
+
+    # 脚本模式：用 pythonw.exe 最稳（不弹黑窗）
+    pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    if not os.path.exists(pyw):
+        pyw = sys.executable
+
+    script_path = os.path.abspath(sys.argv[0])
+    # 关键：这里不要再加引号
+    return pyw, script_path, os.path.dirname(script_path)
+
+def create_startup_shortcut():
+    startup_dir = get_startup_dir()
+    os.makedirs(startup_dir, exist_ok=True)
+
+    lnk_path = get_startup_lnk()
+    target, args, workdir = _get_launch_target_and_args()
+
+    # vbs 用双引号包裹字符串；内部双引号要变成 ""
+    def vbs_quote(s: str) -> str:
+        return '"' + s.replace('"', '""') + '"'
+
+    # 生成临时 vbs（wscript 执行默认无窗口，不闪）
+    vbs = f'''
+Set WshShell = CreateObject("WScript.Shell")
+Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
+Shortcut.TargetPath = {vbs_quote(target)}
+Shortcut.WorkingDirectory = {vbs_quote(workdir)}
+Shortcut.WindowStyle = 1
+'''
+
+    if args:
+        # 脚本模式：pythonw.exe "脚本路径" --autostart
+        arg_line = f'"{args}" {AUTOSTART_FLAG}'
+        vbs += f'Shortcut.Arguments = {vbs_quote(arg_line)}\n'
+    else:
+        # exe 模式：SMS.exe --autostart
+        vbs += f'Shortcut.Arguments = {vbs_quote(AUTOSTART_FLAG)}\n'
+
+    vbs += 'Shortcut.Save\n'
+
+    vbs_path = os.path.join(tempfile.gettempdir(), "sms_autostart_create.vbs")
+    with open(vbs_path, "w", encoding="utf-8") as f:
+        f.write(vbs)
+
+    # 用 wscript.exe 执行（无控制台窗口）
+    r = subprocess.run(
+        ["wscript.exe", "//Nologo", vbs_path],
+        capture_output=True,
+        text=True
+    )
+
+    # 校验是否真的创建成功
+    if not os.path.exists(lnk_path):
+        err = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
+        raise RuntimeError(
+            "创建快捷方式失败：\n"
+            f"returncode={r.returncode}\n"
+            f"{err or '（stderr/stdout 为空，lnk 未生成）'}"
+        )
+
+def remove_startup_shortcut():
+    lnk = get_startup_lnk()
+    if os.path.exists(lnk):
+        os.remove(lnk)
+
+def set_autostart(enable: bool):
+    try:
+        if enable:
+            create_startup_shortcut()
+            log("🚀 开机自启：已打开")
+        else:
+            remove_startup_shortcut()
+            log("⛔ 开机自启：已关闭")
+    except Exception as e:
+        messagebox.showerror("错误", f"设置开机自启失败：\n{e}")
 
 # ================= 语音播报开关 =================
 VOICE_ENABLED = True
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(TTS_DIR, exist_ok=True)
 
 # ================= 读取配置 =================
 config = configparser.ConfigParser()
@@ -84,7 +184,6 @@ try:
 except Exception:
     pass
 
-
 # ================= 串口控制 =================
 serial_obj = None
 serial_running = True
@@ -94,7 +193,7 @@ def get_log_file():
     today = datetime.now().strftime("%Y-%m-%d")
     return os.path.join(LOG_DIR, f"sms_{today}.txt")
 
-# ================= TTS =================
+# ================= TTS语音播报 =================
 def generate_alert_voice():
     if not os.path.exists(TTS_FILE):
         engine = pyttsx3.init()
@@ -112,16 +211,24 @@ root.minsize(500, 200)
 def resource_path(relative):
     if getattr(sys, 'frozen', False):
         return os.path.join(sys._MEIPASS, relative)
-    return os.path.join(os.path.abspath("."), relative)
+    # 脚本模式：用文件本身所在目录
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative)
 
-root.iconbitmap(resource_path("icon.ico"))
 
-root.title("四川安播中心预警短信接收显示 V3.1.4")
+try:
+    root.iconbitmap(resource_path("icon.ico"))
+except Exception as e:
+    print("icon.ico 加载失败：", e)
+
+root.title("四川安播中心预警短信接收显示 V3.1.5")
 root.geometry("760x520")
 
 root.update_idletasks()
-root.deiconify()
-
+if not START_MINIMIZED:
+    root.deiconify()
+else:
+    # 自启：保持隐藏，托盘可“显示”
+    root.withdraw()
 
 # ================= 托盘 / 退出 / 隐藏 =================
 tray_icon = None
@@ -216,7 +323,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.4",
+        text="版本：V3.1.5",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -282,10 +389,16 @@ text_area.tag_config("normal", foreground="black", font=("微软雅黑", 10))
 text_area.tag_config("sms", foreground="red", font=("微软雅黑", 30))
 
 def log(msg, tag="normal"):
-    text_area.insert(tk.END, msg + "\n", tag)
-    text_area.see(tk.END)
-    with open(get_log_file(), "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    try:
+        text_area.insert(tk.END, msg + "\n", tag)
+        text_area.see(tk.END)
+    except Exception:
+        pass
+    try:
+        with open(get_log_file(), "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    except Exception:
+        pass
 
 # ================= 声音 =================
 def play_alert():
@@ -302,7 +415,7 @@ def show_sms_popup(msg: str):
         return
 
     def _popup_and_show():
-        messagebox.showinfo("预警短信", msg)  # 用户点“确定”前会阻塞
+        messagebox.showinfo("短信提醒", msg)  # 用户点“确定”前会阻塞
         show_window()  # 👈 关键：确认后自动打开主窗口
 
     try:
@@ -645,7 +758,7 @@ def open_serial_setting():
     win.update_idletasks()
     center_window(win, root)
 
-# ================= 新增：关键词设置窗口（增加/删除/修改 + 居中模态） =================
+# ================= 关键词设置窗口（增加/删除/修改 + 居中模态） =================
 def open_keywords_setting():
     def refresh_list(select_index=None):
         listbox.delete(0, tk.END)
@@ -823,6 +936,22 @@ menu_bar.add_command(label="关键词设置", command=open_keywords_setting)
 # 语音播报
 voice_menu_index = menu_bar.index("end") + 1
 menu_bar.add_command(label="🔊 语音播报", command=toggle_voice_broadcast)
+
+# ================= 设置 菜单 =================
+settings_menu = tk.Menu(menu_bar, tearoff=0)
+
+autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+
+def toggle_autostart():
+    set_autostart(autostart_var.get())
+
+settings_menu.add_checkbutton(
+    label="开机自启",
+    variable=autostart_var,
+    command=toggle_autostart
+)
+
+menu_bar.add_cascade(label="设置", menu=settings_menu)
 
 # 帮助
 help_menu = tk.Menu(menu_bar, tearoff=0)
