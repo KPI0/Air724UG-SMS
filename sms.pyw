@@ -1,35 +1,43 @@
 # ---- 标准库 ----
+import configparser
+import json
 import os
+import re
+import socket
+import ssl
+import subprocess
 import sys
-import time
 import tempfile
 import threading
-import subprocess
+import time
+import urllib.error
+import urllib.request
 import webbrowser
-import configparser
 from datetime import datetime, timedelta
 
 # ---- 第三方库 ----
 import serial
-from serial.tools import list_ports
 import winsound
-import pyttsx3
 import pystray
+import pyttsx3
 from PIL import Image
+from serial.tools import list_ports
 
 # ---- tkinter ----
 import tkinter as tk
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-
 # ================= 配置 =================
 CONFIG_FILE = "config.ini"
-KEYWORDS = ["【四川安播中心】"]
-LOG_DIR = "sms_logs"
-TTS_DIR = "tts"
+KEYWORDS = ["【四川安播中心】"] # 短信关键词
+LOG_DIR = "sms_logs" # 短信日志文件夹
+TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "sichuan_alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
+APP_VERSION = "3.1.6"  # 软件版本号
+GITHUB_OWNER = "KPI0"
+GITHUB_REPO = "Air724UG-SMS"
 
 # 启动参数：开机自启时是否默认最小化到托盘
 AUTOSTART_FLAG = "--autostart"
@@ -79,19 +87,19 @@ def create_startup_shortcut():
 
     # 生成临时 vbs（wscript 执行默认无窗口，不闪）
     vbs = f'''
-Set WshShell = CreateObject("WScript.Shell")
-Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
-Shortcut.TargetPath = {vbs_quote(target)}
-Shortcut.WorkingDirectory = {vbs_quote(workdir)}
-Shortcut.WindowStyle = 1
-'''
+        Set WshShell = CreateObject("WScript.Shell")
+        Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
+        Shortcut.TargetPath = {vbs_quote(target)}
+        Shortcut.WorkingDirectory = {vbs_quote(workdir)}
+        Shortcut.WindowStyle = 1
+        '''
 
     if args:
         # 脚本模式：pythonw.exe "脚本路径" --autostart
         arg_line = f'"{args}" {AUTOSTART_FLAG}'
         vbs += f'Shortcut.Arguments = {vbs_quote(arg_line)}\n'
     else:
-        # exe 模式：SMS.exe --autostart
+        # exe 模式：sms.exe --autostart
         vbs += f'Shortcut.Arguments = {vbs_quote(AUTOSTART_FLAG)}\n'
 
     vbs += 'Shortcut.Save\n'
@@ -145,18 +153,51 @@ if not os.path.exists(CONFIG_FILE):
         "baud": "115200",
         "mode": "Auto",  # Auto / Manual
     }
-    config["ui"] = {"voice_enabled": "1"}
-    # 新增：关键词配置（可选）
+
+    config["ui"] = {
+    "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
+    "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
+    "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
+    "log_retention_days": "30",   # 日志保留时间，单位：天
+    }
+
+    # 新增：关键词配置
     config["keywords"] = {"items": "|".join(KEYWORDS)}
+    
+    # 新增：更新代理配置
+    config["update"] = {
+        "proxy_base": "https://gh-proxy.com/",
+        "api_proxy_base": "https://github-api.daybyday.top/",
+    }
+
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         config.write(f)
 
 config.read(CONFIG_FILE, encoding="utf-8")
+# ===== 自动日志清理（从配置读取）=====
+try:
+    AUTO_LOG_CLEANUP = config.getboolean("ui", "auto_log_cleanup", fallback=True)
+except Exception:
+    AUTO_LOG_CLEANUP = True
+
+try:
+    LOG_RETENTION_DAYS = config.getint("ui", "log_retention_days", fallback=30)
+except Exception:
+    LOG_RETENTION_DAYS = 30
+
+try:
+    ALLOW_MULTI_INSTANCE = config.getboolean(
+        "ui", "allow_multi_instance", fallback=False
+    )
+except Exception:
+    ALLOW_MULTI_INSTANCE = False
+
 PORT = config.get("serial", "port", fallback="").strip()
 BAUD = config.getint("serial", "baud", fallback=115200)
 MODE = config.get("serial", "mode", fallback="Auto").strip().lower()
-if MODE not in ("Auto", "Manual"):
-    MODE = "Auto"
+if MODE not in ("auto", "manual"):
+    MODE = "auto"
+MODE = "Auto" if MODE == "auto" else "Manual"
 
 # ================= 语音播报开关（配置记忆） =================
 # 默认开启；若 config.ini 存在上次状态，则以配置为准
@@ -173,7 +214,7 @@ try:
 except Exception:
     VOICE_ENABLED = True
 
-# ================= 关键词（配置记忆，可选） =================
+# ================= 关键词（配置记忆） =================
 # 读取 config.ini 中的 keywords.items（用 | 分隔）；不存在则使用默认 KEYWORDS
 try:
     items = config.get("keywords", "items", fallback="").strip()
@@ -188,25 +229,161 @@ except Exception:
 serial_obj = None
 serial_running = True
 
+# ================= 全局变量 =================
+PENDING_UI_LOGS = []  # 用于 text_area 未创建前缓存要显示到窗口的提示
+LOG_PREFIX = "system"
+AUTO_CLEANUP_INTERVAL_HOURS = 24 # 自动清理频率：24小时一次
+AUTO_CLEANUP_AFTER_ID = None     # 记录 after() 的任务ID，用于避免重复定时器
+
 # ================= 日志 =================
 def get_log_file():
     today = datetime.now().strftime("%Y-%m-%d")
-    return os.path.join(LOG_DIR, f"sms_{today}.txt")
+    return os.path.join(
+        LOG_DIR,
+        f"sms_{LOG_PREFIX}_{today}.txt"
+    )
+
+def log_file_only(msg: str):
+    """系统级日志：固定写入 sms_system_YYYY-MM-DD.txt（不依赖 text_area / LOG_PREFIX）"""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        system_log = os.path.join(LOG_DIR, f"sms_system_{today}.txt")
+        with open(system_log, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    except Exception:
+        pass
+
+def log_early(msg: str, tag: str = "normal"):
+    """早期日志：先写文件，再缓存，等 text_area 创建后补到窗口"""
+    log_file_only(msg)
+    try:
+        PENDING_UI_LOGS.append((msg, tag))
+    except Exception:
+        pass
 
 # ================= TTS语音播报 =================
 def generate_alert_voice():
-    if not os.path.exists(TTS_FILE):
+    if os.path.exists(TTS_FILE):
+        return
+
+    try:
+        os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
         engine = pyttsx3.init()
         engine.setProperty("rate", 150)
         engine.save_to_file("注意！四川安播中心预警短信，请及时查看。", TTS_FILE)
         engine.runAndWait()
+    except Exception as e:
+        log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
 
-generate_alert_voice()
+# ================= 单实例：二次启动时唤醒已有实例 =================
+SINGLE_INSTANCE_HOST = "127.0.0.1"
+
+# 端口文件：记录“主实例当前使用的端口”，让二次启动能找到它
+PORT_FILE = os.path.join(tempfile.gettempdir(), "sms_single_instance_port.txt")
+
+# 端口尝试范围（足够小，不会乱；足够大，基本不冲突）
+PORT_RANGE = range(45678, 45699)
+
+def _read_saved_port():
+    try:
+        with open(PORT_FILE, "r", encoding="utf-8") as f:
+            p = int(f.read().strip())
+            return p
+    except Exception:
+        return None
+
+def _save_port(port: int):
+    try:
+        with open(PORT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(port))
+    except Exception:
+        pass
+
+def _pick_free_port():
+    """从范围里挑一个能 bind 的端口"""
+    for p in PORT_RANGE:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((SINGLE_INSTANCE_HOST, p))
+            s.close()
+            return p
+        except OSError:
+            try:
+                s.close()
+            except Exception:
+                pass
+            continue
+    return None
+
+def _try_notify_existing_instance() -> bool:
+    """如果已有实例在监听，则发送 SHOW 并返回 True；否则返回 False"""
+    port = _read_saved_port()
+    if not port:
+        return False
+
+    try:
+        with socket.create_connection((SINGLE_INSTANCE_HOST, port), timeout=0.3) as s:
+            s.sendall(b"SHOW")
+        return True
+
+    except OSError:
+        # 连接失败：大概率是旧的 port 文件残留，清理一下
+        try:
+            os.remove(PORT_FILE)
+        except Exception:
+            pass
+        return False
+
+def _start_single_instance_server(port: int, show_callback):
+    """
+    本实例成为“主实例”：在后台监听端口。
+    收到 SHOW 就调用 show_callback()（用 root.after 调回主线程）。
+    """
+    _save_port(port)
+
+    def _server():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            srv.bind((SINGLE_INSTANCE_HOST, port))
+        except OSError:
+            # 极小概率：端口在“检测后-真正 bind 前”被抢占
+            try:
+                srv.close()
+            except Exception:
+                pass
+            return   # 👈 直接放弃单实例监听，但程序本身继续运行
+
+        srv.listen(5)
+
+        while True:
+            try:
+                conn, _addr = srv.accept()
+                with conn:
+                    data = conn.recv(1024) or b""
+                    if b"SHOW" in data:
+                        try:
+                            show_callback()
+                        except Exception:
+                            pass
+            except Exception:
+                time.sleep(0.2)
+
+    threading.Thread(target=_server, daemon=True).start()
+
+# 如果检测到已有实例：通知它显示窗口，然后直接退出当前进程（避免多开）
+if not ALLOW_MULTI_INSTANCE:
+    if _try_notify_existing_instance():
+        sys.exit(0)
 
 # ================= GUI =================
 root = tk.Tk()
 root.withdraw()
 root.minsize(500, 200)
+
+threading.Thread(target=generate_alert_voice, daemon=True).start()
 
 def resource_path(relative):
     if getattr(sys, 'frozen', False):
@@ -214,13 +391,12 @@ def resource_path(relative):
     # 脚本模式：用文件本身所在目录
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative)
 
-
 try:
     root.iconbitmap(resource_path("icon.ico"))
 except Exception as e:
     print("icon.ico 加载失败：", e)
 
-root.title("四川安播中心预警短信接收显示 V3.1.5")
+root.title("四川安播中心预警短信接收显示 V3.1.6")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -236,6 +412,16 @@ is_exiting = False
 
 def show_window():
     root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
+
+if not ALLOW_MULTI_INSTANCE:
+    port = _pick_free_port()
+    if port is None:
+        # 极端情况：范围内全占用，就不做单实例（至少不崩）
+        msg = "⚠️ 单实例端口被占用，已降级为允许多开"
+        log_early(msg, tag="normal")
+
+    else:
+        _start_single_instance_server(port, lambda: root.after(0, show_window))
 
 def hide_window():
     root.after(0, root.withdraw)
@@ -277,10 +463,24 @@ root.protocol("WM_DELETE_WINDOW", on_close)
 
 def create_tray():
     global tray_icon
-    try:
-        img = Image.open(resource_path("icon.ico"))
-    except Exception:
-        img = None
+    def _load_tray_image():
+        # 1) 优先使用 icon.ico
+        try:
+            return Image.open(resource_path("icon.ico"))
+        except Exception:
+            pass
+
+        # 2) 兜底：生成一个简单的 16x16 图标
+        try:
+            img = Image.new("RGB", (16, 16), color=(200, 30, 30))  # 深红色
+            return img
+        except Exception:
+            return None
+
+    img = _load_tray_image()
+    if img is None:
+        # 极端兜底：理论上几乎不会到这一步
+        return
 
     menu = pystray.Menu(
         pystray.MenuItem("显示", lambda: show_window(), default=True),  # 双击托盘
@@ -291,7 +491,6 @@ def create_tray():
 
     tray_icon = pystray.Icon("sms_tray", img, "短信接收系统", menu)
     tray_icon.run_detached()
-
 
 threading.Thread(target=create_tray, daemon=True).start()
 
@@ -323,7 +522,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：V3.1.5",
+        text="版本：v3.1.6",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -373,6 +572,14 @@ main_frame.grid(row=0, column=0, sticky="nsew")
 text_area = ScrolledText(main_frame, font=("微软雅黑", 10))
 text_area.pack(fill=tk.BOTH, expand=True)  # 这里用 pack 没问题，因为只在 main_frame 内部
 
+# 把早期提示补到窗口
+for m, t in PENDING_UI_LOGS:
+    try:
+        text_area.insert(tk.END, m + "\n", t)
+    except Exception:
+        pass
+PENDING_UI_LOGS.clear()
+
 # 底部状态栏
 status_frame = tk.Frame(root)
 status_frame.grid(row=1, column=0, sticky="ew")
@@ -380,7 +587,6 @@ status_frame.grid(row=1, column=0, sticky="ew")
 status_var = tk.StringVar(value="🔍 启动中…")
 status_label = tk.Label(status_frame, textvariable=status_var, anchor="w")
 status_label.pack(side=tk.LEFT, padx=6)
-
 
 def set_status(text, color="black"):
     root.after(0, lambda: (status_var.set(text), status_label.config(fg=color)))
@@ -402,11 +608,16 @@ def log(msg, tag="normal"):
 
 # ================= 声音 =================
 def play_alert():
-    global VOICE_ENABLED
     if not VOICE_ENABLED:
         return
-    winsound.MessageBeep()
-    winsound.PlaySound(TTS_FILE, winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+    try:
+        if os.path.exists(TTS_FILE):
+            winsound.PlaySound(TTS_FILE,winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except Exception:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
 def show_sms_popup(msg: str):
     """弹窗确认后，自动显示主程序窗口"""
@@ -434,6 +645,454 @@ def open_log_dir():
         os.startfile(log_path)   # Windows 下直接打开文件夹
     else:
         messagebox.showwarning("提示", "日志目录不存在")
+
+# ================= 日志清理 =================
+def _parse_date_from_log_filename(filename: str):
+    """
+    从文件名中解析日期：支持 sms_system_YYYY-MM-DD.txt / sms_COM5_YYYY-MM-DD.txt / sms_xxx_YYYY-MM-DD.txt
+    解析失败返回 None
+    """
+    m = re.search(r"_(\d{4}-\d{2}-\d{2})\.txt$", filename)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+def cleanup_old_logs(days: int) -> int:
+    """
+    删除 LOG_DIR 中超过 days 天的 .txt 日志，返回删除数量
+    规则：根据文件名末尾的 YYYY-MM-DD 判断；解析失败则用文件修改时间判断
+    """
+    if days < 0:
+        days = 0
+
+    cutoff = (datetime.now() - timedelta(days=days)).date()
+    deleted = 0
+
+    if not os.path.isdir(LOG_DIR):
+        return 0
+
+    for name in os.listdir(LOG_DIR):
+        path = os.path.join(LOG_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if not name.lower().endswith(".txt"):
+            continue
+        if not name.lower().startswith("sms_"):
+            continue
+
+        file_date = _parse_date_from_log_filename(name)
+        try:
+            if file_date is None:
+                # fallback：用文件修改时间
+                mtime = datetime.fromtimestamp(os.path.getmtime(path)).date()
+                file_date = mtime
+
+            # 早于 cutoff 才删（例如保留 7 天：删 7 天之前的）
+            if file_date < cutoff:
+                os.remove(path)
+                deleted += 1
+        except Exception:
+            # 单个文件删失败不影响整体
+            pass
+
+    return deleted
+
+def open_log_cleanup_dialog():
+    """弹窗：设置保留天数并清理日志"""
+    win = tk.Toplevel(root)
+    win.title("日志清理")
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    frame = tk.Frame(win, padx=14, pady=12)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(frame, text="保留最近 N 天日志：", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
+
+    days_var = tk.StringVar(value=str(LOG_RETENTION_DAYS))
+    days_entry = tk.Entry(frame, textvariable=days_var, width=10)
+    days_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    tk.Label(frame, text="天", font=("微软雅黑", 10)).grid(row=0, column=2, sticky="w", padx=(6, 0))
+
+    tip = tk.Label(
+        frame,
+        text="说明：会删除 sms_logs 目录下超过 N 天的 sms_*.txt 日志（含 sms_system / sms_COMx）。",
+        fg="gray",
+        font=("微软雅黑", 9),
+        wraplength=360,
+        justify="left",
+    )
+    tip.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 6))
+
+    def do_cleanup():
+        global LOG_RETENTION_DAYS, AUTO_LOG_CLEANUP
+
+        try:
+            days = int(days_var.get().strip())
+            if days < 0:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("错误", "天数必须是非负整数（例如 30）")
+            return
+
+        # 确认开启自动清理
+        if not messagebox.askyesno("确认", f"确定设置为自动清理，并保留最近 {days} 天日志吗？"):
+            return
+
+        LOG_RETENTION_DAYS = days
+        AUTO_LOG_CLEANUP = True
+
+        # 保存到 config.ini，重启后仍然生效
+        try:
+            if not config.has_section("ui"):
+                config["ui"] = {}
+            config.set("ui", "auto_log_cleanup", "1")
+            config.set("ui", "log_retention_days", str(LOG_RETENTION_DAYS))
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                config.write(f)
+        except Exception:
+            pass
+
+        # 记录到 system，并在窗口显示
+        msg = f"✅ 已启用自动日志清理：保留 {LOG_RETENTION_DAYS} 天（每 {AUTO_CLEANUP_INTERVAL_HOURS} 小时执行一次）"
+        log_file_only(msg)
+        try:
+            log(msg)
+        except Exception:
+            pass
+
+        # 启动/重启自动定时器（以后每24小时自动清理）
+        schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
+
+        messagebox.showinfo("完成", "已启用自动日志清理（程序运行期间会定期清理）。")
+        win.destroy()
+
+    btns = tk.Frame(frame)
+    btns.grid(row=2, column=0, columnspan=3, sticky="e", pady=(10, 0))
+
+    tk.Button(btns, text="确认", width=10, command=do_cleanup).pack(side=tk.LEFT, padx=(0, 8))
+    tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT)
+
+    win.update_idletasks()
+    center_window(win, root)
+    days_entry.focus_set()
+    win.bind("<Return>", lambda _e: do_cleanup())
+    win.bind("<Escape>", lambda _e: win.destroy())
+
+def open_update_proxy_dialog():
+    """弹窗：编辑 GitHub Proxy 下载前缀与 API 前缀"""
+    if not config.has_section("update"):
+        config["update"] = {
+            "proxy_base": "https://gh-proxy.com/",
+            "api_proxy_base": "https://github-api.daybyday.top/",
+        }
+
+    win = tk.Toplevel(root)
+    win.title("代理设置")
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    frame = tk.Frame(win, padx=14, pady=12)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    proxy_var = tk.StringVar(value=config.get("update", "proxy_base", fallback=""))
+    api_var = tk.StringVar(value=config.get("update", "api_proxy_base", fallback=""))
+
+    tk.Label(frame, text="下载代理前缀 proxy_base：").grid(row=0, column=0, sticky="w")
+    proxy_entry = tk.Entry(frame, textvariable=proxy_var, width=44)
+    proxy_entry.grid(row=1, column=0, pady=(4, 10), sticky="w")
+
+    tk.Label(frame, text="API 代理前缀 api_proxy_base：").grid(row=2, column=0, sticky="w")
+    api_entry = tk.Entry(frame, textvariable=api_var, width=44)
+    api_entry.grid(row=3, column=0, pady=(4, 10), sticky="w")
+
+    def _normalize(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        # 自动补协议
+        if not (s.startswith("http://") or s.startswith("https://")):
+            s = "https://" + s
+        # 补 /
+        if not s.endswith("/"):
+            s += "/"
+        return s
+
+    def save():
+        config.set("update", "proxy_base", _normalize(proxy_var.get()))
+        config.set("update", "api_proxy_base", _normalize(api_var.get()))
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+        messagebox.showinfo("完成", "代理设置已保存")
+
+    def test_connection():
+        # 先禁用按钮，避免重复点（需要 btn_test 变量，下面按钮处我也给你改法）
+        try:
+            btn_test.config(state="disabled", text="测试中…")
+        except Exception:
+            pass
+
+        api_raw = api_var.get().strip()
+
+        def classify_err(e: Exception) -> str:
+            s = str(e)
+            if "SSLV3_ALERT_HANDSHAKE_FAILURE" in s or "sslv3 alert handshake failure" in s:
+                return "TLS握手失败（代理节点/线路不兼容或被干扰）"
+            if "timed out" in s.lower():
+                return "连接超时（线路慢/被阻断）"
+            if "name or service not known" in s.lower() or "getaddrinfo failed" in s.lower():
+                return "DNS 解析失败"
+            return s
+
+        def worker():
+            owner, repo = GITHUB_OWNER, GITHUB_REPO
+            api_path = f"/repos/{owner}/{repo}/releases/latest"
+
+            checks = []
+
+            # 0) 先测直连（有些环境其实直连也能通）
+            direct_url = "https://api.github.com" + api_path
+            try:
+                _http_get_json(direct_url, timeout=6, retries=2)
+                checks.append(("直连 api.github.com", True, "OK"))
+            except Exception as e:
+                checks.append(("直连 api.github.com", False, classify_err(e)))
+
+            # 1) 再测候选（支持 | 分隔）
+            bases = [x.strip() for x in api_raw.split("|") if x.strip()] if api_raw else []
+            ok_bases = []
+            for base in bases:
+                base_n = _normalize(base)
+                url = base_n.rstrip("/") + api_path
+                try:
+                    _http_get_json(url, timeout=6, retries=2)
+                    checks.append((base_n, True, "OK"))
+                    ok_bases.append(base_n)
+                except Exception as e:
+                    checks.append((base_n, False, classify_err(e)))
+
+            def done():
+                try:
+                    btn_test.config(state="normal", text="测试连接")
+                except Exception:
+                    pass
+
+                lines = []
+                for name, ok, info in checks:
+                    lines.append(("✅ " if ok else "❌ ") + f"{name}：{info}")
+
+                if ok_bases:
+                    lines.append("")
+                    lines.append("建议：把 ✅ 的代理放到最前面（用 | 分隔多个候选）。")
+                    lines.append("例如：")
+                    lines.append("|".join(ok_bases + [b for b in bases if _normalize(b) not in ok_bases]))
+
+                messagebox.showinfo("测试结果", "\n".join(lines))
+
+            root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def reset_default():
+        proxy_var.set("https://gh-proxy.com/")
+        api_var.set("https://github-api.daybyday.top/")
+
+    btns = tk.Frame(frame)
+    btns.grid(row=4, column=0, sticky="e", pady=(6, 0))
+    btn_test = tk.Button(btns, text="测试连接", width=10, command=test_connection)
+    btn_test.pack(side=tk.LEFT, padx=(0, 8))
+    tk.Button(btns, text="恢复默认", width=10, command=reset_default).pack(side=tk.LEFT, padx=(0, 8))
+    tk.Button(btns, text="保存", width=10, command=save).pack(side=tk.LEFT, padx=(0, 8))
+    tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT)
+
+    win.update_idletasks()
+    center_window(win, root)
+    proxy_entry.focus_set()
+    win.bind("<Return>", lambda _e: save())
+    win.bind("<Escape>", lambda _e: win.destroy())
+
+def _auto_log_cleanup_tick():
+    """一次自动清理 + 重新安排下一次"""
+    global AUTO_CLEANUP_AFTER_ID
+
+    if not AUTO_LOG_CLEANUP:
+        AUTO_CLEANUP_AFTER_ID = None
+        return
+
+    days = LOG_RETENTION_DAYS if LOG_RETENTION_DAYS >= 0 else 0
+
+    try:
+        n = cleanup_old_logs(days)
+        msg = f"🧹 自动日志清理：已删除 {n} 个旧日志文件（保留 {days} 天）"
+        # 写 system（固定总日志）
+        log_file_only(msg)
+        # # 可选：也显示到窗口（不想刷屏就注释掉）
+        # try:
+        #     log(msg)
+        # except Exception:
+        #     pass
+    except Exception as e:
+        log_file_only(f"⚠️ 自动日志清理失败：{e}")
+
+    # 下一次
+    AUTO_CLEANUP_AFTER_ID = root.after(AUTO_CLEANUP_INTERVAL_HOURS * 3600 * 1000, _auto_log_cleanup_tick)
+
+def schedule_auto_log_cleanup(restart: bool = True, first_delay_sec: int = 60):
+    """
+    开启/重启自动清理定时器
+    - restart=True：会先取消旧定时器，避免重复跑
+    - first_delay_sec：首次执行延迟（避免刚启动就占资源）
+    """
+    global AUTO_CLEANUP_AFTER_ID
+
+    if restart and AUTO_CLEANUP_AFTER_ID is not None:
+        try:
+            root.after_cancel(AUTO_CLEANUP_AFTER_ID)
+        except Exception:
+            pass
+        AUTO_CLEANUP_AFTER_ID = None
+
+    if not AUTO_LOG_CLEANUP:
+        return
+    AUTO_CLEANUP_AFTER_ID = root.after(first_delay_sec * 1000, _auto_log_cleanup_tick)
+
+# ================= 检测更新 =================
+def _ver_tuple(v: str):
+    # 允许 "v1.1.1" / "1.1.1"
+    v = (v or "").strip().lstrip("vV")
+    parts = []
+    for x in v.split("."):
+        try:
+            parts.append(int(x))
+        except Exception:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+def _http_get_json(url: str, timeout=8, retries=3):
+    last_err = None
+
+    ctx = ssl.create_default_context()
+
+    # ✅ 禁用系统代理（避免 v2rayng/system proxy 影响 urllib TLS）
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),          # 关键：空代理=不走系统代理
+        urllib.request.HTTPSHandler(context=ctx)  # 保持 TLS 上下文
+    )
+
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "sms-updater", "Accept": "application/vnd.github+json"},
+                method="GET",
+            )
+            with opener.open(req, timeout=timeout) as resp:
+                data = resp.read().decode("utf-8", "ignore")
+                return json.loads(data)
+
+        except Exception as e:
+            last_err = e
+            try:
+                time.sleep(0.6 * (2 ** i))
+            except Exception:
+                pass
+
+    raise last_err
+
+def _get_update_config():
+    proxy_base = config.get("update", "proxy_base", fallback="https://gh-proxy.com/").strip()
+    api_proxy_base = config.get("update", "api_proxy_base", fallback="").strip()
+    # 规范：确保以 / 结尾
+    if proxy_base and not proxy_base.endswith("/"):
+        proxy_base += "/"
+    if api_proxy_base and not api_proxy_base.endswith("/"):
+        api_proxy_base += "/"
+    return proxy_base, api_proxy_base
+
+def _get_latest_release():
+    owner, repo = GITHUB_OWNER, GITHUB_REPO
+    api_path = f"/repos/{owner}/{repo}/releases/latest"
+    direct = "https://api.github.com" + api_path
+    proxy_base, api_proxy_base = _get_update_config()
+
+    urls = [direct]
+
+    # 允许多个 API 代理：用 | 分隔，例如：
+    # https://github-api.daybyday.top/|https://gh-api.fallback.example/
+    if api_proxy_base:
+        for base in [x.strip() for x in api_proxy_base.split("|") if x.strip()]:
+            if not base.endswith("/"):
+                base += "/"
+            urls.append(base.rstrip("/") + api_path)
+
+    last_err = None
+    for u in urls:
+        try:
+            return _http_get_json(u, timeout=8, retries=3)
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"获取最新版本信息失败：{last_err}")
+
+def _pick_exe_asset(release_json: dict):
+    assets = release_json.get("assets") or []
+    zip_assets = [a for a in assets if (a.get("name","").lower().endswith(".zip"))]
+    if not zip_assets:
+        return None
+    zip_assets.sort(key=lambda a: -int(a.get("size", 0) or 0))
+    return zip_assets[0]
+
+def check_update_and_prompt():
+    def worker():
+        try:
+            rel = _get_latest_release()
+            tag = rel.get("tag_name") or ""
+            latest = _ver_tuple(tag)
+            current = _ver_tuple(APP_VERSION)
+
+            if latest <= current:
+                root.after(0, lambda: messagebox.showinfo("检测更新", f"当前已是最新版本：V{APP_VERSION}"))
+                return
+
+            asset = _pick_exe_asset(rel)
+            if not asset:
+                root.after(0, lambda: messagebox.showwarning(
+                    "检测更新",
+                    f"发现新版本：{tag}\n但 Release 里没有 .zip 附件。"
+                ))
+                return
+
+            raw_url = asset.get("browser_download_url") or ""
+            proxy_base, _api_proxy_base = _get_update_config()
+
+            # 下载链接：优先走代理（大陆可用），同时给用户一个“原始链接”
+            proxy_url = (proxy_base + raw_url) if (proxy_base and raw_url.startswith("http")) else raw_url
+
+            def ask():
+                ok = messagebox.askyesno(
+                    "发现新版本",
+                    f"当前：V{APP_VERSION}\n最新：{tag}\n\n是否打开下载链接？（将优先使用 GitHub Proxy）"
+                )
+                if ok:
+                    try:
+                        webbrowser.open(proxy_url)
+                    except Exception:
+                        pass
+
+            root.after(0, ask)
+
+        except Exception as e:
+            root.after(0, lambda: messagebox.showerror("检测更新失败", str(e)))
+
+    threading.Thread(target=worker, daemon=True).start()
 
 # ================= 每日清空 =================
 def clear_text_area_for_new_day():
@@ -511,7 +1170,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT
+    global serial_obj, serial_running, PORT, LOG_PREFIX
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -584,6 +1243,9 @@ def read_serial():
                 set_status(f"🟡 连接中：{PORT} @ {BAUD}", "orange")
 
             serial_obj = serial.Serial(PORT, BAUD, timeout=1)
+
+            LOG_PREFIX = PORT.replace(":", "_")
+
             log(f"🔌 串口已连接：{PORT} @ {BAUD}")
             if MODE == "Auto":
                 set_status(f"🟢 已连接 Modem：{PORT} @ {BAUD}", "green")
@@ -634,6 +1296,7 @@ def read_serial():
                 continue
 
         except Exception as e:
+            LOG_PREFIX = "system"
             log(f"⚠️ 串口异常：{e}")
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
 
@@ -865,7 +1528,6 @@ def open_keywords_setting():
     tk.Button(right, text="删除", width=10, command=del_kw).pack(anchor="w", pady=(0, 6))
     tk.Button(right, text="修改", width=10, command=edit_kw).pack(anchor="w")
 
-
     # ===== 关键词规则提示 =====
     tip = tk.Label(
         frame,
@@ -934,13 +1596,36 @@ menu_bar.add_command(label="串口设置", command=open_serial_setting)
 menu_bar.add_command(label="关键词设置", command=open_keywords_setting)
 
 # 语音播报
-voice_menu_index = menu_bar.index("end") + 1
 menu_bar.add_command(label="🔊 语音播报", command=toggle_voice_broadcast)
+voice_menu_index = menu_bar.index("end")
 
 # ================= 设置 菜单 =================
 settings_menu = tk.Menu(menu_bar, tearoff=0)
 
 autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+
+multi_instance_var = tk.BooleanVar(value=ALLOW_MULTI_INSTANCE)
+
+def toggle_multi_instance():
+    global ALLOW_MULTI_INSTANCE
+    ALLOW_MULTI_INSTANCE = multi_instance_var.get()
+    try:
+        if not config.has_section("ui"):
+            config["ui"] = {}
+        config.set(
+            "ui",
+            "allow_multi_instance",
+            "1" if ALLOW_MULTI_INSTANCE else "0"
+        )
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+    if ALLOW_MULTI_INSTANCE:
+        log("🧩 程序多开：已开启")
+    else:
+        log("🔒 程序多开：已关闭")
 
 def toggle_autostart():
     set_autostart(autostart_var.get())
@@ -951,13 +1636,30 @@ settings_menu.add_checkbutton(
     command=toggle_autostart
 )
 
+settings_menu.add_checkbutton(
+    label="程序多开",
+    variable=multi_instance_var,
+    command=toggle_multi_instance
+)
+
+settings_menu.add_separator()
+settings_menu.add_command(
+    label="日志清理", 
+    command=open_log_cleanup_dialog
+)
+
+settings_menu.add_command(
+    label="代理设置",
+    command=open_update_proxy_dialog
+)
+
 menu_bar.add_cascade(label="设置", menu=settings_menu)
 
 # 帮助
 help_menu = tk.Menu(menu_bar, tearoff=0)
 help_menu.add_command(label="关于", command=show_about)
+help_menu.add_command(label="检测更新", command=check_update_and_prompt)
 menu_bar.add_cascade(label="帮助", menu=help_menu)
-
 
 root.config(menu=menu_bar)
 update_voice_menu_label()
@@ -968,8 +1670,11 @@ schedule_next_midnight_clear()
 if MODE == "Auto":
     set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
 else:
-    set_status(f"🔒 手动模式：{PORT or '未指定'} @ {BAUD}", "orange")
+    set_status(f"✍️ 手动模式：{PORT or '未指定'} @ {BAUD}", "orange")
 
 threading.Thread(target=read_serial, daemon=True).start()
+# 启动后自动清理定时器（默认60秒后首次运行）
+schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
+
 root.mainloop()
 
