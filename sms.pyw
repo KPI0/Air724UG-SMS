@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "sichuan_alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.1.6"  # 软件版本号
+APP_VERSION = "3.1.7"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -105,7 +105,7 @@ def create_startup_shortcut():
     vbs += 'Shortcut.Save\n'
 
     vbs_path = os.path.join(tempfile.gettempdir(), "sms_autostart_create.vbs")
-    with open(vbs_path, "w", encoding="utf-8") as f:
+    with open(vbs_path, "w", encoding="mbcs") as f:
         f.write(vbs)
 
     # 用 wscript.exe 执行（无控制台窗口）
@@ -166,8 +166,8 @@ if not os.path.exists(CONFIG_FILE):
     
     # 新增：更新代理配置
     config["update"] = {
-        "proxy_base": "https://gh-proxy.com/",
         "api_proxy_base": "https://github-api.daybyday.top/",
+        "proxy_base": "https://gh-proxy.com/",
     }
 
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -274,6 +274,82 @@ def generate_alert_voice():
         engine.runAndWait()
     except Exception as e:
         log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+
+# ================= 获取桌面路径 =================
+def get_desktop_dir():
+    # 优先用 Windows 注册表拿 “真实桌面路径”，兼容 OneDrive 重定向
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+        ) as k:
+            desktop = winreg.QueryValueEx(k, "Desktop")[0]
+        desktop = os.path.expandvars(desktop)
+        if desktop and os.path.isdir(desktop):
+            return desktop
+    except Exception:
+        pass
+
+    # 兜底：传统路径
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+# ================= 创建桌面快捷方式 =================  
+def create_desktop_shortcut(shortcut_name: str):
+    shortcut_name = re.sub(r'[\\/:*?"<>|]', "_", shortcut_name.strip())
+    desktop = get_desktop_dir()
+    os.makedirs(desktop, exist_ok=True)
+
+    if not shortcut_name.lower().endswith(".lnk"):
+        shortcut_name += ".lnk"
+
+    lnk_path = os.path.join(desktop, shortcut_name)
+
+    target, args, workdir = _get_launch_target_and_args()
+
+    def vbs_quote(s: str) -> str:
+        return '"' + s.replace('"', '""') + '"'
+
+    vbs = f'''
+Set WshShell = CreateObject("WScript.Shell")
+Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
+Shortcut.TargetPath = {vbs_quote(target)}
+Shortcut.WorkingDirectory = {vbs_quote(workdir)}
+Shortcut.WindowStyle = 1
+'''
+
+    if args:
+        vbs += f'Shortcut.Arguments = {vbs_quote(args)}\n'
+
+    vbs += 'Shortcut.Save\n'
+
+    vbs_path = os.path.join(tempfile.gettempdir(), "sms_desktop_shortcut.vbs")
+    with open(vbs_path, "w", encoding="mbcs") as f:
+        f.write(vbs)
+
+    # ✅ 只执行一次
+    r = subprocess.run(
+        ["cscript.exe", "//Nologo", vbs_path],
+        capture_output=True,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+
+    # ✅ 校验必须在函数内部
+    if not os.path.exists(lnk_path):
+        detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
+        raise RuntimeError(
+            "桌面快捷方式创建失败：\n" +
+            (detail or "（cscript 未返回错误信息，但 .lnk 未生成）")
+        )
+
+# ================= 保存快捷方式名称 =================
+def save_desktop_shortcut_name(name: str):
+    if not config.has_section("ui"):
+        config["ui"] = {}
+    config.set("ui", "desktop_shortcut_name", name)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        config.write(f)
 
 # ================= 单实例：二次启动时唤醒已有实例 =================
 SINGLE_INSTANCE_HOST = "127.0.0.1"
@@ -396,7 +472,7 @@ try:
 except Exception as e:
     print("icon.ico 加载失败：", e)
 
-root.title("四川安播中心预警短信接收显示 V3.1.6")
+root.title("四川安播中心预警短信接收显示 V3.1.7")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -522,7 +598,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.1.6",
+        text="版本：v3.1.7",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -787,8 +863,8 @@ def open_update_proxy_dialog():
     """弹窗：编辑 GitHub Proxy 下载前缀与 API 前缀"""
     if not config.has_section("update"):
         config["update"] = {
-            "proxy_base": "https://gh-proxy.com/",
             "api_proxy_base": "https://github-api.daybyday.top/",
+            "proxy_base": "https://gh-proxy.com/",
         }
 
     win = tk.Toplevel(root)
@@ -803,13 +879,13 @@ def open_update_proxy_dialog():
     proxy_var = tk.StringVar(value=config.get("update", "proxy_base", fallback=""))
     api_var = tk.StringVar(value=config.get("update", "api_proxy_base", fallback=""))
 
-    tk.Label(frame, text="下载代理前缀 proxy_base：").grid(row=0, column=0, sticky="w")
-    proxy_entry = tk.Entry(frame, textvariable=proxy_var, width=44)
-    proxy_entry.grid(row=1, column=0, pady=(4, 10), sticky="w")
-
-    tk.Label(frame, text="API 代理前缀 api_proxy_base：").grid(row=2, column=0, sticky="w")
+    tk.Label(frame, text="API 代理前缀 api_proxy_base：").grid(row=0, column=0, sticky="w")
     api_entry = tk.Entry(frame, textvariable=api_var, width=44)
-    api_entry.grid(row=3, column=0, pady=(4, 10), sticky="w")
+    api_entry.grid(row=1, column=0, pady=(4, 10), sticky="w")
+
+    tk.Label(frame, text="下载代理前缀 proxy_base：").grid(row=2, column=0, sticky="w")
+    proxy_entry = tk.Entry(frame, textvariable=proxy_var, width=44)
+    proxy_entry.grid(row=3, column=0, pady=(4, 10), sticky="w")
 
     def _normalize(s: str) -> str:
         s = (s or "").strip()
@@ -854,27 +930,52 @@ def open_update_proxy_dialog():
             api_path = f"/repos/{owner}/{repo}/releases/latest"
 
             checks = []
+            ok_api = False
+            release_json = None
 
-            # 0) 先测直连（有些环境其实直连也能通）
-            direct_url = "https://api.github.com" + api_path
-            try:
-                _http_get_json(direct_url, timeout=6, retries=2)
-                checks.append(("直连 api.github.com", True, "OK"))
-            except Exception as e:
-                checks.append(("直连 api.github.com", False, classify_err(e)))
-
-            # 1) 再测候选（支持 | 分隔）
+            # 1) 先测 api_proxy_base（支持 |）
             bases = [x.strip() for x in api_raw.split("|") if x.strip()] if api_raw else []
             ok_bases = []
+
             for base in bases:
                 base_n = _normalize(base)
                 url = base_n.rstrip("/") + api_path
                 try:
-                    _http_get_json(url, timeout=6, retries=2)
+                    release_json = _http_get_json(url, timeout=6, retries=2)
                     checks.append((base_n, True, "OK"))
                     ok_bases.append(base_n)
+                    ok_api = True
+                    break
                 except Exception as e:
                     checks.append((base_n, False, classify_err(e)))
+
+            # 2) API 代理都失败 -> 再测直连兜底
+            if not ok_api:
+                direct_url = "https://api.github.com" + api_path
+                try:
+                    release_json = _http_get_json(direct_url, timeout=6, retries=2)
+                    checks.append(("直连 api.github.com", True, "OK"))
+                    ok_api = True
+                except Exception as e:
+                    checks.append(("直连 api.github.com", False, classify_err(e)))
+
+            # 3) 只有 API 成功，才测试下载代理 proxy_base
+            if ok_api and release_json:
+                asset = _pick_exe_asset(release_json)
+                if asset:
+                    raw_url = asset.get("browser_download_url") or ""
+                    pb = _normalize(proxy_var.get())
+                    if pb and raw_url.startswith("http"):
+                        test_url = pb + raw_url
+                        try:
+                            _http_probe(test_url, timeout=6, retries=2)
+                            checks.append((f"下载代理 {pb}", True, "OK"))
+                        except Exception as e:
+                            checks.append((f"下载代理 {pb}", False, classify_err(e)))
+                    else:
+                        checks.append(("下载代理 proxy_base", False, "未填写或获取不到下载链接"))
+                else:
+                    checks.append(("下载代理 proxy_base", False, "Release 无 .zip 附件"))
 
             def done():
                 try:
@@ -886,11 +987,18 @@ def open_update_proxy_dialog():
                 for name, ok, info in checks:
                     lines.append(("✅ " if ok else "❌ ") + f"{name}：{info}")
 
-                if ok_bases:
+                # 是否下载代理 OK（你 checks 里成功时 name 是 "下载代理 {pb}"）
+                download_ok = any((ok is True) and isinstance(name, str) and name.startswith("下载代理 ")
+                                  for (name, ok, _info) in checks)
+
+                if ok_bases or download_ok:
                     lines.append("")
-                    lines.append("建议：把 ✅ 的代理放到最前面（用 | 分隔多个候选）。")
-                    lines.append("例如：")
-                    lines.append("|".join(ok_bases + [b for b in bases if _normalize(b) not in ok_bases]))
+
+                if ok_bases:
+                    lines.append("提示：API 代理可用，检测更新将优先使用它。")
+
+                if download_ok:
+                    lines.append("提示：下载代理可用，下载链接将优先使用它。")
 
                 messagebox.showinfo("测试结果", "\n".join(lines))
 
@@ -899,8 +1007,8 @@ def open_update_proxy_dialog():
         threading.Thread(target=worker, daemon=True).start()
 
     def reset_default():
-        proxy_var.set("https://gh-proxy.com/")
         api_var.set("https://github-api.daybyday.top/")
+        proxy_var.set("https://gh-proxy.com/")
 
     btns = tk.Frame(frame)
     btns.grid(row=4, column=0, sticky="e", pady=(6, 0))
@@ -912,7 +1020,7 @@ def open_update_proxy_dialog():
 
     win.update_idletasks()
     center_window(win, root)
-    proxy_entry.focus_set()
+    api_entry.focus_set()
     win.bind("<Return>", lambda _e: save())
     win.bind("<Escape>", lambda _e: win.destroy())
 
@@ -1006,6 +1114,43 @@ def _http_get_json(url: str, timeout=8, retries=3):
 
     raise last_err
 
+def _http_probe(url: str, timeout=8, retries=2):
+    """
+    探测 URL 是否可访问：
+    - 优先 HEAD（更快，不下载正文）
+    - 部分代理不支持 HEAD，则 fallback GET 读取少量字节
+    - 禁用系统代理（与 _http_get_json 一致）
+    """
+    last_err = None
+    ctx = ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ctx)
+    )
+
+    for i in range(retries):
+        try:
+            # 1) HEAD
+            req = urllib.request.Request(url, headers={"User-Agent": "sms-updater"}, method="HEAD")
+            with opener.open(req, timeout=timeout) as resp:
+                # 2xx/3xx 基本都算可达
+                return True, f"HTTP {getattr(resp, 'status', 200)}"
+        except Exception as e_head:
+            try:
+                # 2) fallback GET (读取少量字节即可)
+                req = urllib.request.Request(url, headers={"User-Agent": "sms-updater"}, method="GET")
+                with opener.open(req, timeout=timeout) as resp:
+                    resp.read(64)
+                    return True, f"HTTP {getattr(resp, 'status', 200)}"
+            except Exception as e_get:
+                last_err = e_get
+                try:
+                    time.sleep(0.4 * (2 ** i))
+                except Exception:
+                    pass
+
+    raise last_err
+
 def _get_update_config():
     proxy_base = config.get("update", "proxy_base", fallback="https://gh-proxy.com/").strip()
     api_proxy_base = config.get("update", "api_proxy_base", fallback="").strip()
@@ -1020,17 +1165,20 @@ def _get_latest_release():
     owner, repo = GITHUB_OWNER, GITHUB_REPO
     api_path = f"/repos/{owner}/{repo}/releases/latest"
     direct = "https://api.github.com" + api_path
-    proxy_base, api_proxy_base = _get_update_config()
+    _proxy_base, api_proxy_base = _get_update_config()
 
-    urls = [direct]
+    urls = []
 
-    # 允许多个 API 代理：用 | 分隔，例如：
-    # https://github-api.daybyday.top/|https://gh-api.fallback.example/
+    # 1) 代理优先（支持 | 分隔多个候选）
     if api_proxy_base:
-        for base in [x.strip() for x in api_proxy_base.split("|") if x.strip()]:
-            if not base.endswith("/"):
-                base += "/"
-            urls.append(base.rstrip("/") + api_path)
+        for base in (x.strip() for x in api_proxy_base.split("|") if x.strip()):
+            if not (base.startswith("http://") or base.startswith("https://")):
+                base = "https://" + base
+            base = base.rstrip("/")
+            urls.append(base + api_path)
+
+    # 2) 最后再直连兜底
+    urls.append(direct)
 
     last_err = None
     for u in urls:
@@ -1079,7 +1227,7 @@ def check_update_and_prompt():
             def ask():
                 ok = messagebox.askyesno(
                     "发现新版本",
-                    f"当前：V{APP_VERSION}\n最新：{tag}\n\n是否打开下载链接？（将优先使用 GitHub Proxy）"
+                    f"当前：V{APP_VERSION}\n最新：{tag}\n\n是否打开下载链接？（如已配置下载代理，将优先使用）"
                 )
                 if ok:
                     try:
@@ -1420,6 +1568,67 @@ def open_serial_setting():
 
     win.update_idletasks()
     center_window(win, root)
+# ================= 弹窗：快捷方式设置窗口 =================
+def open_desktop_shortcut_dialog():
+    default_name = config.get(
+        "ui", "desktop_shortcut_name", fallback="sms"
+    )
+
+    win = tk.Toplevel(root)
+    win.title("创建桌面快捷方式")
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    frame = tk.Frame(win, padx=14, pady=12)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(frame, text="快捷方式名称：", font=("微软雅黑", 10)).grid(
+        row=0, column=0, sticky="w"
+    )
+
+    name_var = tk.StringVar(value=default_name)
+    entry = tk.Entry(frame, textvariable=name_var, width=28)
+    entry.grid(row=1, column=0, pady=(6, 12), sticky="w")
+
+    def apply_now():
+        name = name_var.get().strip()
+        if not name:
+            messagebox.showerror("错误", "名称不能为空")
+            return
+        try:
+            create_desktop_shortcut(name)
+            save_desktop_shortcut_name(name)
+            messagebox.showinfo("完成", "桌面快捷方式已创建")
+        except Exception as e:
+            messagebox.showerror("失败", str(e))
+
+    def save_only():
+        name = name_var.get().strip()
+        if not name:
+            messagebox.showerror("错误", "名称不能为空")
+            return
+        save_desktop_shortcut_name(name)
+        messagebox.showinfo("已保存", "名称已保存，下次可直接应用")
+
+    btns = tk.Frame(frame)
+    btns.grid(row=2, column=0, sticky="e")
+
+    tk.Button(btns, text="应用", width=10, command=apply_now).pack(
+        side=tk.LEFT, padx=(0, 8)
+    )
+    tk.Button(btns, text="保存", width=10, command=save_only).pack(
+        side=tk.LEFT, padx=(0, 8)
+    )
+    tk.Button(btns, text="取消", width=10, command=win.destroy).pack(
+        side=tk.LEFT
+    )
+
+    win.update_idletasks()
+    center_window(win, root)
+    entry.focus_set()
+    win.bind("<Return>", lambda _e: apply_now())
+    win.bind("<Escape>", lambda _e: win.destroy())
 
 # ================= 关键词设置窗口（增加/删除/修改 + 居中模态） =================
 def open_keywords_setting():
@@ -1651,6 +1860,11 @@ settings_menu.add_command(
 settings_menu.add_command(
     label="代理设置",
     command=open_update_proxy_dialog
+)
+
+settings_menu.add_command(
+    label="快捷方式",
+    command=open_desktop_shortcut_dialog
 )
 
 menu_bar.add_cascade(label="设置", menu=settings_menu)
