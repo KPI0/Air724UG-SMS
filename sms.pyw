@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "sichuan_alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.1.7"  # 软件版本号
+APP_VERSION = "3.1.8"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -472,7 +472,7 @@ try:
 except Exception as e:
     print("icon.ico 加载失败：", e)
 
-root.title("四川安播中心预警短信接收显示 V3.1.7")
+root.title("四川安播中心预警短信接收显示 V3.1.8")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -598,7 +598,7 @@ def show_about():
     tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.1.7",
+        text="版本：v3.1.8",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
