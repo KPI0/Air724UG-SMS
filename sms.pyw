@@ -472,7 +472,7 @@ try:
 except Exception as e:
     print("icon.ico 加载失败：", e)
 
-root.title("四川安播中心预警短信接收显示 V3.1.8")
+root.title("短信接收显示")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -595,7 +595,7 @@ def show_about():
     frame.pack(fill=tk.BOTH, expand=True)
 
     # 版本信息
-    tk.Label(frame, text="四川安播中心预警短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
+    tk.Label(frame, text="短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
         text="版本：v3.1.8",
