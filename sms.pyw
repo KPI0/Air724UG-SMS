@@ -1175,7 +1175,7 @@ def _get_latest_release():
             if not (base.startswith("http://") or base.startswith("https://")):
                 base = "https://" + base
             base = base.rstrip("/")
-            urls.append(base + api_path)
+            urls.append(base + api_path + f"?t={int(time.time())}")
 
     # 2) 最后再直连兜底
     urls.append(direct)
