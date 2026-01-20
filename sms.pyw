@@ -215,13 +215,13 @@ except Exception:
     VOICE_ENABLED = True
 
 # ================= 关键词（配置记忆） =================
-# 读取 config.ini 中的 keywords.items（用 | 分隔）；不存在则使用默认 KEYWORDS
+# 读取 config.ini 中的 keywords.items（用 | 分隔）
+# 注意：允许 items 为空（表示不过滤：显示全部短信）
 try:
-    items = config.get("keywords", "items", fallback="").strip()
-    if items:
-        loaded = [x.strip() for x in items.split("|") if x.strip()]
-        if loaded:
-            KEYWORDS = loaded
+    if config.has_section("keywords") and config.has_option("keywords", "items"):
+        raw = config.get("keywords", "items", fallback="")
+        KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+    # else: 没有该配置项时才保留代码里默认 KEYWORDS
 except Exception:
     pass
 
