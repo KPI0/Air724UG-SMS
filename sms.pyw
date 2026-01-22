@@ -33,9 +33,9 @@ CONFIG_FILE = "config.ini"
 KEYWORDS = ["【四川安播中心】"] # 短信关键词
 LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
-TTS_FILE = os.path.join(TTS_DIR, "sichuan_alert.wav")
+TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.1.8"  # 软件版本号
+APP_VERSION = "3.1.9"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -156,6 +156,7 @@ if not os.path.exists(CONFIG_FILE):
 
     config["ui"] = {
     "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
+    "voice_text": "注意！四川安播中心预警短信，请及时查看。",
     "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
     "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
     "log_retention_days": "30",   # 日志保留时间，单位：天
@@ -174,6 +175,16 @@ if not os.path.exists(CONFIG_FILE):
         config.write(f)
 
 config.read(CONFIG_FILE, encoding="utf-8")
+
+# ===== 语音播报内容（从配置读取）=====
+DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
+try:
+    VOICE_TEXT = config.get("ui", "voice_text", fallback=DEFAULT_VOICE_TEXT).strip()
+    if not VOICE_TEXT:
+        VOICE_TEXT = DEFAULT_VOICE_TEXT
+except Exception:
+    VOICE_TEXT = DEFAULT_VOICE_TEXT
+
 # ===== 自动日志清理（从配置读取）=====
 try:
     AUTO_LOG_CLEANUP = config.getboolean("ui", "auto_log_cleanup", fallback=True)
@@ -262,15 +273,16 @@ def log_early(msg: str, tag: str = "normal"):
         pass
 
 # ================= TTS语音播报 =================
-def generate_alert_voice():
-    if os.path.exists(TTS_FILE):
+def generate_alert_voice(force: bool = False):
+    """生成/更新语音播报 wav（VOICE_TEXT）"""
+    if (not force) and os.path.exists(TTS_FILE):
         return
 
     try:
         os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
         engine = pyttsx3.init()
         engine.setProperty("rate", 150)
-        engine.save_to_file("注意！四川安播中心预警短信，请及时查看。", TTS_FILE)
+        engine.save_to_file(VOICE_TEXT, TTS_FILE)
         engine.runAndWait()
     except Exception as e:
         log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
@@ -342,6 +354,66 @@ Shortcut.WindowStyle = 1
             "桌面快捷方式创建失败：\n" +
             (detail or "（cscript 未返回错误信息，但 .lnk 未生成）")
         )
+
+def save_voice_text_setting():
+    try:
+        if "ui" not in config:
+            config["ui"] = {}
+        config.set("ui", "voice_text", VOICE_TEXT)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+def open_voice_text_dialog():
+    win = tk.Toplevel(root)
+    win.title("语音播报自定义")
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    tk.Label(win, text="播报内容：").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
+
+    text = tk.Text(win, width=42, height=4, font=("微软雅黑", 10))
+    text.grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 10))
+    text.insert("1.0", VOICE_TEXT)
+
+    def do_preview():
+        # 预览用当前输入内容，不一定保存
+        tmp = text.get("1.0", "end").strip()
+        if not tmp:
+            messagebox.showerror("错误", "播报内容不能为空")
+            return
+        # 临时替换生成试听
+        global VOICE_TEXT
+        old = VOICE_TEXT
+        VOICE_TEXT = tmp
+        try:
+            generate_alert_voice(force=True)
+            play_alert()
+        finally:
+            VOICE_TEXT = old  # 不保存时恢复
+
+    def do_save():
+        tmp = text.get("1.0", "end").strip()
+        if not tmp:
+            messagebox.showerror("错误", "播报内容不能为空")
+            return
+
+        global VOICE_TEXT
+        VOICE_TEXT = tmp
+        save_voice_text_setting()
+        generate_alert_voice(force=True)
+        log("🔊 已更新语音播报内容")
+        win.destroy()
+
+    tk.Button(win, text="试听", width=10, command=do_preview).grid(row=2, column=0, padx=10, pady=(0, 10), sticky="w")
+    tk.Button(win, text="保存", width=10, command=do_save).grid(row=2, column=1, pady=(0, 10))
+    tk.Button(win, text="取消", width=10, command=win.destroy).grid(row=2, column=2, padx=10, pady=(0, 10), sticky="e")
+
+    win.update_idletasks()
+    center_window(win, root)
+    text.focus_set()
 
 # ================= 保存快捷方式名称 =================
 def save_desktop_shortcut_name(name: str):
@@ -472,7 +544,7 @@ try:
 except Exception as e:
     print("icon.ico 加载失败：", e)
 
-root.title("短信接收显示")
+root.title("短信监听系统")
 root.geometry("760x520")
 
 root.update_idletasks()
@@ -565,7 +637,7 @@ def create_tray():
         pystray.MenuItem("退出", lambda: cleanup_and_exit()),
     )
 
-    tray_icon = pystray.Icon("sms_tray", img, "短信接收系统", menu)
+    tray_icon = pystray.Icon("sms_tray", img, "短信监听系统", menu)
     tray_icon.run_detached()
 
 threading.Thread(target=create_tray, daemon=True).start()
@@ -595,10 +667,10 @@ def show_about():
     frame.pack(fill=tk.BOTH, expand=True)
 
     # 版本信息
-    tk.Label(frame, text="短信接收显示", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
+    tk.Label(frame, text="短信监听系统", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.1.8",
+        text="版本：v3.1.9",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -779,7 +851,7 @@ def cleanup_old_logs(days: int) -> int:
 def open_log_cleanup_dialog():
     """弹窗：设置保留天数并清理日志"""
     win = tk.Toplevel(root)
-    win.title("日志清理")
+    win.title("日志自动清理")
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -868,7 +940,7 @@ def open_update_proxy_dialog():
         }
 
     win = tk.Toplevel(root)
-    win.title("代理设置")
+    win.title("检查更新代理设置")
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -1865,6 +1937,11 @@ settings_menu.add_command(
 settings_menu.add_command(
     label="快捷方式",
     command=open_desktop_shortcut_dialog
+)
+
+settings_menu.add_command(
+    label="语音播报",
+    command=open_voice_text_dialog
 )
 
 menu_bar.add_cascade(label="设置", menu=settings_menu)
