@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.1.9"  # 软件版本号
+APP_VERSION = "3.2.0"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -133,10 +133,13 @@ def set_autostart(enable: bool):
     try:
         if enable:
             create_startup_shortcut()
-            log("🚀 开机自启：已打开")
+            msg = "🚀 开机自启：已打开"
         else:
             remove_startup_shortcut()
-            log("⛔ 开机自启：已关闭")
+            msg = "⛔ 开机自启：已关闭"
+
+        system_ui(msg, "normal")
+
     except Exception as e:
         messagebox.showerror("错误", f"设置开机自启失败：\n{e}")
 
@@ -156,10 +159,11 @@ if not os.path.exists(CONFIG_FILE):
 
     config["ui"] = {
     "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
-    "voice_text": "注意！四川安播中心预警短信，请及时查看。",
+    "voice_text": "注意！四川安播中心预警短信，请及时查看。",   # 默认语音播报内容
     "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
     "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
     "log_retention_days": "30",   # 日志保留时间，单位：天
+    "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
     }
 
     # 新增：关键词配置
@@ -264,6 +268,14 @@ def log_file_only(msg: str):
     except Exception:
         pass
 
+def ui_only(msg: str, tag="normal"):
+    """只显示到窗口，不写任何日志文件（不写 COM 日志）"""
+    try:
+        text_area.insert(tk.END, msg + "\n", tag)
+        text_area.see(tk.END)
+    except Exception:
+        pass
+
 def log_early(msg: str, tag: str = "normal"):
     """早期日志：先写文件，再缓存，等 text_area 创建后补到窗口"""
     log_file_only(msg)
@@ -271,6 +283,51 @@ def log_early(msg: str, tag: str = "normal"):
         PENDING_UI_LOGS.append((msg, tag))
     except Exception:
         pass
+
+def system_ui(message: str, tag="normal"):
+    """
+    - UI 未就绪/窗口已销毁：走 log_early（system + 缓存，等 UI 创建后补）
+    - UI 就绪：写 system，然后
+        - 主线程：直接 ui_only
+        - 非主线程：root.after 调回主线程 ui_only
+    """
+    # --- 1) 判断 root 是否可用 ---
+    root_ok = False
+    try:
+        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
+    except Exception:
+        root_ok = False
+
+    # --- 2) 判断 text_area 是否可用 ---
+    text_ok = False
+    try:
+        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
+    except Exception:
+        text_ok = False
+
+    # UI 不可用：直接走早期日志（system + 缓存）
+    if not (root_ok and text_ok):
+        log_early(message, tag)
+        return
+
+    # --- 3) UI 可用：写 system（只写一次） ---
+    log_file_only(message)
+
+    # --- 4) UI 更新：区分主线程/非主线程 ---
+    def _do_ui():
+        try:
+            ui_only(message, tag)
+        except Exception:
+            pass
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            _do_ui()
+        else:
+            root.after(0, _do_ui)
+    except Exception:
+        # after 不可用/竞态：退回 early（至少不丢消息，也不崩）
+        log_early(message, tag)
 
 # ================= TTS语音播报 =================
 def generate_alert_voice(force: bool = False):
@@ -404,7 +461,10 @@ def open_voice_text_dialog():
         VOICE_TEXT = tmp
         save_voice_text_setting()
         generate_alert_voice(force=True)
-        log("🔊 已更新语音播报内容")
+
+        msg = "🔊 已更新语音播报内容"
+        system_ui(msg, "normal")
+
         win.destroy()
 
     tk.Button(win, text="试听", width=10, command=do_preview).grid(row=2, column=0, padx=10, pady=(0, 10), sticky="w")
@@ -413,7 +473,10 @@ def open_voice_text_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
     text.focus_set()
+    win.bind("<Escape>", lambda _e: win.destroy())
 
 # ================= 保存快捷方式名称 =================
 def save_desktop_shortcut_name(name: str):
@@ -670,7 +733,7 @@ def show_about():
     tk.Label(frame, text="短信监听系统", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.1.9",
+        text="版本：v3.2.0",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -703,10 +766,12 @@ def show_about():
     )
 
     tk.Button(frame, text="确定", width=10, command=win.destroy).pack(pady=(12, 0))
-    win.bind("<Escape>", lambda _e: win.destroy())
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
+    win.bind("<Escape>", lambda _e: win.destroy())
 
 # ===== 用 grid 布局：内容区永远不会盖住状态栏 =====
 root.grid_rowconfigure(0, weight=1)   # 内容区可伸缩
@@ -907,11 +972,7 @@ def open_log_cleanup_dialog():
 
         # 记录到 system，并在窗口显示
         msg = f"✅ 已启用自动日志清理：保留 {LOG_RETENTION_DAYS} 天（每 {AUTO_CLEANUP_INTERVAL_HOURS} 小时执行一次）"
-        log_file_only(msg)
-        try:
-            log(msg)
-        except Exception:
-            pass
+        system_ui(msg, "normal")
 
         # 启动/重启自动定时器（以后每24小时自动清理）
         schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
@@ -927,6 +988,8 @@ def open_log_cleanup_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
     days_entry.focus_set()
     win.bind("<Return>", lambda _e: do_cleanup())
     win.bind("<Escape>", lambda _e: win.destroy())
@@ -1092,6 +1155,8 @@ def open_update_proxy_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
     api_entry.focus_set()
     win.bind("<Return>", lambda _e: save())
     win.bind("<Escape>", lambda _e: win.destroy())
@@ -1317,7 +1382,7 @@ def check_update_and_prompt():
 # ================= 每日清空 =================
 def clear_text_area_for_new_day():
     clear_window()
-    log("📅 新的一天，窗口已清空")
+    system_ui("📅 新的一天，窗口已清空")
     schedule_next_midnight_clear()
 
 def schedule_next_midnight_clear():
@@ -1466,7 +1531,7 @@ def read_serial():
 
             LOG_PREFIX = PORT.replace(":", "_")
 
-            log(f"🔌 串口已连接：{PORT} @ {BAUD}")
+            system_ui(f"🔌 串口已连接：{PORT} @ {BAUD}")
             if MODE == "Auto":
                 set_status(f"🟢 已连接 Modem：{PORT} @ {BAUD}", "green")
             else:
@@ -1517,7 +1582,7 @@ def read_serial():
 
         except Exception as e:
             LOG_PREFIX = "system"
-            log(f"⚠️ 串口异常：{e}")
+            system_ui(f"⚠️ 串口异常：{e}")
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
 
             try:
@@ -1577,7 +1642,7 @@ def open_serial_setting():
         except:
             pass
 
-        log(f"⚙️ 串口设置已更新：mode={MODE} port={PORT or '(Auto)'} baud={BAUD}")
+        system_ui(f"⚙️ 串口设置已更新：mode={MODE} port={PORT or '(Auto)'} baud={BAUD}")
         win.destroy()
 
     win = tk.Toplevel(root)
@@ -1607,9 +1672,10 @@ def open_serial_setting():
     baud_entry.grid(row=2, column=1, sticky="w", pady=(0, 6))
 
     btn_row = tk.Frame(frame)
-    btn_row.grid(row=3, column=0, columnspan=2, pady=(10, 0), sticky="w")
-    tk.Button(btn_row, text="刷新端口", width=10, command=refresh_ports).pack(side=tk.LEFT, padx=(0, 8))
-    tk.Button(btn_row, text="应用", width=10, command=apply).pack(side=tk.LEFT)
+    btn_row.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+    tk.Button(btn_row, text="刷新", width=10, command=refresh_ports).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_row, text="应用", width=10, command=apply).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_row,text="取消",width=10,command=win.destroy).pack(side=tk.LEFT, padx=8)
 
     tip_frame = tk.Frame(frame)
     tip_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
@@ -1640,10 +1706,16 @@ def open_serial_setting():
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
+    mode_box.focus_set()
+    win.bind("<Return>", lambda _e: apply())
+    win.bind("<Escape>", lambda _e: win.destroy())
+
 # ================= 弹窗：快捷方式设置窗口 =================
 def open_desktop_shortcut_dialog():
     default_name = config.get(
-        "ui", "desktop_shortcut_name", fallback="sms"
+        "ui", "desktop_shortcut_name", fallback="短信监听系统"
     )
 
     win = tk.Toplevel(root)
@@ -1671,6 +1743,8 @@ def open_desktop_shortcut_dialog():
         try:
             create_desktop_shortcut(name)
             save_desktop_shortcut_name(name)
+            msg = f"✅ 桌面快捷方式已创建/更新：{name}.lnk"
+            system_ui(msg, "normal")
             messagebox.showinfo("完成", "桌面快捷方式已创建")
         except Exception as e:
             messagebox.showerror("失败", str(e))
@@ -1681,6 +1755,9 @@ def open_desktop_shortcut_dialog():
             messagebox.showerror("错误", "名称不能为空")
             return
         save_desktop_shortcut_name(name)
+        # ✅ 窗口显示 + system 日志（不写 COM 日志）
+        msg = f"💾 已保存桌面快捷方式默认名称：{name}"
+        system_ui(msg, "normal")
         messagebox.showinfo("已保存", "名称已保存，下次可直接应用")
 
     btns = tk.Frame(frame)
@@ -1693,11 +1770,13 @@ def open_desktop_shortcut_dialog():
         side=tk.LEFT, padx=(0, 8)
     )
     tk.Button(btns, text="取消", width=10, command=win.destroy).pack(
-        side=tk.LEFT
+        side=tk.LEFT, padx=(0, 8)
     )
 
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
     entry.focus_set()
     win.bind("<Return>", lambda _e: apply_now())
     win.bind("<Escape>", lambda _e: win.destroy())
@@ -1748,6 +1827,7 @@ def open_keywords_setting():
         KEYWORDS.append(v)
         save_keywords_to_config()
         refresh_list(select_index=len(KEYWORDS) - 1)
+        system_ui(f"🧷 关键词增加：{v}")
 
     def del_kw():
         global KEYWORDS
@@ -1758,10 +1838,12 @@ def open_keywords_setting():
         idx = sel[0]
         if idx < 0 or idx >= len(KEYWORDS):
             return
+        old = KEYWORDS[idx]
         KEYWORDS.pop(idx)
         save_keywords_to_config()
         entry_var.set("")
         refresh_list(select_index=min(idx, len(KEYWORDS) - 1))
+        system_ui(f"🧷 关键词删除：{old}")
 
     def edit_kw():
         global KEYWORDS
@@ -1777,9 +1859,11 @@ def open_keywords_setting():
         if v in KEYWORDS and KEYWORDS[idx] != v:
             messagebox.showwarning("提示", "该关键词已存在")
             return
+        old = KEYWORDS[idx] 
         KEYWORDS[idx] = v
         save_keywords_to_config()
         refresh_list(select_index=idx)
+        system_ui(f"🧷 关键词修改：{old} -> {v}")
 
     win = tk.Toplevel(root)
     win.title("关键词设置")
@@ -1828,6 +1912,13 @@ def open_keywords_setting():
     refresh_list()
     win.update_idletasks()
     center_window(win, root)
+    win.lift()
+    win.focus_force()
+    entry.focus_set()
+    # ===== 快捷键 =====
+    win.bind("<Return>", lambda _e: edit_kw())
+    listbox.bind("<Delete>", lambda _e: del_kw())
+    win.bind("<Escape>", lambda _e: win.destroy())
 
 # ================= 语音播报开关（菜单按钮） =================
 def update_voice_menu_label():
@@ -1855,10 +1946,32 @@ def toggle_voice_broadcast():
     VOICE_ENABLED = not VOICE_ENABLED
     update_voice_menu_label()
     save_voice_setting()
-    if VOICE_ENABLED:
-        log("🔊 语音播报：已开启")
-    else:
-        log("🔇 语音播报：已关闭")
+    msg = "🔊 语音播报：已开启" if VOICE_ENABLED else "🔇 语音播报：已关闭"
+
+    system_ui(msg, "normal")
+
+def toggle_multi_instance():
+    global ALLOW_MULTI_INSTANCE
+    ALLOW_MULTI_INSTANCE = multi_instance_var.get()
+    try:
+        if not config.has_section("ui"):
+            config["ui"] = {}
+        config.set(
+            "ui",
+            "allow_multi_instance",
+            "1" if ALLOW_MULTI_INSTANCE else "0"
+        )
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+    msg = "🧩 程序多开：已开启" if ALLOW_MULTI_INSTANCE else "🔒 程序多开：已关闭"
+
+    system_ui(msg, "normal")
+
+def toggle_autostart():
+    set_autostart(autostart_var.get())
 
 # ================= 菜单（一级串口设置） =================
 menu_bar = tk.Menu(root)
@@ -1886,30 +1999,6 @@ settings_menu = tk.Menu(menu_bar, tearoff=0)
 autostart_var = tk.BooleanVar(value=is_autostart_enabled())
 
 multi_instance_var = tk.BooleanVar(value=ALLOW_MULTI_INSTANCE)
-
-def toggle_multi_instance():
-    global ALLOW_MULTI_INSTANCE
-    ALLOW_MULTI_INSTANCE = multi_instance_var.get()
-    try:
-        if not config.has_section("ui"):
-            config["ui"] = {}
-        config.set(
-            "ui",
-            "allow_multi_instance",
-            "1" if ALLOW_MULTI_INSTANCE else "0"
-        )
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
-    except Exception:
-        pass
-
-    if ALLOW_MULTI_INSTANCE:
-        log("🧩 程序多开：已开启")
-    else:
-        log("🔒 程序多开：已关闭")
-
-def toggle_autostart():
-    set_autostart(autostart_var.get())
 
 settings_menu.add_checkbutton(
     label="开机自启",
