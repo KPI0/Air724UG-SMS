@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.0"  # 软件版本号
+APP_VERSION = "3.2.1"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -329,6 +329,45 @@ def system_ui(message: str, tag="normal"):
         # after 不可用/竞态：退回 early（至少不丢消息，也不崩）
         log_early(message, tag)
 
+def port_ui(message: str, tag="normal"):
+    """
+    线程安全写“COM 分日志 + 窗口”
+    - UI 不可用：退回 log_early（至少写 system + 缓存，不丢）
+    - UI 可用：走 log()（写 sms_{LOG_PREFIX}_*.txt + UI）
+    """
+    # --- 1) 判断 root 是否可用 ---
+    root_ok = False
+    try:
+        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
+    except Exception:
+        root_ok = False
+
+    # --- 2) 判断 text_area 是否可用 ---
+    text_ok = False
+    try:
+        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
+    except Exception:
+        text_ok = False
+
+    if not (root_ok and text_ok):
+        log_early(message, tag)
+        return
+
+    def _do():
+        try:
+            log(message, tag=tag)   # 关键：走 log() -> get_log_file() -> sms_{LOG_PREFIX}_*.txt
+        except Exception:
+            # 极端情况：log 失败也别丢，至少写 system
+            log_file_only(message)
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            _do()
+        else:
+            root.after(0, _do)
+    except Exception:
+        log_early(message, tag)
+
 # ================= TTS语音播报 =================
 def generate_alert_voice(force: bool = False):
     """生成/更新语音播报 wav（VOICE_TEXT）"""
@@ -462,7 +501,7 @@ def open_voice_text_dialog():
         save_voice_text_setting()
         generate_alert_voice(force=True)
 
-        msg = "🔊 已更新语音播报内容"
+        msg = "🔊 已更新语音播报内容：" + tmp
         system_ui(msg, "normal")
 
         win.destroy()
@@ -666,6 +705,12 @@ def cleanup_and_exit():
     except Exception:
         pass
 
+    try:
+        if os.path.exists(PORT_FILE):
+            os.remove(PORT_FILE)
+    except Exception:
+        pass
+
 def on_close():
     """点右上角×：隐藏到托盘，不退出"""
     hide_window()
@@ -701,7 +746,7 @@ def create_tray():
     )
 
     tray_icon = pystray.Icon("sms_tray", img, "短信监听系统", menu)
-    tray_icon.run_detached()
+    tray_icon.run()
 
 threading.Thread(target=create_tray, daemon=True).start()
 
@@ -733,7 +778,7 @@ def show_about():
     tk.Label(frame, text="短信监听系统", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.2.0",
+        text="版本：v3.2.1",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -808,16 +853,55 @@ text_area.tag_config("normal", foreground="black", font=("微软雅黑", 10))
 text_area.tag_config("sms", foreground="red", font=("微软雅黑", 30))
 
 def log(msg, tag="normal"):
+    """线程安全：在子线程调用时自动切回主线程执行"""
+    def _do():
+        # 1) UI
+        try:
+            text_area.insert(tk.END, msg + "\n", tag)
+            text_area.see(tk.END)
+        except Exception:
+            pass
+
+        # 2) 文件（COM 分日志，走 get_log_file -> sms_{LOG_PREFIX}_*.txt）
+        try:
+            with open(get_log_file(), "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+        except Exception:
+            pass
+
+    # --- root / text_area 是否可用 ---
+    root_ok = False
     try:
-        text_area.insert(tk.END, msg + "\n", tag)
-        text_area.see(tk.END)
+        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
     except Exception:
-        pass
+        root_ok = False
+
+    text_ok = False
     try:
-        with open(get_log_file(), "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
     except Exception:
-        pass
+        text_ok = False
+
+    # UI 不可用：至少别丢（写 system + 缓存）
+    if not (root_ok and text_ok):
+        try:
+            log_early(msg, tag)
+        except Exception:
+            pass
+        return
+
+    # --- 主线程直接做；子线程丢回主线程 ---
+    try:
+        if threading.current_thread() is threading.main_thread():
+            _do()
+        else:
+            root.after(0, _do)
+    except Exception:
+        # after 不可用/竞态兜底
+        try:
+            log_early(msg, tag)
+        except Exception:
+            pass
 
 # ================= 声音 =================
 def play_alert():
@@ -1174,15 +1258,11 @@ def _auto_log_cleanup_tick():
     try:
         n = cleanup_old_logs(days)
         msg = f"🧹 自动日志清理：已删除 {n} 个旧日志文件（保留 {days} 天）"
-        # 写 system（固定总日志）
-        log_file_only(msg)
-        # # 可选：也显示到窗口（不想刷屏就注释掉）
-        # try:
-        #     log(msg)
-        # except Exception:
-        #     pass
+        # 显示到窗口 + 写入 system 日志
+        system_ui(msg, "normal")
+
     except Exception as e:
-        log_file_only(f"⚠️ 自动日志清理失败：{e}")
+        system_ui(f"⚠️ 自动日志清理失败：{e}")
 
     # 下一次
     AUTO_CLEANUP_AFTER_ID = root.after(AUTO_CLEANUP_INTERVAL_HOURS * 3600 * 1000, _auto_log_cleanup_tick)
@@ -1491,18 +1571,18 @@ def read_serial():
                 first = True
                 for ln in pending_display_lines:
                     if first:
-                        log(ln, tag="normal")
+                        port_ui(ln, "normal")   
                         first = False
                     else:
-                        log(ln, tag="sms")
+                        port_ui(ln, "sms")      
             else:
-                log("📩 收到短信：", tag="normal")
-                log(full_msg, tag="sms")
+                port_ui("📩 收到短信：", "normal")  
+                port_ui(full_msg, "sms")          
 
-            play_alert()
-            show_sms_popup(full_msg)
+            play_alert()               
+            show_sms_popup(full_msg)   
         else:
-            log("🚫 短信未命中关键词，已忽略", tag="normal")
+            system_ui("🚫 短信未命中关键词，已忽略", "normal")  
 
         pending_parts = []
         pending_display_lines = []
@@ -1743,7 +1823,7 @@ def open_desktop_shortcut_dialog():
         try:
             create_desktop_shortcut(name)
             save_desktop_shortcut_name(name)
-            msg = f"✅ 桌面快捷方式已创建/更新：{name}.lnk"
+            msg = f"✅ 桌面快捷方式已创建：{name}.lnk"
             system_ui(msg, "normal")
             messagebox.showinfo("完成", "桌面快捷方式已创建")
         except Exception as e:
@@ -1756,7 +1836,7 @@ def open_desktop_shortcut_dialog():
             return
         save_desktop_shortcut_name(name)
         # ✅ 窗口显示 + system 日志（不写 COM 日志）
-        msg = f"💾 已保存桌面快捷方式默认名称：{name}"
+        msg = f"💾 已保存桌面快捷方式：{name}"
         system_ui(msg, "normal")
         messagebox.showinfo("已保存", "名称已保存，下次可直接应用")
 
