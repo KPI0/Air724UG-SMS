@@ -29,13 +29,12 @@ from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 # ================= 配置 =================
-CONFIG_FILE = "config.ini"
-KEYWORDS = ["【四川安播中心】"] # 短信关键词
+CONFIG_FILE = "config.ini"  # 软件配置文件
 LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.1"  # 软件版本号
+APP_VERSION = "3.2.2"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -164,11 +163,9 @@ if not os.path.exists(CONFIG_FILE):
     "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
     "log_retention_days": "30",   # 日志保留时间，单位：天
     "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
+    "keywords": "【四川安播中心】",  # 默认关键词
     }
 
-    # 新增：关键词配置
-    config["keywords"] = {"items": "|".join(KEYWORDS)}
-    
     # 新增：更新代理配置
     config["update"] = {
         "api_proxy_base": "https://github-api.daybyday.top/",
@@ -230,13 +227,12 @@ except Exception:
     VOICE_ENABLED = True
 
 # ================= 关键词（配置记忆） =================
-# 读取 config.ini 中的 keywords.items（用 | 分隔）
+# 读取 config.ini 中的 ui.keywords（用 | 分隔）
 # 注意：允许 items 为空（表示不过滤：显示全部短信）
+KEYWORDS = []
 try:
-    if config.has_section("keywords") and config.has_option("keywords", "items"):
-        raw = config.get("keywords", "items", fallback="")
-        KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
-    # else: 没有该配置项时才保留代码里默认 KEYWORDS
+    raw = config.get("ui", "keywords", fallback="").strip()
+    KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
 except Exception:
     pass
 
@@ -463,6 +459,7 @@ def save_voice_text_setting():
 
 def open_voice_text_dialog():
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("语音播报自定义")
     win.resizable(False, False)
     win.transient(root)
@@ -512,6 +509,7 @@ def open_voice_text_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     text.focus_set()
@@ -623,6 +621,21 @@ def _start_single_instance_server(port: int, show_callback):
 
     threading.Thread(target=_server, daemon=True).start()
 
+def center_on_screen(win, w=None, h=None):
+    """将窗口居中到屏幕（主窗口建议传入 w/h，避免 withdraw 状态取到 minsize）。"""
+    win.update_idletasks()
+
+    # withdraw 状态下 winfo_width/height 可能等于 minsize；优先用传入值，其次用 reqwidth/reqheight
+    if w is None or h is None:
+        w = win.winfo_reqwidth()
+        h = win.winfo_reqheight()
+
+    sw = win.winfo_screenwidth()
+    sh = win.winfo_screenheight()
+    x = (sw - w) // 2
+    y = (sh - h) // 2
+    win.geometry(f"{w}x{h}+{x}+{y}")
+    
 # 如果检测到已有实例：通知它显示窗口，然后直接退出当前进程（避免多开）
 if not ALLOW_MULTI_INSTANCE:
     if _try_notify_existing_instance():
@@ -651,6 +664,7 @@ root.geometry("760x520")
 
 root.update_idletasks()
 if not START_MINIMIZED:
+    center_on_screen(root, 760, 520)
     root.deiconify()
 else:
     # 自启：保持隐藏，托盘可“显示”
@@ -766,6 +780,7 @@ def center_window(win, parent):
 def show_about():
     """在主窗口正中显示“关于”弹窗（模态）。"""
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("关于")
     win.resizable(False, False)
     win.transient(root)
@@ -778,7 +793,7 @@ def show_about():
     tk.Label(frame, text="短信监听系统", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
     tk.Label(
         frame,
-        text="版本：v3.2.1",
+        text=f"版本：v{APP_VERSION}",
         justify="left",
         font=("微软雅黑", 10),
     ).pack(anchor="w")
@@ -814,6 +829,7 @@ def show_about():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     win.bind("<Escape>", lambda _e: win.destroy())
@@ -1000,6 +1016,7 @@ def cleanup_old_logs(days: int) -> int:
 def open_log_cleanup_dialog():
     """弹窗：设置保留天数并清理日志"""
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("日志自动清理")
     win.resizable(False, False)
     win.transient(root)
@@ -1072,6 +1089,7 @@ def open_log_cleanup_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     days_entry.focus_set()
@@ -1087,6 +1105,7 @@ def open_update_proxy_dialog():
         }
 
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("检查更新代理设置")
     win.resizable(False, False)
     win.transient(root)
@@ -1239,6 +1258,7 @@ def open_update_proxy_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     api_entry.focus_set()
@@ -1726,6 +1746,7 @@ def open_serial_setting():
         win.destroy()
 
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("串口设置")
     win.geometry("340x240")
     win.resizable(False, False)
@@ -1786,6 +1807,7 @@ def open_serial_setting():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     mode_box.focus_set()
@@ -1799,6 +1821,7 @@ def open_desktop_shortcut_dialog():
     )
 
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("创建桌面快捷方式")
     win.resizable(False, False)
     win.transient(root)
@@ -1855,6 +1878,7 @@ def open_desktop_shortcut_dialog():
 
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     entry.focus_set()
@@ -1874,9 +1898,9 @@ def open_keywords_setting():
 
     def save_keywords_to_config():
         try:
-            if not config.has_section("keywords"):
-                config["keywords"] = {}
-            config.set("keywords", "items", "|".join(KEYWORDS))
+            if not config.has_section("ui"):
+                config["ui"] = {}
+            config.set("ui", "keywords", "|".join(KEYWORDS))
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 config.write(f)
         except Exception:
@@ -1946,6 +1970,7 @@ def open_keywords_setting():
         system_ui(f"🧷 关键词修改：{old} -> {v}")
 
     win = tk.Toplevel(root)
+    win.withdraw()
     win.title("关键词设置")
     win.geometry("420x290")
     win.resizable(False, False)
@@ -1992,6 +2017,7 @@ def open_keywords_setting():
     refresh_list()
     win.update_idletasks()
     center_window(win, root)
+    win.deiconify()
     win.lift()
     win.focus_force()
     entry.focus_set()
