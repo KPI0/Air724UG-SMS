@@ -25,7 +25,7 @@ from serial.tools import list_ports
 
 # ---- tkinter ----
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, colorchooser
 from tkinter.scrolledtext import ScrolledText
 
 # ================= 配置 =================
@@ -34,7 +34,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.2"  # 软件版本号
+APP_VERSION = "3.2.3"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -164,6 +164,9 @@ if not os.path.exists(CONFIG_FILE):
     "log_retention_days": "30",   # 日志保留时间，单位：天
     "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
     "keywords": "【四川安播中心】",  # 默认关键词
+    "sms_font_size": "30",        # 默认字体大小
+    "sms_font_color": "red",      # 默认字体颜色
+
     }
 
     # 新增：更新代理配置
@@ -210,6 +213,17 @@ MODE = config.get("serial", "mode", fallback="Auto").strip().lower()
 if MODE not in ("auto", "manual"):
     MODE = "auto"
 MODE = "Auto" if MODE == "auto" else "Manual"
+
+# ===== 短信字体（从配置读取）=====
+try:
+    SMS_FONT_SIZE = config.getint("ui", "sms_font_size", fallback=30)
+except Exception:
+    SMS_FONT_SIZE = 30
+
+try:
+    SMS_FONT_COLOR = config.get("ui", "sms_font_color", fallback="red").strip() or "red"
+except Exception:
+    SMS_FONT_COLOR = "red"
 
 # ================= 语音播报开关（配置记忆） =================
 # 默认开启；若 config.ini 存在上次状态，则以配置为准
@@ -456,6 +470,158 @@ def save_voice_text_setting():
             config.write(f)
     except Exception:
         pass
+
+def save_sms_font_setting():
+    try:
+        if not config.has_section("ui"):
+            config["ui"] = {}
+        config.set("ui", "sms_font_size", str(SMS_FONT_SIZE))
+        config.set("ui", "sms_font_color", SMS_FONT_COLOR)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+# ================= 短信字体设置 =================  
+def open_sms_font_dialog():
+    win = tk.Toplevel(root)
+    win.withdraw()
+    win.title("短信字体设置")
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    frame = tk.Frame(win, padx=14, pady=12)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(frame, text="字号：", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
+
+    size_var = tk.StringVar(value=str(SMS_FONT_SIZE))
+    size_spin = tk.Spinbox(frame, from_=8, to=72, width=8, textvariable=size_var)
+    size_spin.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+    tk.Label(frame, text="颜色：", font=("微软雅黑", 10)).grid(row=1, column=0, sticky="w", pady=(10, 0))
+
+    color_var = tk.StringVar(value=SMS_FONT_COLOR)
+    color_entry = tk.Entry(frame, textvariable=color_var, width=14)
+    color_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+
+    # ===== 预览区：固定尺寸，不随字体撑大窗口 =====
+    preview_box = tk.LabelFrame(frame, text="预览", padx=8, pady=8)
+    preview_box.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+    preview_box.grid_columnconfigure(0, weight=1)
+
+    preview_canvas = tk.Canvas(preview_box, width=560, height=110, highlightthickness=1)
+    preview_canvas.grid(row=0, column=0, sticky="ew")
+
+    PREVIEW_TEXT = "短信内容"
+
+    def refresh_preview():
+        preview_canvas.update_idletasks()
+
+        try:
+            s = int(size_var.get().strip())
+        except Exception:
+            s = SMS_FONT_SIZE
+
+        c = (color_var.get().strip() or SMS_FONT_COLOR)
+
+        # 预览用字号：避免裁剪（高度的 70% 比较合适）
+        max_size = max(8, int(preview_canvas.winfo_height() * 0.7))
+        s_preview = min(s, max_size)
+
+        preview_canvas.delete("all")
+        try:
+            preview_canvas.create_text(
+                preview_canvas.winfo_width() // 2,
+                preview_canvas.winfo_height() // 2,
+                text=PREVIEW_TEXT,
+                anchor="c",
+                font=("微软雅黑", s_preview),
+                fill=c
+            )
+        except Exception:
+            preview_canvas.create_text(
+                preview_canvas.winfo_width() // 2,
+                preview_canvas.winfo_height() // 2,
+                text=PREVIEW_TEXT,
+                anchor="c",
+                font=("微软雅黑", 30),
+                fill="red"
+            )
+
+    def pick_color():
+        c = color_var.get().strip() or SMS_FONT_COLOR
+        
+        win.lift()
+        win.after(0, lambda: win.lift())
+
+        # 关键：临时释放 grab，避免系统颜色对话框闪烁/抢焦点异常
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+
+        # 关键：指定 parent，避免额外的“左上角小框/幽灵窗口”
+        chosen = colorchooser.askcolor(parent=win, initialcolor=c, title="选择短信颜色")
+
+        # 选完后把模态抓取恢复
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        win.lift()
+        win.after(0, lambda: win.lift())
+
+        if chosen and chosen[1]:
+            color_var.set(chosen[1])  # #RRGGBB
+            refresh_preview()
+
+    tk.Button(frame, text="选颜色", width=10, command=pick_color).grid(row=1, column=2, padx=(8, 0), pady=(10, 0))
+
+    def do_save():
+        global SMS_FONT_SIZE, SMS_FONT_COLOR
+
+        try:
+            s = int(size_var.get().strip())
+            if s < 8 or s > 72:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("错误", "字号必须是 8~72 的整数")
+            return
+
+        c = color_var.get().strip() or "red"
+
+        SMS_FONT_SIZE = s
+        SMS_FONT_COLOR = c
+
+        save_sms_font_setting()
+        apply_sms_font_style()
+
+        system_ui(f"🎨 已更新短信字体：字号 {SMS_FONT_SIZE}，颜色 {SMS_FONT_COLOR}", "normal")
+        win.destroy()
+
+    btns = tk.Frame(frame)
+    btns.grid(row=3, column=0, columnspan=3, sticky="e", pady=(14, 0))
+    frame.grid_columnconfigure(1, weight=1)
+    
+    tk.Button(btns, text="保存", width=10, command=do_save).pack(side=tk.LEFT, padx=(0, 8))
+    tk.Button(btns, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT)
+
+    # 交互：改值即更新预览
+    size_var.trace_add("write", lambda *_: refresh_preview())
+    color_var.trace_add("write", lambda *_: refresh_preview())
+    
+    win.update_idletasks()
+    center_window(win, root)
+    win.deiconify()
+    win.lift()
+    win.focus_force()
+    win.after(0, refresh_preview)
+    size_spin.focus_set()
+    win.bind("<Return>", lambda _e: do_save())
+    win.bind("<Escape>", lambda _e: win.destroy())
 
 def open_voice_text_dialog():
     win = tk.Toplevel(root)
@@ -866,7 +1032,14 @@ def set_status(text, color="black"):
     root.after(0, lambda: (status_var.set(text), status_label.config(fg=color)))
 
 text_area.tag_config("normal", foreground="black", font=("微软雅黑", 10))
-text_area.tag_config("sms", foreground="red", font=("微软雅黑", 30))
+
+def apply_sms_font_style():
+    try:
+        text_area.tag_config("sms", foreground=SMS_FONT_COLOR, font=("微软雅黑", SMS_FONT_SIZE))
+    except Exception:
+        pass
+
+apply_sms_font_style()
 
 def log(msg, tag="normal"):
     """线程安全：在子线程调用时自动切回主线程执行"""
@@ -2139,6 +2312,11 @@ settings_menu.add_command(
     command=open_voice_text_dialog
 )
 
+settings_menu.add_command(
+    label="短信字体",
+    command=open_sms_font_dialog
+)
+
 menu_bar.add_cascade(label="设置", menu=settings_menu)
 
 # 帮助
@@ -2163,4 +2341,3 @@ threading.Thread(target=read_serial, daemon=True).start()
 schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
 
 root.mainloop()
-
