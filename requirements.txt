@@ -2,3 +2,5 @@ pyttsx3
 pyserial
 pystray 
 pillow
+pywin32
+setuptools
