@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+import queue
 from datetime import datetime, timedelta
 
 # ---- 第三方库 ----
@@ -34,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.3"  # 软件版本号
+APP_VERSION = "3.2.4"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -259,6 +260,11 @@ PENDING_UI_LOGS = []  # 用于 text_area 未创建前缓存要显示到窗口的
 LOG_PREFIX = "system"
 AUTO_CLEANUP_INTERVAL_HOURS = 24 # 自动清理频率：24小时一次
 AUTO_CLEANUP_AFTER_ID = None     # 记录 after() 的任务ID，用于避免重复定时器
+SERIAL_DEBUG_ENABLED = False
+serial_debug_queue = queue.Queue(maxsize=5000)  # 防止无限涨
+serial_debug_win = None
+serial_debug_text = None
+serial_debug_drop_count = 0
 
 # ================= 日志 =================
 def get_log_file():
@@ -622,6 +628,202 @@ def open_sms_font_dialog():
     size_spin.focus_set()
     win.bind("<Return>", lambda _e: do_save())
     win.bind("<Escape>", lambda _e: win.destroy())
+
+# ================= 串口调试 =================
+def open_serial_debug_window(root):
+    global serial_debug_win, serial_debug_text
+
+    if serial_debug_win is not None and serial_debug_win.winfo_exists():
+        serial_debug_win.deiconify()
+        serial_debug_win.lift()
+        serial_debug_win.focus_force()
+        return
+
+    serial_debug_win = tk.Toplevel(root)
+    serial_debug_win.title("串口调试")
+    serial_debug_win.geometry("900x520")
+    serial_debug_win.transient(root)
+    top = ttk.Frame(serial_debug_win)
+    top.pack(fill="x", padx=8, pady=6)
+
+    enabled_var = tk.BooleanVar(value=SERIAL_DEBUG_ENABLED)
+
+    def _toggle():
+        global SERIAL_DEBUG_ENABLED
+        SERIAL_DEBUG_ENABLED = bool(enabled_var.get())
+
+    chk = ttk.Checkbutton(
+        top,
+        text="启用原始输出旁路（不做任何过滤）",
+        variable=enabled_var,
+        command=_toggle
+    )
+    chk.pack(side="left")
+
+    def _clear():
+        serial_debug_text.config(state="normal")
+        serial_debug_text.delete("1.0", "end")
+        serial_debug_text.config(state="disabled")
+
+    ttk.Button(top, text="清空", width=8, command=_clear).pack(side="left", padx=8)
+
+    # ✅ 状态 + 暂停/继续（更直观：像播放器）
+    paused_var = tk.BooleanVar(value=False)
+    pause_banner_shown = False  # ✅ 防止重复插入“已暂停显示”提示
+
+    state_label = ttk.Label(top, text="● 运行中")
+    state_label.pack(side="left", padx=(0, 8))
+
+    btn_pause = ttk.Button(top, text="⏸ 暂停", width=8)
+    btn_pause.pack(side="left")
+
+    def _set_pause_state(is_paused: bool):
+        nonlocal pause_banner_shown
+        is_paused = bool(is_paused)
+
+        # 状态没变，什么都不做（防止刷屏）
+        if paused_var.get() == is_paused:
+            return
+
+        paused_var.set(is_paused)
+
+        if is_paused:
+            btn_pause.config(text="▶ 继续")
+            state_label.config(text="⏸ 已暂停")
+
+            # 暂停时锁定旁路开关
+            try:
+                chk.state(["disabled"])
+            except Exception:
+                pass
+
+            # 只插入一次“已暂停显示”
+            if not pause_banner_shown:
+                pause_banner_shown = True
+                try:
+                    serial_debug_text.config(state="normal")
+                    serial_debug_text.insert(
+                        "end",
+                        "\n—— 已暂停显示（串口仍在采集，旁路开关已锁定）——\n"
+                    )
+                    serial_debug_text.see("end")
+                    serial_debug_text.config(state="disabled")
+                except Exception:
+                    pass
+
+        else:
+            btn_pause.config(text="⏸ 暂停")
+            state_label.config(text="● 运行中")
+
+            # 继续时仍然保持旁路开关锁定（符合你的描述）
+            try:
+                chk.state(["disabled"])
+            except Exception:
+                pass
+
+            # ✅ 插入“已继续显示”
+            try:
+                serial_debug_text.config(state="normal")
+                serial_debug_text.insert(
+                    "end",
+                    "\n—— 已继续显示（串口仍在采集，旁路开关已锁定）——\n"
+                )
+                serial_debug_text.see("end")
+                serial_debug_text.config(state="disabled")
+            except Exception:
+                pass
+
+            # 允许下次再次暂停时重新插“已暂停显示”
+            pause_banner_shown = False
+
+    def _toggle_pause():
+        _set_pause_state(not paused_var.get())
+
+    btn_pause.config(command=_toggle_pause)
+
+    drop_label = ttk.Label(top, text="")
+    drop_label.pack(side="right")
+
+    body = ttk.Frame(serial_debug_win)
+    body.pack(fill="both", expand=True, padx=8, pady=6)
+
+    yscroll = ttk.Scrollbar(body, orient="vertical")
+    yscroll.pack(side="right", fill="y")
+
+    serial_debug_text = tk.Text(body, wrap="none", yscrollcommand=yscroll.set)
+    serial_debug_text.pack(side="left", fill="both", expand=True)
+    yscroll.config(command=serial_debug_text.yview)
+
+    serial_debug_text.config(state="disabled")
+
+    # 控制最大行数，避免跑久了内存爆
+    MAX_LINES = 5000
+
+    def _append_lines():
+        global serial_debug_drop_count
+
+        if serial_debug_text is None or not serial_debug_text.winfo_exists():
+            return
+
+        # ✅ 暂停时：不取队列、不插入、不滚动；但仍刷新丢弃计数
+        if paused_var.get():
+            if serial_debug_drop_count > 0:
+                drop_label.config(text=f"队列满丢弃：{serial_debug_drop_count} 行")
+            else:
+                drop_label.config(text="")
+            serial_debug_win.after(100, _append_lines)
+            return
+
+        lines = []
+        # 一次最多拿 200 行，避免 UI 卡顿
+        for _ in range(200):
+            try:
+                lines.append(serial_debug_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if lines:
+            serial_debug_text.config(state="normal")
+            for ln in lines:
+                # 确保有换行
+                if not ln.endswith("\n"):
+                    ln += "\n"
+                serial_debug_text.insert("end", ln)
+            # 行数裁剪
+            try:
+                cur_lines = int(serial_debug_text.index("end-1c").split(".")[0])
+                if cur_lines > MAX_LINES:
+                    # 删除前面多余的行
+                    del_lines = cur_lines - MAX_LINES
+                    serial_debug_text.delete("1.0", f"{del_lines + 1}.0")
+            except Exception:
+                pass
+
+            serial_debug_text.see("end")
+            serial_debug_text.config(state="disabled")
+
+        if serial_debug_drop_count > 0:
+            drop_label.config(text=f"队列满丢弃：{serial_debug_drop_count} 行")
+        else:
+            drop_label.config(text="")
+
+        # 100ms 刷新一次
+        serial_debug_win.after(100, _append_lines)
+
+    def _on_close():
+        # 关闭窗口不一定要停旁路；看你喜好，这里默认保留旁路状态
+        serial_debug_win.destroy()
+
+    serial_debug_win.protocol("WM_DELETE_WINDOW", _on_close)
+    
+    # ✅ 像短信字体弹窗一样：相对主窗口居中
+    serial_debug_win.update_idletasks()
+    try:
+        center_window(serial_debug_win, root)
+    except Exception:
+        pass
+
+    _append_lines()
 
 def open_voice_text_dialog():
     win = tk.Toplevel(root)
@@ -1719,6 +1921,22 @@ def find_luat_best_port():
     _, dev, desc = candidates[0]
     return dev, desc
 
+def _push_serial_debug(raw_line: str):
+    global serial_debug_drop_count
+    if not SERIAL_DEBUG_ENABLED:
+        return
+
+    # ✅ 关键：空行/纯空白直接忽略，避免调试窗口大量空白行
+    if raw_line is None:
+        return
+    if not str(raw_line).strip():
+        return
+
+    try:
+        serial_debug_queue.put_nowait(raw_line)
+    except queue.Full:
+        serial_debug_drop_count += 1
+
 # ================= 串口线程（自动识别 + 自动重连） =================
 def read_serial():
     """
@@ -1817,11 +2035,12 @@ def read_serial():
                     raise e
 
                 line = raw.decode("utf-8", "ignore").strip()
+                
                 if not line:
                     if pending_active and time.monotonic() > pending_deadline:
                         flush_pending()
                     continue
-
+                _push_serial_debug(line)
                 if callback_prefix in line:
                     msg = line.split(callback_prefix, 1)[1].strip()
                     if msg:
@@ -2315,6 +2534,11 @@ settings_menu.add_command(
 settings_menu.add_command(
     label="短信字体",
     command=open_sms_font_dialog
+)
+
+settings_menu.add_command(
+    label="串口调试", 
+    command=lambda: open_serial_debug_window(root)
 )
 
 menu_bar.add_cascade(label="设置", menu=settings_menu)
