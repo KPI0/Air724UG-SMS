@@ -1,5 +1,5 @@
 # Air724UG-SMS
-# 📩 短信接收系统（LUAT Modem 自动识别版）
+# 📩 短信监听系统（LUAT Modem 自动识别版）
 
 一款基于 **Python + Tkinter** 的 **4G / LTE 模组短信接收与预警显示程序**，  
 专为 **LUAT（合宙）系列 Modem** 多串口环境设计，支持 **自动识别 Modem 串口、自动重连、无人值守运行**。
