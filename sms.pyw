@@ -12,13 +12,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import winsound
 import webbrowser
 import queue
 from datetime import datetime, timedelta
 
 # ---- 第三方库 ----
 import serial
-import winsound
 import pystray
 import pyttsx3
 from PIL import Image
@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.4"  # 软件版本号
+APP_VERSION = "3.2.5"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -170,7 +170,7 @@ if not os.path.exists(CONFIG_FILE):
 
     }
 
-    # 新增：更新代理配置
+    # 更新代理配置
     config["update"] = {
         "api_proxy_base": "https://github-api.daybyday.top/",
         "proxy_base": "https://gh-proxy.com/",
@@ -451,7 +451,7 @@ Shortcut.WindowStyle = 1
     with open(vbs_path, "w", encoding="mbcs") as f:
         f.write(vbs)
 
-    # ✅ 只执行一次
+    # 只执行一次
     r = subprocess.run(
         ["cscript.exe", "//Nologo", vbs_path],
         capture_output=True,
@@ -459,7 +459,7 @@ Shortcut.WindowStyle = 1
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
     )
 
-    # ✅ 校验必须在函数内部
+    # 校验必须在函数内部
     if not os.path.exists(lnk_path):
         detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
         raise RuntimeError(
@@ -642,7 +642,8 @@ def open_serial_debug_window(root):
     serial_debug_win = tk.Toplevel(root)
     serial_debug_win.title("串口调试")
     serial_debug_win.geometry("900x520")
-    serial_debug_win.transient(root)
+    serial_debug_win.lift()
+    serial_debug_win.focus_force()
     top = ttk.Frame(serial_debug_win)
     top.pack(fill="x", padx=8, pady=6)
 
@@ -651,6 +652,7 @@ def open_serial_debug_window(root):
     def _toggle():
         global SERIAL_DEBUG_ENABLED
         SERIAL_DEBUG_ENABLED = bool(enabled_var.get())
+        _update_state_label()
 
     chk = ttk.Checkbutton(
         top,
@@ -659,29 +661,73 @@ def open_serial_debug_window(root):
         command=_toggle
     )
     chk.pack(side="left")
+    all_debug_lines = []   # list[str]
+    MAX_STORE_LINES = 20000  # 防止内存无限增长
 
     def _clear():
+        all_debug_lines.clear()  # 清缓存
         serial_debug_text.config(state="normal")
         serial_debug_text.delete("1.0", "end")
         serial_debug_text.config(state="disabled")
 
     ttk.Button(top, text="清空", width=8, command=_clear).pack(side="left", padx=8)
 
-    # ✅ 状态 + 暂停/继续（更直观：像播放器）
+    # 状态 + 暂停/继续（更直观：像播放器）
     paused_var = tk.BooleanVar(value=False)
-    pause_banner_shown = False  # ✅ 防止重复插入“已暂停显示”提示
+    pause_banner_shown = False  # 防止重复插入“已暂停显示”提示
 
-    state_label = ttk.Label(top, text="● 运行中")
+    state_label = ttk.Label(top, text="")
     state_label.pack(side="left", padx=(0, 8))
 
     btn_pause = ttk.Button(top, text="⏸ 暂停", width=8)
     btn_pause.pack(side="left")
 
+    filter_var = tk.StringVar(value="")
+    ttk.Label(top, text="筛选：").pack(side="left", padx=(10, 0))
+    filter_entry = ttk.Entry(top, textvariable=filter_var, width=16)
+    filter_entry.pack(side="left", padx=(4, 6))
+    
+    def _clear_filter():
+        filter_var.set("")
+        _redraw_by_filter()
+
+    def _redraw_by_filter():
+        kw = filter_var.get().strip()
+        serial_debug_text.config(state="normal")
+        serial_debug_text.delete("1.0", "end")
+
+        for ln in all_debug_lines:
+            if kw and (kw not in ln):
+                continue
+            if not ln.endswith("\n"):
+                ln += "\n"
+            serial_debug_text.insert("end", ln)
+
+        serial_debug_text.see("end")
+        serial_debug_text.config(state="disabled")
+    filter_var.trace_add("write", lambda *_: _redraw_by_filter())
+
+    ttk.Button(top, text="清除筛选", width=8, command=_clear_filter).pack(side="left", padx=(0, 8))
+
+    # 根据旁路/暂停状态刷新状态标签
+    def _update_state_label():
+        running = bool(enabled_var.get())
+
+        if not running:
+            state_label.config(text="○ 未运行")
+        else:
+            state_label.config(text="⏸ 已暂停显示" if paused_var.get() else "● 运行中")
+
+        try:
+            btn_pause.state(["!disabled"] if running else ["disabled"])
+        except Exception:
+            pass
+
     def _set_pause_state(is_paused: bool):
         nonlocal pause_banner_shown
         is_paused = bool(is_paused)
 
-        # 状态没变，什么都不做（防止刷屏）
+        # 状态没变化，直接返回（防刷）
         if paused_var.get() == is_paused:
             return
 
@@ -689,11 +735,10 @@ def open_serial_debug_window(root):
 
         if is_paused:
             btn_pause.config(text="▶ 继续")
-            state_label.config(text="⏸ 已暂停")
 
             # 暂停时锁定旁路开关
             try:
-                chk.state(["disabled"])
+                chk.state(["!disabled"])
             except Exception:
                 pass
 
@@ -713,15 +758,14 @@ def open_serial_debug_window(root):
 
         else:
             btn_pause.config(text="⏸ 暂停")
-            state_label.config(text="● 运行中")
 
-            # 继续时仍然保持旁路开关锁定（符合你的描述）
+            # 继续时仍保持旁路开关锁定
             try:
                 chk.state(["disabled"])
             except Exception:
                 pass
 
-            # ✅ 插入“已继续显示”
+            # 插入“已继续显示”
             try:
                 serial_debug_text.config(state="normal")
                 serial_debug_text.insert(
@@ -733,8 +777,10 @@ def open_serial_debug_window(root):
             except Exception:
                 pass
 
-            # 允许下次再次暂停时重新插“已暂停显示”
             pause_banner_shown = False
+
+        # 统一在这里刷新状态标签
+        _update_state_label()
 
     def _toggle_pause():
         _set_pause_state(not paused_var.get())
@@ -755,7 +801,123 @@ def open_serial_debug_window(root):
     yscroll.config(command=serial_debug_text.yview)
 
     serial_debug_text.config(state="disabled")
+    _update_state_label()
+    serial_debug_text.tag_config("find_hit", background="yellow")
 
+    find_win = None
+    find_var = tk.StringVar(value="")
+    last_find_index = "1.0"
+
+    def _clear_find_highlight():
+        try:
+            serial_debug_text.tag_remove("find_hit", "1.0", "end")
+        except Exception:
+            pass
+
+    def _find_all(term: str):
+        _clear_find_highlight()
+        if not term:
+            return
+        start = "1.0"
+        while True:
+            pos = serial_debug_text.search(term, start, stopindex="end", nocase=True)
+            if not pos:
+                break
+            endpos = f"{pos}+{len(term)}c"
+            serial_debug_text.tag_add("find_hit", pos, endpos)
+            start = endpos
+
+    def _find_next(_event=None):
+        nonlocal last_find_index
+        term = find_var.get().strip()
+        if not term:
+            return "break"
+
+        pos = serial_debug_text.search(term, last_find_index, stopindex="end", nocase=True)
+        if not pos:
+            pos = serial_debug_text.search(term, "1.0", stopindex="end", nocase=True)
+            if not pos:
+                return "break"
+
+        endpos = f"{pos}+{len(term)}c"
+        serial_debug_text.see(pos)
+        serial_debug_text.mark_set("insert", endpos)
+        serial_debug_text.tag_remove("sel", "1.0", "end")
+        serial_debug_text.tag_add("sel", pos, endpos)
+        last_find_index = endpos
+        return "break"
+
+    def _find_prev(_event=None):
+        nonlocal last_find_index
+        term = find_var.get().strip()
+        if not term:
+            return "break"
+
+        cur = serial_debug_text.index("insert")
+        start = "1.0"
+        last = None
+        while True:
+            pos = serial_debug_text.search(term, start, stopindex=cur, nocase=True)
+            if not pos:
+                break
+            last = pos
+            start = f"{pos}+1c"
+
+        if last is None:
+            cur = "end"
+            start = "1.0"
+            while True:
+                pos = serial_debug_text.search(term, start, stopindex=cur, nocase=True)
+                if not pos:
+                    break
+                last = pos
+                start = f"{pos}+1c"
+            if last is None:
+                return "break"
+
+        endpos = f"{last}+{len(term)}c"
+        serial_debug_text.see(last)
+        serial_debug_text.mark_set("insert", endpos)
+        serial_debug_text.tag_remove("sel", "1.0", "end")
+        serial_debug_text.tag_add("sel", last, endpos)
+        last_find_index = endpos
+        return "break"
+
+    def _open_find():
+        nonlocal find_win, last_find_index
+        if find_win is not None and find_win.winfo_exists():
+            find_win.deiconify()
+            find_win.lift()
+            return
+
+        find_win = tk.Toplevel(serial_debug_win)
+        find_win.title("查找 (Ctrl+F)")
+        find_win.resizable(False, False)
+
+        frm = ttk.Frame(find_win, padding=10)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="查找：").grid(row=0, column=0, sticky="w")
+        ent = ttk.Entry(frm, textvariable=find_var, width=28)
+        ent.grid(row=0, column=1, padx=(6, 6))
+        ttk.Button(frm, text="上一个", command=_find_prev).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(frm, text="下一个", command=_find_next).grid(row=0, column=3)
+
+        def _on_change(*_):
+            nonlocal last_find_index
+            last_find_index = "1.0"
+            _find_all(find_var.get().strip())
+
+        find_var.trace_add("write", _on_change)
+
+        ent.focus_set()
+        ent.bind("<Return>", _find_next)
+        ent.bind("<Shift-Return>", _find_prev)
+        find_win.protocol("WM_DELETE_WINDOW", lambda: (find_win.destroy(), _clear_find_highlight()))
+
+    # Ctrl+F 打开查找窗口
+    serial_debug_win.bind("<Control-f>", lambda _e: (_open_find(), "break"))
+    serial_debug_win.bind("<Control-F>", lambda _e: (_open_find(), "break"))
     # 控制最大行数，避免跑久了内存爆
     MAX_LINES = 5000
 
@@ -765,7 +927,7 @@ def open_serial_debug_window(root):
         if serial_debug_text is None or not serial_debug_text.winfo_exists():
             return
 
-        # ✅ 暂停时：不取队列、不插入、不滚动；但仍刷新丢弃计数
+        # 暂停时：不取队列、不插入、不滚动；但仍刷新丢弃计数
         if paused_var.get():
             if serial_debug_drop_count > 0:
                 drop_label.config(text=f"队列满丢弃：{serial_debug_drop_count} 行")
@@ -783,8 +945,19 @@ def open_serial_debug_window(root):
                 break
 
         if lines:
+            kw = filter_var.get().strip()
+
+            for ln in lines:
+                all_debug_lines.append(ln)
+
+            if len(all_debug_lines) > MAX_STORE_LINES:
+                # 保留最后 MAX_STORE_LINES 行
+                all_debug_lines[:] = all_debug_lines[-MAX_STORE_LINES:]
+
             serial_debug_text.config(state="normal")
             for ln in lines:
+                if kw and (kw not in ln):
+                    continue
                 # 确保有换行
                 if not ln.endswith("\n"):
                     ln += "\n"
@@ -811,12 +984,17 @@ def open_serial_debug_window(root):
         serial_debug_win.after(100, _append_lines)
 
     def _on_close():
-        # 关闭窗口不一定要停旁路；看你喜好，这里默认保留旁路状态
+        global SERIAL_DEBUG_ENABLED
+        SERIAL_DEBUG_ENABLED = False
+        try:
+            enabled_var.set(False)
+        except Exception:
+            pass
         serial_debug_win.destroy()
 
     serial_debug_win.protocol("WM_DELETE_WINDOW", _on_close)
     
-    # ✅ 像短信字体弹窗一样：相对主窗口居中
+    # 像短信字体弹窗一样：相对主窗口居中
     serial_debug_win.update_idletasks()
     try:
         center_window(serial_debug_win, root)
@@ -1700,7 +1878,7 @@ def _http_get_json(url: str, timeout=8, retries=3):
 
     ctx = ssl.create_default_context()
 
-    # ✅ 禁用系统代理（避免 v2rayng/system proxy 影响 urllib TLS）
+    # 禁用系统代理（避免 v2rayng/system proxy 影响 urllib TLS）
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),          # 关键：空代理=不走系统代理
         urllib.request.HTTPSHandler(context=ctx)  # 保持 TLS 上下文
@@ -1926,7 +2104,7 @@ def _push_serial_debug(raw_line: str):
     if not SERIAL_DEBUG_ENABLED:
         return
 
-    # ✅ 关键：空行/纯空白直接忽略，避免调试窗口大量空白行
+    # 关键：空行/纯空白直接忽略，避免调试窗口大量空白行
     if raw_line is None:
         return
     if not str(raw_line).strip():
@@ -2250,7 +2428,7 @@ def open_desktop_shortcut_dialog():
             messagebox.showerror("错误", "名称不能为空")
             return
         save_desktop_shortcut_name(name)
-        # ✅ 窗口显示 + system 日志（不写 COM 日志）
+        # 窗口显示 + system 日志（不写 COM 日志）
         msg = f"💾 已保存桌面快捷方式：{name}"
         system_ui(msg, "normal")
         messagebox.showinfo("已保存", "名称已保存，下次可直接应用")
