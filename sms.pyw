@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.5"  # 软件版本号
+APP_VERSION = "3.2.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -71,7 +71,7 @@ def _get_launch_target_and_args():
         pyw = sys.executable
 
     script_path = os.path.abspath(sys.argv[0])
-    # 关键：这里不要再加引号
+
     return pyw, script_path, os.path.dirname(script_path)
 
 def create_startup_shortcut():
@@ -342,14 +342,14 @@ def system_ui(message: str, tag="normal"):
         else:
             root.after(0, _do_ui)
     except Exception:
-        # after 不可用/竞态：退回 early（至少不丢消息，也不崩）
+        # after 不可用/竞态：退回 early
         log_early(message, tag)
 
 def port_ui(message: str, tag="normal"):
     """
     线程安全写“COM 分日志 + 窗口”
-    - UI 不可用：退回 log_early（至少写 system + 缓存，不丢）
-    - UI 可用：走 log()（写 sms_{LOG_PREFIX}_*.txt + UI）
+    - UI 不可用：退回 log_early
+    - UI 可用：走 log()
     """
     # --- 1) 判断 root 是否可用 ---
     root_ok = False
@@ -640,6 +640,7 @@ def open_serial_debug_window(root):
         return
 
     serial_debug_win = tk.Toplevel(root)
+    serial_debug_win.withdraw()          # 👈 ① 先隐藏
     serial_debug_win.title("串口调试")
     serial_debug_win.geometry("900x520")
     serial_debug_win.lift()
@@ -993,13 +994,18 @@ def open_serial_debug_window(root):
         serial_debug_win.destroy()
 
     serial_debug_win.protocol("WM_DELETE_WINDOW", _on_close)
-    
-    # 像短信字体弹窗一样：相对主窗口居中
+    serial_debug_win.bind("<Escape>", lambda _e: _on_close())
+
+    # 相对主窗口居中
     serial_debug_win.update_idletasks()
     try:
         center_window(serial_debug_win, root)
     except Exception:
         pass
+
+    serial_debug_win.deiconify()         # 居中后再显示
+    serial_debug_win.lift()
+    serial_debug_win.focus_force()
 
     _append_lines()
 
@@ -1276,6 +1282,7 @@ def on_close():
     hide_window()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
+root.bind("<Escape>", lambda _e: on_close())
 
 def create_tray():
     global tray_icon
@@ -2104,7 +2111,7 @@ def _push_serial_debug(raw_line: str):
     if not SERIAL_DEBUG_ENABLED:
         return
 
-    # 关键：空行/纯空白直接忽略，避免调试窗口大量空白行
+    # 空行/纯空白直接忽略，避免调试窗口大量空白行
     if raw_line is None:
         return
     if not str(raw_line).strip():
@@ -2591,7 +2598,7 @@ def open_keywords_setting():
     win.lift()
     win.focus_force()
     entry.focus_set()
-    # ===== 快捷键 =====
+
     win.bind("<Return>", lambda _e: edit_kw())
     listbox.bind("<Delete>", lambda _e: del_kw())
     win.bind("<Escape>", lambda _e: win.destroy())
