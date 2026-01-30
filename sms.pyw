@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.6"  # 软件版本号
+APP_VERSION = "3.2.7"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -166,7 +166,7 @@ if not os.path.exists(CONFIG_FILE):
     "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
     "keywords": "【四川安播中心】",  # 默认关键词
     "sms_font_size": "30",        # 默认字体大小
-    "sms_font_color": "red",      # 默认字体颜色
+    "sms_font_color": "#ff0000",      # 默认字体颜色
 
     }
 
@@ -222,9 +222,9 @@ except Exception:
     SMS_FONT_SIZE = 30
 
 try:
-    SMS_FONT_COLOR = config.get("ui", "sms_font_color", fallback="red").strip() or "red"
+    SMS_FONT_COLOR = config.get("ui", "sms_font_color", fallback="#ff0000").strip() or "#ff0000"
 except Exception:
-    SMS_FONT_COLOR = "red"
+    SMS_FONT_COLOR = "#ff0000"
 
 # ================= 语音播报开关（配置记忆） =================
 # 默认开启；若 config.ini 存在上次状态，则以配置为准
@@ -553,7 +553,7 @@ def open_sms_font_dialog():
                 text=PREVIEW_TEXT,
                 anchor="c",
                 font=("微软雅黑", 30),
-                fill="red"
+                fill="#ff0000"
             )
 
     def pick_color():
@@ -597,7 +597,7 @@ def open_sms_font_dialog():
             messagebox.showerror("错误", "字号必须是 8~72 的整数")
             return
 
-        c = color_var.get().strip() or "red"
+        c = color_var.get().strip() or "#ff0000"
 
         SMS_FONT_SIZE = s
         SMS_FONT_COLOR = c
@@ -640,7 +640,7 @@ def open_serial_debug_window(root):
         return
 
     serial_debug_win = tk.Toplevel(root)
-    serial_debug_win.withdraw()          # 👈 ① 先隐藏
+    serial_debug_win.withdraw()
     serial_debug_win.title("串口调试")
     serial_debug_win.geometry("900x520")
     serial_debug_win.lift()
@@ -1210,6 +1210,53 @@ try:
     root.iconbitmap(resource_path("icon.ico"))
 except Exception as e:
     print("icon.ico 加载失败：", e)
+
+# 更改弹窗左上角图标：让所有弹窗继承 icon.ico
+try:
+    _ICON_ICO_PATH = resource_path("icon.ico")
+
+    def _apply_window_icon(_win):
+        try:
+            if _ICON_ICO_PATH and os.path.exists(_ICON_ICO_PATH):
+                _win.iconbitmap(_ICON_ICO_PATH)
+        except Exception:
+            # 仅图标失败，不影响弹窗功能
+            pass
+
+    # 1) 所有 tk.Toplevel 弹窗：创建后自动设置图标
+    _orig_Toplevel = tk.Toplevel
+
+    def _patched_Toplevel(*args, **kwargs):
+        _win = _orig_Toplevel(*args, **kwargs)
+        try:
+            _win.after(0, lambda w=_win: _apply_window_icon(w))
+        except Exception:
+            _apply_window_icon(_win)
+        return _win
+
+    tk.Toplevel = _patched_Toplevel
+
+    # 2) messagebox 弹窗：补 parent=root 继承图标
+    _mb_showinfo = messagebox.showinfo
+    _mb_showwarning = messagebox.showwarning
+    _mb_showerror = messagebox.showerror
+    _mb_askyesno = messagebox.askyesno
+
+    def _mb_wrap(fn):
+        def _inner(*args, **kwargs):
+            if "parent" not in kwargs:
+                kwargs["parent"] = root
+            return fn(*args, **kwargs)
+        return _inner
+
+    messagebox.showinfo = _mb_wrap(_mb_showinfo)
+    messagebox.showwarning = _mb_wrap(_mb_showwarning)
+    messagebox.showerror = _mb_wrap(_mb_showerror)
+    messagebox.askyesno = _mb_wrap(_mb_askyesno)
+
+except Exception as _e:
+    # 任何异常都不能影响主程序和弹窗正常使用
+    print("弹窗图标补丁加载失败：", _e)
 
 root.title("短信监听系统")
 root.geometry("760x520")
