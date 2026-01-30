@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.7"  # 软件版本号
+APP_VERSION = "3.2.8"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -129,20 +129,6 @@ def remove_startup_shortcut():
     if os.path.exists(lnk):
         os.remove(lnk)
 
-def set_autostart(enable: bool):
-    try:
-        if enable:
-            create_startup_shortcut()
-            msg = "🚀 开机自启：已打开"
-        else:
-            remove_startup_shortcut()
-            msg = "⛔ 开机自启：已关闭"
-
-        system_ui(msg, "normal")
-
-    except Exception as e:
-        messagebox.showerror("错误", f"设置开机自启失败：\n{e}")
-
 # ================= 语音播报开关 =================
 VOICE_ENABLED = True
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -166,7 +152,7 @@ if not os.path.exists(CONFIG_FILE):
     "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
     "keywords": "【四川安播中心】",  # 默认关键词
     "sms_font_size": "30",        # 默认字体大小
-    "sms_font_color": "#ff0000",      # 默认字体颜色
+    "sms_font_color": "#ff0000",  # 默认字体颜色
 
     }
 
@@ -383,6 +369,20 @@ def port_ui(message: str, tag="normal"):
             root.after(0, _do)
     except Exception:
         log_early(message, tag)
+
+def set_autostart(enable: bool):
+    try:
+        if enable:
+            create_startup_shortcut()
+            msg = "🚀 开机自启：已打开"
+        else:
+            remove_startup_shortcut()
+            msg = "⛔ 开机自启：已关闭"
+
+        system_ui(msg, "normal")
+
+    except Exception as e:
+        messagebox.showerror("错误", f"设置开机自启失败：\n{e}")
 
 # ================= TTS语音播报 =================
 def generate_alert_voice(force: bool = False):
@@ -630,7 +630,7 @@ def open_sms_font_dialog():
     win.bind("<Escape>", lambda _e: win.destroy())
 
 # ================= 串口调试 =================
-def open_serial_debug_window(root):
+def open_serial_debug_window():
     global serial_debug_win, serial_debug_text
 
     if serial_debug_win is not None and serial_debug_win.winfo_exists():
@@ -643,6 +643,7 @@ def open_serial_debug_window(root):
     serial_debug_win.withdraw()
     serial_debug_win.title("串口调试")
     serial_debug_win.geometry("900x520")
+    serial_debug_win.minsize(630, 300)
     serial_debug_win.lift()
     serial_debug_win.focus_force()
     top = ttk.Frame(serial_debug_win)
@@ -673,21 +674,23 @@ def open_serial_debug_window(root):
 
     ttk.Button(top, text="清空", width=8, command=_clear).pack(side="left", padx=8)
 
-    # 状态 + 暂停/继续（更直观：像播放器）
+    # 状态 + 暂停/继续
     paused_var = tk.BooleanVar(value=False)
     pause_banner_shown = False  # 防止重复插入“已暂停显示”提示
-
-    state_label = ttk.Label(top, text="")
-    state_label.pack(side="left", padx=(0, 8))
 
     btn_pause = ttk.Button(top, text="⏸ 暂停", width=8)
     btn_pause.pack(side="left")
 
+    # ===== 右侧筛选区（整体靠右）=====
+    right_frame = ttk.Frame(top)
+    right_frame.pack(side="right", padx=(8, 8))
+
     filter_var = tk.StringVar(value="")
-    ttk.Label(top, text="筛选：").pack(side="left", padx=(10, 0))
-    filter_entry = ttk.Entry(top, textvariable=filter_var, width=16)
-    filter_entry.pack(side="left", padx=(4, 6))
-    
+
+    ttk.Label(right_frame, text="筛选：").grid(row=0, column=0, padx=(0, 4))
+    filter_entry = ttk.Entry(right_frame, textvariable=filter_var, width=16)
+    filter_entry.grid(row=0, column=1, padx=(0, 6))
+
     def _clear_filter():
         filter_var.set("")
         _redraw_by_filter()
@@ -706,9 +709,10 @@ def open_serial_debug_window(root):
 
         serial_debug_text.see("end")
         serial_debug_text.config(state="disabled")
+
     filter_var.trace_add("write", lambda *_: _redraw_by_filter())
 
-    ttk.Button(top, text="清除筛选", width=8, command=_clear_filter).pack(side="left", padx=(0, 8))
+    ttk.Button(right_frame,text="清除筛选",width=8,command=_clear_filter).grid(row=0, column=2)
 
     # 根据旁路/暂停状态刷新状态标签
     def _update_state_label():
@@ -785,6 +789,13 @@ def open_serial_debug_window(root):
 
     def _toggle_pause():
         _set_pause_state(not paused_var.get())
+
+    # 串口调试区底部状态栏（左下角）
+    serial_status_bar = ttk.Frame(serial_debug_win)
+    serial_status_bar.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
+
+    state_label = ttk.Label(serial_status_bar, text="")
+    state_label.pack(side="left")
 
     btn_pause.config(command=_toggle_pause)
 
@@ -985,13 +996,65 @@ def open_serial_debug_window(root):
         serial_debug_win.after(100, _append_lines)
 
     def _on_close():
-        global SERIAL_DEBUG_ENABLED
+        global SERIAL_DEBUG_ENABLED, serial_debug_drop_count, serial_debug_win, serial_debug_text
+        nonlocal pause_banner_shown
+
+        # 1) 关闭旁路输出（全局开关）
         SERIAL_DEBUG_ENABLED = False
+
+        # 2) 复位 UI 状态：旁路勾选 + 暂停状态
         try:
             enabled_var.set(False)
         except Exception:
             pass
-        serial_debug_win.destroy()
+
+        try:
+            paused_var.set(False)
+        except Exception:
+            pass
+
+        try:
+            btn_pause.config(text="⏸ 暂停")
+        except Exception:
+            pass
+
+        pause_banner_shown = False
+
+        # 3) 清空队列
+        try:
+            while True:
+                serial_debug_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        # 4) 清空缓存 & 文本框
+        try:
+            all_debug_lines.clear()
+        except Exception:
+            pass
+
+        try:
+            if serial_debug_text is not None and serial_debug_text.winfo_exists():
+                serial_debug_text.config(state="normal")
+                serial_debug_text.delete("1.0", "end")
+                serial_debug_text.config(state="disabled")
+        except Exception:
+            pass
+
+        # 5) 清零丢弃计数 & 顶部提示
+        serial_debug_drop_count = 0
+        try:
+            drop_label.config(text="")
+        except Exception:
+            pass
+
+        # 6) 最后关闭窗口并清引用
+        try:
+            if serial_debug_win is not None and serial_debug_win.winfo_exists():
+                serial_debug_win.destroy()
+        finally:
+            serial_debug_win = None
+            serial_debug_text = None
 
     serial_debug_win.protocol("WM_DELETE_WINDOW", _on_close)
     serial_debug_win.bind("<Escape>", lambda _e: _on_close())
@@ -1243,10 +1306,10 @@ try:
     _mb_askyesno = messagebox.askyesno
 
     def _mb_wrap(fn):
-        def _inner(*args, **kwargs):
-            if "parent" not in kwargs:
-                kwargs["parent"] = root
-            return fn(*args, **kwargs)
+        def _inner(title, message, **options):
+            if "parent" not in options:
+                options["parent"] = root
+            return fn(title, message, **options)
         return _inner
 
     messagebox.showinfo = _mb_wrap(_mb_showinfo)
@@ -1365,17 +1428,20 @@ def create_tray():
 threading.Thread(target=create_tray, daemon=True).start()
 
 def center_window(win, parent):
-    """将子窗口居中到父窗口（主窗口）上。"""
     win.update_idletasks()
+
     w = win.winfo_width()
     h = win.winfo_height()
-    px = parent.winfo_rootx()
-    py = parent.winfo_rooty()
-    pw = parent.winfo_width()
-    ph = parent.winfo_height()
+    if w <= 1 or h <= 1:
+        w = win.winfo_reqwidth()
+        h = win.winfo_reqheight()
+
+    px, py = parent.winfo_rootx(), parent.winfo_rooty()
+    pw, ph = parent.winfo_width(), parent.winfo_height()
+
     x = px + (pw - w) // 2
     y = py + (ph - h) // 2
-    win.geometry(f"{w}x{h}+{x}+{y}")
+    win.geometry(f"+{x}+{y}")
 
 def show_about():
     """在主窗口正中显示“关于”弹窗（模态）。"""
@@ -2770,7 +2836,7 @@ settings_menu.add_command(
 
 settings_menu.add_command(
     label="串口调试", 
-    command=lambda: open_serial_debug_window(root)
+    command=open_serial_debug_window
 )
 
 menu_bar.add_cascade(label="设置", menu=settings_menu)
