@@ -2117,7 +2117,7 @@ def check_update_and_prompt():
             current = _ver_tuple(APP_VERSION)
 
             if latest <= current:
-                root.after(0, lambda: messagebox.showinfo("检测更新", f"当前已是最新版本：V{APP_VERSION}"))
+                root.after(0, lambda: messagebox.showinfo("检测更新", f"当前已是最新版本：v{APP_VERSION}"))
                 return
 
             asset = _pick_exe_asset(rel)
@@ -2137,7 +2137,7 @@ def check_update_and_prompt():
             def ask():
                 ok = messagebox.askyesno(
                     "发现新版本",
-                    f"当前：V{APP_VERSION}\n最新：{tag}\n\n是否打开下载链接？（如已配置下载代理，将优先使用）"
+                    f"当前：v{APP_VERSION}\n最新：{tag}\n\n是否打开下载链接？（如已配置下载代理，将优先使用）"
                 )
                 if ok:
                     try:
