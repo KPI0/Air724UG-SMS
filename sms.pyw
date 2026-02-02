@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.8"  # 软件版本号
+APP_VERSION = "3.2.9"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -815,14 +815,18 @@ def open_serial_debug_window():
     serial_debug_text.config(state="disabled")
     _update_state_label()
     serial_debug_text.tag_config("find_hit", background="yellow")
+    serial_debug_text.tag_config("find_cur", background="#ff9f1a")  # 橙色，当前命中
+    serial_debug_text.tag_raise("find_cur")  # 保证盖在 find_hit 上面
 
     find_win = None
     find_var = tk.StringVar(value="")
     last_find_index = "1.0"
+    find_trace_id = None
 
     def _clear_find_highlight():
         try:
             serial_debug_text.tag_remove("find_hit", "1.0", "end")
+            serial_debug_text.tag_remove("find_cur", "1.0", "end")
         except Exception:
             pass
 
@@ -833,6 +837,18 @@ def open_serial_debug_window():
         start = "1.0"
         while True:
             pos = serial_debug_text.search(term, start, stopindex="end", nocase=True)
+            if not pos:
+                break
+            endpos = f"{pos}+{len(term)}c"
+            serial_debug_text.tag_add("find_hit", pos, endpos)
+            start = endpos
+
+    def _highlight_range(term: str, start_idx: str, end_idx: str):
+        if not term:
+            return
+        start = start_idx
+        while True:
+            pos = serial_debug_text.search(term, start, stopindex=end_idx, nocase=True)
             if not pos:
                 break
             endpos = f"{pos}+{len(term)}c"
@@ -854,8 +870,9 @@ def open_serial_debug_window():
         endpos = f"{pos}+{len(term)}c"
         serial_debug_text.see(pos)
         serial_debug_text.mark_set("insert", endpos)
-        serial_debug_text.tag_remove("sel", "1.0", "end")
-        serial_debug_text.tag_add("sel", pos, endpos)
+        serial_debug_text.tag_remove("find_cur", "1.0", "end")
+        serial_debug_text.tag_add("find_cur", pos, endpos)
+        serial_debug_text.tag_raise("find_cur", "find_hit")
         last_find_index = endpos
         return "break"
 
@@ -865,38 +882,41 @@ def open_serial_debug_window():
         if not term:
             return "break"
 
-        cur = serial_debug_text.index("insert")
-        start = "1.0"
-        last = None
-        while True:
-            pos = serial_debug_text.search(term, start, stopindex=cur, nocase=True)
-            if not pos:
-                break
-            last = pos
-            start = f"{pos}+1c"
+        # 用当前高亮(find_cur)的起点作为边界，避免重复命中自己
+        cur_start = None
+        try:
+            ranges = serial_debug_text.tag_ranges("find_cur")
+            cur_start = ranges[0] if ranges else serial_debug_text.index("insert")
+        except Exception:
+            cur_start = serial_debug_text.index("insert")
 
-        if last is None:
-            cur = "end"
-            start = "1.0"
-            while True:
-                pos = serial_debug_text.search(term, start, stopindex=cur, nocase=True)
-                if not pos:
-                    break
-                last = pos
-                start = f"{pos}+1c"
-            if last is None:
+        start = serial_debug_text.index(f"{cur_start}-1c")
+
+        pos = serial_debug_text.search(
+            term, start, stopindex="1.0", nocase=True, backwards=True
+        )
+        if not pos:
+            pos = serial_debug_text.search(
+                term, "end-1c", stopindex="1.0", nocase=True, backwards=True
+            )
+            if not pos:
                 return "break"
 
-        endpos = f"{last}+{len(term)}c"
-        serial_debug_text.see(last)
+        endpos = f"{pos}+{len(term)}c"
+        serial_debug_text.see(pos)
         serial_debug_text.mark_set("insert", endpos)
-        serial_debug_text.tag_remove("sel", "1.0", "end")
-        serial_debug_text.tag_add("sel", last, endpos)
+
+        serial_debug_text.tag_remove("find_cur", "1.0", "end")
+        serial_debug_text.tag_add("find_cur", pos, endpos)
+        serial_debug_text.tag_raise("find_cur", "find_hit")
+
         last_find_index = endpos
         return "break"
 
     def _open_find():
-        nonlocal find_win, last_find_index
+        nonlocal find_win, last_find_index, find_trace_id
+
+        # 已打开就置顶
         if find_win is not None and find_win.winfo_exists():
             find_win.deiconify()
             find_win.lift()
@@ -920,12 +940,52 @@ def open_serial_debug_window():
             last_find_index = "1.0"
             _find_all(find_var.get().strip())
 
-        find_var.trace_add("write", _on_change)
+        # 只绑定一次，避免越绑越多
+        if find_trace_id is None:
+            find_trace_id = find_var.trace_add("write", _on_change)
+
+        def _close_find(_event=None):
+            nonlocal find_win, last_find_index, find_trace_id
+
+            # 关闭前先清高亮
+            _clear_find_highlight()
+            last_find_index = "1.0"
+
+            # 先解绑 trace，避免下面 set("") 触发回调
+            if find_trace_id is not None:
+                try:
+                    find_var.trace_remove("write", find_trace_id)
+                except Exception:
+                    pass
+                find_trace_id = None
+
+            # 再清空输入
+            try:
+                find_var.set("")
+            except Exception:
+                pass
+
+            # 关窗
+            try:
+                if find_win is not None and find_win.winfo_exists():
+                    find_win.destroy()
+            except Exception:
+                pass
+            find_win = None
+
+            # 焦点回文本框
+            try:
+                serial_debug_text.focus_set()
+            except Exception:
+                pass
+            return "break"
 
         ent.focus_set()
         ent.bind("<Return>", _find_next)
         ent.bind("<Shift-Return>", _find_prev)
-        find_win.protocol("WM_DELETE_WINDOW", lambda: (find_win.destroy(), _clear_find_highlight()))
+        ent.bind("<Escape>", _close_find)
+        find_win.bind("<Escape>", _close_find)
+        find_win.protocol("WM_DELETE_WINDOW", _close_find)
 
     # Ctrl+F 打开查找窗口
     serial_debug_win.bind("<Control-f>", lambda _e: (_open_find(), "break"))
@@ -967,6 +1027,7 @@ def open_serial_debug_window():
                 all_debug_lines[:] = all_debug_lines[-MAX_STORE_LINES:]
 
             serial_debug_text.config(state="normal")
+            insert_start = serial_debug_text.index("end-1c")
             for ln in lines:
                 if kw and (kw not in ln):
                     continue
@@ -974,6 +1035,11 @@ def open_serial_debug_window():
                 if not ln.endswith("\n"):
                     ln += "\n"
                 serial_debug_text.insert("end", ln)
+            insert_end = serial_debug_text.index("end-1c")
+            term = find_var.get().strip()  # 你的 Ctrl+F 搜索词
+            if term:
+                _highlight_range(term, insert_start, insert_end)
+
             # 行数裁剪
             try:
                 cur_lines = int(serial_debug_text.index("end-1c").split(".")[0])
@@ -981,6 +1047,10 @@ def open_serial_debug_window():
                     # 删除前面多余的行
                     del_lines = cur_lines - MAX_LINES
                     serial_debug_text.delete("1.0", f"{del_lines + 1}.0")
+                    _clear_find_highlight()
+                    term = find_var.get().strip()
+                    if term:
+                        _find_all(term)
             except Exception:
                 pass
 
@@ -997,7 +1067,7 @@ def open_serial_debug_window():
 
     def _on_close():
         global SERIAL_DEBUG_ENABLED, serial_debug_drop_count, serial_debug_win, serial_debug_text
-        nonlocal pause_banner_shown
+        nonlocal pause_banner_shown, find_win, find_trace_id
 
         # 1) 关闭旁路输出（全局开关）
         SERIAL_DEBUG_ENABLED = False
@@ -1047,6 +1117,22 @@ def open_serial_debug_window():
             drop_label.config(text="")
         except Exception:
             pass
+
+        # 关闭调试窗口时，确保查找 trace 解绑（防残留）
+        try:
+            if find_trace_id is not None:
+                find_var.trace_remove("write", find_trace_id)
+                find_trace_id = None
+        except Exception:
+            pass
+
+        # 如果查找窗口还开着，也关掉
+        try:
+            if find_win is not None and find_win.winfo_exists():
+                find_win.destroy()
+        except Exception:
+            pass
+        find_win = None
 
         # 6) 最后关闭窗口并清引用
         try:
