@@ -381,10 +381,10 @@ def set_autostart(enable: bool):
     try:
         if enable:
             create_startup_shortcut()
-            msg = "🚀 开机自启：已打开"
+            msg = "✅️ 开机自启：已打开"
         else:
             remove_startup_shortcut()
-            msg = "⛔ 开机自启：已关闭"
+            msg = "❌ 开机自启：已关闭"
 
         system_ui(msg, "normal")
 
@@ -2856,7 +2856,7 @@ def toggle_multi_instance():
     except Exception:
         pass
 
-    msg = "🧩 程序多开：已开启" if ALLOW_MULTI_INSTANCE else "🔒 程序多开：已关闭"
+    msg = "✅️ 程序多开：已开启" if ALLOW_MULTI_INSTANCE else "❌ 程序多开：已关闭"
 
     system_ui(msg, "normal")
 
@@ -2877,9 +2877,9 @@ def toggle_popup():
         pass
 
     if POPUP_ENABLED:
-        msg = "✅ 短信弹窗：已开启"
+        msg = "✅️ 短信弹窗：已开启"
     else:
-        msg = "⛔ 短信弹窗：已关闭"
+        msg = "❌ 短信弹窗：已关闭"
     system_ui(msg, "normal")
 
 # ================= 菜单（一级串口设置） =================
