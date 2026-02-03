@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.2.9"  # 软件版本号
+APP_VERSION = "3.3.0"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -145,6 +145,7 @@ if not os.path.exists(CONFIG_FILE):
 
     config["ui"] = {
     "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
+    "popup_enabled": "1",         # 0=关闭短信弹窗，1=打开短信弹窗（默认）
     "voice_text": "注意！四川安播中心预警短信，请及时查看。",   # 默认语音播报内容
     "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
     "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
@@ -175,6 +176,12 @@ try:
         VOICE_TEXT = DEFAULT_VOICE_TEXT
 except Exception:
     VOICE_TEXT = DEFAULT_VOICE_TEXT
+
+# ================= 短信弹窗开关（配置记忆） =================
+try:
+    POPUP_ENABLED = config.getboolean("ui", "popup_enabled", fallback=True)
+except Exception:
+    POPUP_ENABLED = True
 
 # ===== 自动日志清理（从配置读取）=====
 try:
@@ -443,7 +450,8 @@ Shortcut.WindowStyle = 1
 '''
 
     if args:
-        vbs += f'Shortcut.Arguments = {vbs_quote(args)}\n'
+        arg_line = f'"{args}"'   # 脚本路径加引号，防空格
+        vbs += f'Shortcut.Arguments = {vbs_quote(arg_line)}\n'
 
     vbs += 'Shortcut.Save\n'
 
@@ -1347,6 +1355,7 @@ root = tk.Tk()
 root.withdraw()
 root.minsize(500, 200)
 
+popup_var = tk.BooleanVar(value=POPUP_ENABLED)
 threading.Thread(target=generate_alert_voice, daemon=True).start()
 
 def resource_path(relative):
@@ -1693,8 +1702,7 @@ def play_alert():
 
 def show_sms_popup(msg: str):
     """弹窗确认后，自动显示主程序窗口"""
-    global VOICE_ENABLED
-    if not VOICE_ENABLED:
+    if not POPUP_ENABLED:
         return
 
     def _popup_and_show():
@@ -2855,6 +2863,25 @@ def toggle_multi_instance():
 def toggle_autostart():
     set_autostart(autostart_var.get())
 
+def toggle_popup():
+    global POPUP_ENABLED
+    POPUP_ENABLED = bool(popup_var.get())
+
+    try:
+        if not config.has_section("ui"):
+            config["ui"] = {}
+        config.set("ui", "popup_enabled", "1" if POPUP_ENABLED else "0")
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+    if POPUP_ENABLED:
+        msg = "✅ 短信弹窗：已开启"
+    else:
+        msg = "⛔ 短信弹窗：已关闭"
+    system_ui(msg, "normal")
+
 # ================= 菜单（一级串口设置） =================
 menu_bar = tk.Menu(root)
 
@@ -2894,6 +2921,12 @@ settings_menu.add_checkbutton(
     command=toggle_multi_instance
 )
 
+settings_menu.add_checkbutton(
+    label="短信弹窗",
+    variable=popup_var,
+    command=toggle_popup
+)
+
 settings_menu.add_separator()
 settings_menu.add_command(
     label="日志清理", 
@@ -2927,7 +2960,7 @@ settings_menu.add_command(
 
 menu_bar.add_cascade(label="设置", menu=settings_menu)
 
-# 帮助
+# 帮助 菜单
 help_menu = tk.Menu(menu_bar, tearoff=0)
 help_menu.add_command(label="关于", command=show_about)
 help_menu.add_command(label="检测更新", command=check_update_and_prompt)
