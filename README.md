@@ -11,6 +11,8 @@
 - 无人值守终端  
 
 ---
+### [USB 驱动安装](https://docs.openluat.com/air724ug/common/usb_drv/)
+---
 
 ## ✨ 主要特性
 
