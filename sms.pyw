@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.0"  # 软件版本号
+APP_VERSION = "3.3.1"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -2397,10 +2397,20 @@ def read_serial():
         try:
             if MODE == "Auto":
                 dev, desc = find_luat_best_port()
+                if dev:
+                    system_ui(f"🔌 检测到 LUAT Modem 标识，自动连接：{dev}（{desc}）")
                 if not dev:
-                    set_status("🔍 扫描 LUAT Modem 中…", "orange")
-                    time.sleep(RECONNECT_INTERVAL)
-                    continue
+                    # 若未检测到带有 LUAT 标识的设备，但系统只存在一个串口，则自动连接该端口
+                    ports_all = list(list_ports.comports())
+                    if len(ports_all) == 1:
+                        single = ports_all[0]
+                        dev = single.device
+                        desc = single.description or ""
+                        system_ui(f"🔌 未检测到 LUAT Modem 标识，但仅发现单一串口，自动连接：{dev}")
+                    else:
+                        set_status("🔍 扫描 LUAT Modem 中…", "orange")
+                        time.sleep(RECONNECT_INTERVAL)
+                        continue
                 PORT = dev
                 set_status(f"🟡 连接中：{PORT}（{desc}） @ {BAUD}", "orange")
             else:
