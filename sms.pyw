@@ -1550,7 +1550,6 @@ def create_tray():
     menu = pystray.Menu(
         pystray.MenuItem("显示", lambda: show_window(), default=True),  # 双击托盘
         pystray.MenuItem("隐藏", lambda: hide_window()),
-        pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", lambda: cleanup_and_exit()),
     )
 
