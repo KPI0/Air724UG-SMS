@@ -35,13 +35,18 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.1"  # 软件版本号
+APP_VERSION = "3.3.2"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
 # 启动参数：开机自启时是否默认最小化到托盘
 AUTOSTART_FLAG = "--autostart"
 START_MINIMIZED = AUTOSTART_FLAG in sys.argv
+
+# 程序启动时间（用于延迟启动时的 UI 日志显示）
+APP_START_MONO = time.monotonic()
+# 启动后延迟多少秒才在窗口显示日志（但仍会立即写文件）
+START_UI_DELAY = 2.0
 
 # ================= 开机自启 =================
 def get_startup_dir():
@@ -248,6 +253,17 @@ except Exception:
 serial_obj = None
 serial_running = True
 
+# ================= 串口错误重复抑制 =================
+# 用于抑制连续重复显示相同的串口异常（避免日志刷屏）
+ERROR_REPEAT_LIMIT = 4  # 1~3 次显示详细错误；第 4 次显示“后续忽略”
+_last_serial_error_msg = None
+_last_serial_error_count = 0
+
+# ================= 短信忽略重复抑制 =================
+# 用于抑制连续重复显示相同的“短信未命中关键词，已忽略”提示（避免日志刷屏）
+_last_sms_ignore_msg = None
+_last_sms_ignore_count = 0
+
 # ================= 全局变量 =================
 PENDING_UI_LOGS = []  # 用于 text_area 未创建前缓存要显示到窗口的提示
 LOG_PREFIX = "system"
@@ -330,10 +346,21 @@ def system_ui(message: str, tag="normal"):
             pass
 
     try:
-        if threading.current_thread() is threading.main_thread():
-            _do_ui()
+        # 计算启动时间窗口内的剩余延迟（单位 ms）
+        try:
+            elapsed = time.monotonic() - APP_START_MONO
+            delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
+        except Exception:
+            delay_ms = 0
+
+        if delay_ms > 0:
+            # 即使在主线程，也使用 after 调度以保证统一延迟行为
+            root.after(delay_ms, _do_ui)
         else:
-            root.after(0, _do_ui)
+            if threading.current_thread() is threading.main_thread():
+                _do_ui()
+            else:
+                root.after(0, _do_ui)
     except Exception:
         # after 不可用/竞态：退回 early
         log_early(message, tag)
@@ -370,10 +397,20 @@ def port_ui(message: str, tag="normal"):
             log_file_only(message)
 
     try:
-        if threading.current_thread() is threading.main_thread():
-            _do()
+        # respect startup UI delay when showing port logs
+        try:
+            elapsed = time.monotonic() - APP_START_MONO
+            delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
+        except Exception:
+            delay_ms = 0
+
+        if delay_ms > 0:
+            root.after(delay_ms, _do)
         else:
-            root.after(0, _do)
+            if threading.current_thread() is threading.main_thread():
+                _do()
+            else:
+                root.after(0, _do)
     except Exception:
         log_early(message, tag)
 
@@ -2338,7 +2375,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT, LOG_PREFIX
+    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -2385,7 +2422,28 @@ def read_serial():
             play_alert()               
             show_sms_popup(full_msg)   
         else:
-            system_ui("🚫 短信未命中关键词，已忽略", "normal")  
+            try:
+                global _last_sms_ignore_msg, _last_sms_ignore_count
+                msg_text = "🚫 短信未命中关键词，已忽略"
+                # 重复抑制逻辑（与串口错误抑制规则一致）
+                if _last_sms_ignore_msg == msg_text:
+                    _last_sms_ignore_count += 1
+                else:
+                    _last_sms_ignore_msg = msg_text
+                    _last_sms_ignore_count = 1
+
+                if _last_sms_ignore_count < ERROR_REPEAT_LIMIT:
+                    system_ui(msg_text, "normal")
+                elif _last_sms_ignore_count == ERROR_REPEAT_LIMIT:
+                    system_ui("🚫 短信未命中关键词，已忽略（后续同类消息已忽略）", "normal")
+                else:
+                    # 超过阈值：继续抑制，不再重复显示
+                    pass
+            except Exception:
+                try:
+                    system_ui("🚫 短信未命中关键词，已忽略", "normal")
+                except Exception:
+                    pass
 
         pending_parts = []
         pending_display_lines = []
@@ -2424,11 +2482,41 @@ def read_serial():
 
             LOG_PREFIX = PORT.replace(":", "_")
 
-            system_ui(f"🔌 串口已连接：{PORT} @ {BAUD}")
-            if MODE == "Auto":
-                set_status(f"🟢 已连接 Modem：{PORT} @ {BAUD}", "green")
-            else:
-                set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+            # 延迟 2 秒再输出已连接日志，与检测日志隔开（不阻塞主线程）
+            def _delayed_connected_log(port, baud, delay=2):
+                try:
+                    time.sleep(delay)
+
+                    # 计算启动时要再等多少（与 system_ui 的延迟逻辑一致）
+                    try:
+                        elapsed = time.monotonic() - APP_START_MONO
+                        delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
+                    except Exception:
+                        delay_ms = 0
+
+                    # 写 system 日志并在窗口显示（system_ui 内部也会用 after 调度）
+                    system_ui(f"🔌 串口已连接：{port} @ {baud}")
+
+                    # 同步安排状态栏更新，保证与日志显示时机一致
+                    try:
+                        def _update_status():
+                            try:
+                                status_var.set(f"🟢 已连接：{port} @ {baud}")
+                                status_label.config(fg="green")
+                            except Exception:
+                                pass
+
+                        if delay_ms > 0:
+                            root.after(delay_ms, _update_status)
+                        else:
+                            root.after(0, _update_status)
+                    except Exception:
+                        pass
+
+                except Exception:
+                    pass
+
+            threading.Thread(target=_delayed_connected_log, args=(PORT, BAUD), daemon=True).start()
 
             while serial_running:
                 try:
@@ -2476,7 +2564,33 @@ def read_serial():
 
         except Exception as e:
             LOG_PREFIX = "system"
-            system_ui(f"⚠️ 串口异常：{e}")
+
+            # 重复异常抑制：连续相同错误只显示有限次数，避免刷屏
+            try:
+                err_msg = str(e)
+                if _last_serial_error_msg == err_msg:
+                    _last_serial_error_count += 1
+                else:
+                    _last_serial_error_msg = err_msg
+                    _last_serial_error_count = 1
+
+                if _last_serial_error_count < ERROR_REPEAT_LIMIT:
+                    # 正常显示错误信息（前 N-1 次）
+                    system_ui(f"⚠️ 串口异常：{err_msg}")
+                elif _last_serial_error_count == ERROR_REPEAT_LIMIT:
+                    # 第 N 次
+                    port_display = PORT or "(未指定端口)"
+                    system_ui(f"⚠️ 串口异常：{port_display} 不存在（后续同类错误已忽略）")
+                else:
+                    # 超过阈值：继续抑制，不再重复显示相同错误
+                    pass
+            except Exception:
+                # 抑制逻辑出问题时兜底显示原始异常
+                try:
+                    system_ui(f"⚠️ 串口异常：{e}")
+                except Exception:
+                    pass
+
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
 
             try:
