@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.2"  # 软件版本号
+APP_VERSION = "3.3.3"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -140,7 +140,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(TTS_DIR, exist_ok=True)
 
 # ================= 读取配置 =================
-config = configparser.ConfigParser()
+config = configparser.ConfigParser(interpolation=None)
 if not os.path.exists(CONFIG_FILE):
     config["serial"] = {
         "port": "",
@@ -253,6 +253,20 @@ except Exception:
 serial_obj = None
 serial_running = True
 
+# ================= 串口对象并发保护（避免多线程 close/read 竞态） =================
+serial_lock = threading.Lock()
+
+def safe_close_serial():
+    """线程安全关闭串口并置空 serial_obj"""
+    global serial_obj
+    with serial_lock:
+        try:
+            if serial_obj is not None:
+                serial_obj.close()
+        except Exception:
+            pass
+        serial_obj = None
+
 # ================= 串口错误重复抑制 =================
 # 用于抑制连续重复显示相同的串口异常（避免日志刷屏）
 ERROR_REPEAT_LIMIT = 4  # 1~3 次显示详细错误；第 4 次显示“后续忽略”
@@ -264,8 +278,12 @@ _last_serial_error_count = 0
 _last_sms_ignore_msg = None
 _last_sms_ignore_count = 0
 
+# ================= Manual 重绑提示重复抑制 =================
+_last_rebind_hint_msg = None
+_last_rebind_hint_count = 0
+
 # ================= 全局变量 =================
-PENDING_UI_LOGS = []  # 用于 text_area 未创建前缓存要显示到窗口的提示
+PENDING_UI_LOGS = queue.Queue(maxsize=20000)  # 用于 text_area 未创建前缓存要显示到窗口的提示
 LOG_PREFIX = "system"
 AUTO_CLEANUP_INTERVAL_HOURS = 24 # 自动清理频率：24小时一次
 AUTO_CLEANUP_AFTER_ID = None     # 记录 after() 的任务ID，用于避免重复定时器
@@ -274,6 +292,80 @@ serial_debug_queue = queue.Queue(maxsize=5000)  # 防止无限涨
 serial_debug_win = None
 serial_debug_text = None
 serial_debug_drop_count = 0
+serial_stop_event = threading.Event()
+serial_wakeup_event = threading.Event()
+TTS_LOCK = threading.Lock()
+TTS_REQ_Q = queue.Queue(maxsize=50)
+TTS_STOP = threading.Event()
+
+# ================= Tk 线程安全：UI 任务队列（所有 Tk 操作只能在主线程） =================
+UI_TASK_QUEUE = queue.Queue(maxsize=10000)
+FILE_LOG_Q = queue.Queue(maxsize=50000)
+file_log_stop = threading.Event()
+
+def file_log_worker():
+    while not file_log_stop.is_set():
+        try:
+            path, line = FILE_LOG_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+
+threading.Thread(target=file_log_worker, daemon=True).start()
+
+# ================= root 是否可用（避免退出过程中 after 抛异常） =================
+TK_SHUTDOWN = threading.Event()
+
+def tk_alive() -> bool:
+    # 后台线程：绝对不调用任何 Tk 方法
+    if TK_SHUTDOWN.is_set():
+        return False
+    if ("root" not in globals()) or (root is None):
+        return False
+
+    # 只有主线程才允许 winfo_exists()
+    if threading.current_thread() is threading.main_thread():
+        try:
+            return bool(root.winfo_exists())
+        except Exception:
+            return False
+
+    return True
+
+def ui_post(fn, *args, **kwargs):
+    try:
+        UI_TASK_QUEUE.put_nowait((fn, args, kwargs))
+    except queue.Full:
+        log_file_only("⚠️ UI_TASK_QUEUE 已满：丢弃一次 UI 任务")
+    except Exception:
+        pass
+
+def ui_pump(max_batch=200):
+    """
+    主线程定时执行队列里的 UI 操作。
+    """
+    n = 0
+    while n < max_batch:
+        try:
+            fn, args, kwargs = UI_TASK_QUEUE.get_nowait()
+        except queue.Empty:
+            break
+        try:
+            fn(*args, **kwargs)
+        except Exception:
+            pass
+        n += 1
+
+    # 继续下一轮
+    if tk_alive():
+        try:
+            root.after(30, ui_pump)
+        except Exception:
+            pass
 
 # ================= 日志 =================
 def get_log_file():
@@ -288,131 +380,96 @@ def log_file_only(msg: str):
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         system_log = os.path.join(LOG_DIR, f"sms_system_{today}.txt")
-        with open(system_log, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+        line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n"
+        FILE_LOG_Q.put_nowait((system_log, line))
     except Exception:
         pass
 
+# ================= ui_only：永远线程安全（只 UI 不写文件） =================
 def ui_only(msg: str, tag="normal"):
     """只显示到窗口，不写任何日志文件（不写 COM 日志）"""
-    try:
-        text_area.insert(tk.END, msg + "\n", tag)
-        text_area.see(tk.END)
-    except Exception:
-        pass
+    def _do():
+        try:
+            if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
+                text_area.insert(tk.END, msg + "\n", tag)
+                text_area.see(tk.END)
+            else:
+                # UI 未就绪则缓存
+                try:
+                    PENDING_UI_LOGS.put_nowait((msg, tag))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
+
+# ================= log_early：写文件 + 线程安全缓存 =================
 def log_early(msg: str, tag: str = "normal"):
     """早期日志：先写文件，再缓存，等 text_area 创建后补到窗口"""
     log_file_only(msg)
     try:
-        PENDING_UI_LOGS.append((msg, tag))
+        PENDING_UI_LOGS.put_nowait((msg, tag))
+    except queue.Full:
+        pass
     except Exception:
         pass
 
+# ================= system_ui：写 system 文件 + 投递 UI（线程安全） =================
 def system_ui(message: str, tag="normal"):
-    """
-    - UI 未就绪/窗口已销毁：走 log_early（system + 缓存，等 UI 创建后补）
-    - UI 就绪：写 system，然后
-        - 主线程：直接 ui_only
-        - 非主线程：root.after 调回主线程 ui_only
-    """
-    # --- 1) 判断 root 是否可用 ---
-    root_ok = False
-    try:
-        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
-    except Exception:
-        root_ok = False
-
-    # --- 2) 判断 text_area 是否可用 ---
-    text_ok = False
-    try:
-        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
-    except Exception:
-        text_ok = False
-
-    # UI 不可用：直接走早期日志（system + 缓存）
-    if not (root_ok and text_ok):
-        log_early(message, tag)
-        return
-
-    # --- 3) UI 可用：写 system（只写一次） ---
-    log_file_only(message)
-
-    # --- 4) UI 更新：区分主线程/非主线程 ---
-    def _do_ui():
+    # 0) Tk 尚未就绪/退出过程中：只写文件 + 缓存（不碰 root.after）
+    if not tk_alive():
+        log_file_only(message)
         try:
-            ui_only(message, tag)
+            PENDING_UI_LOGS.put_nowait((message, tag))
         except Exception:
             pass
-
-    try:
-        # 计算启动时间窗口内的剩余延迟（单位 ms）
-        try:
-            elapsed = time.monotonic() - APP_START_MONO
-            delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
-        except Exception:
-            delay_ms = 0
-
-        if delay_ms > 0:
-            # 即使在主线程，也使用 after 调度以保证统一延迟行为
-            root.after(delay_ms, _do_ui)
-        else:
-            if threading.current_thread() is threading.main_thread():
-                _do_ui()
-            else:
-                root.after(0, _do_ui)
-    except Exception:
-        # after 不可用/竞态：退回 early
-        log_early(message, tag)
-
-def port_ui(message: str, tag="normal"):
-    """
-    线程安全写“COM 分日志 + 窗口”
-    - UI 不可用：退回 log_early
-    - UI 可用：走 log()
-    """
-    # --- 1) 判断 root 是否可用 ---
-    root_ok = False
-    try:
-        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
-    except Exception:
-        root_ok = False
-
-    # --- 2) 判断 text_area 是否可用 ---
-    text_ok = False
-    try:
-        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
-    except Exception:
-        text_ok = False
-
-    if not (root_ok and text_ok):
-        log_early(message, tag)
         return
+    # 1) 永远先写 system 日志（文件写入不依赖 Tk）
+    log_file_only(message)
 
-    def _do():
+    def _do_ui():
         try:
-            log(message, tag=tag)   # 关键：走 log() -> get_log_file() -> sms_{LOG_PREFIX}_*.txt
+            if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
+                text_area.insert(tk.END, message + "\n", tag)
+                text_area.see(tk.END)
+            else:
+                # UI 不可用：缓存给后续补显示
+                PENDING_UI_LOGS.put_nowait((message, tag))
         except Exception:
-            # 极端情况：log 失败也别丢，至少写 system
-            log_file_only(message)
+            try:
+                PENDING_UI_LOGS.put_nowait((message, tag))
+            except Exception:
+                pass
 
-    try:
-        # respect startup UI delay when showing port logs
+    # 2) respect START_UI_DELAY：延迟也要在主线程安排
+    def _schedule_in_main():
         try:
             elapsed = time.monotonic() - APP_START_MONO
             delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
         except Exception:
             delay_ms = 0
 
-        if delay_ms > 0:
-            root.after(delay_ms, _do)
-        else:
-            if threading.current_thread() is threading.main_thread():
-                _do()
+        try:
+            if delay_ms > 0:
+                root.after(delay_ms, _do_ui)
             else:
-                root.after(0, _do)
-    except Exception:
-        log_early(message, tag)
+                _do_ui()
+        except Exception:
+            _do_ui()
+
+    if threading.current_thread() is threading.main_thread():
+        _schedule_in_main()
+    else:
+        ui_post(_schedule_in_main)
+
+# ================= port_ui：统一走 log()（线程安全） =================
+def port_ui(message: str, tag="normal"):
+    # log() 已经线程安全了，这里无需再做各种 root/text_area 判断
+    log(message, tag=tag)
 
 def set_autostart(enable: bool):
     try:
@@ -426,22 +483,85 @@ def set_autostart(enable: bool):
         system_ui(msg, "normal")
 
     except Exception as e:
-        messagebox.showerror("错误", f"设置开机自启失败：\n{e}")
+        ui_messagebox("error", "错误", f"设置开机自启失败：\n{e}")
 
 # ================= TTS语音播报 =================
-def generate_alert_voice(force: bool = False):
-    """生成/更新语音播报 wav（VOICE_TEXT）"""
+def _generate_alert_voice_impl(text: str, force: bool = False):
+    """真正生成 wav 的实现：只允许在 worker 里调用"""
+    if not text:
+        text = DEFAULT_VOICE_TEXT
+
     if (not force) and os.path.exists(TTS_FILE):
         return
 
-    try:
+    with TTS_LOCK:
         os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 150)
-        engine.save_to_file(VOICE_TEXT, TTS_FILE)
-        engine.runAndWait()
-    except Exception as e:
-        log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+
+        tmp_path = TTS_FILE + ".tmp.wav"
+        engine = None
+
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 150)
+            engine.save_to_file(text, tmp_path)
+            engine.runAndWait()
+
+            # 原子替换：避免生成一半被播放/读取
+            os.replace(tmp_path, TTS_FILE)
+
+        except Exception:
+            # 清理 tmp，避免留下脏文件
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
+
+        finally:
+            # 尽力释放 TTS 引擎资源（降低 runAndWait 卡死/退出残留概率）
+            try:
+                if engine is not None:
+                    engine.stop()
+            except Exception:
+                pass
+
+def generate_alert_voice(force: bool = False, text: str = None):
+    """
+    对外接口：任何线程都可调用。
+    - 默认使用当前 VOICE_TEXT 快照
+    - 或者传 text（用于试听/临时生成，不要改全局 VOICE_TEXT）
+    """
+    try:
+        if text is None:
+            text_snapshot = (VOICE_TEXT or DEFAULT_VOICE_TEXT).strip() or DEFAULT_VOICE_TEXT
+        else:
+            text_snapshot = (text or "").strip() or DEFAULT_VOICE_TEXT
+    except Exception:
+        text_snapshot = DEFAULT_VOICE_TEXT
+
+    try:
+        TTS_REQ_Q.put_nowait((text_snapshot, bool(force)))
+    except queue.Full:
+        log_file_only("⚠️ TTS 请求队列已满，已丢弃一次生成请求")
+
+def _tts_worker():
+    while not TTS_STOP.is_set():
+        try:
+            text, force = TTS_REQ_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+
+        try:
+            _generate_alert_voice_impl(text=text, force=force)
+        except Exception as e:
+            log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+        finally:
+            try:
+                TTS_REQ_Q.task_done()
+            except Exception:
+                pass
+threading.Thread(target=_tts_worker, daemon=True).start()
 
 # ================= 获取桌面路径 =================
 def get_desktop_dir():
@@ -786,7 +906,7 @@ def open_serial_debug_window():
         if is_paused:
             btn_pause.config(text="▶ 继续")
 
-            # 暂停时锁定旁路开关
+            # 暂停时仍保持旁路开关锁定
             try:
                 chk.state(["!disabled"])
             except Exception:
@@ -809,7 +929,7 @@ def open_serial_debug_window():
         else:
             btn_pause.config(text="⏸ 暂停")
 
-            # 继续时仍保持旁路开关锁定
+            # 继续时锁定旁路开关
             try:
                 chk.state(["disabled"])
             except Exception:
@@ -1050,7 +1170,10 @@ def open_serial_debug_window():
                 drop_label.config(text=f"队列满丢弃：{serial_debug_drop_count} 行")
             else:
                 drop_label.config(text="")
-            serial_debug_win.after(100, _append_lines)
+            try:
+                serial_debug_win.after(100, _append_lines)
+            except Exception:
+                return            
             return
 
         lines = []
@@ -1108,7 +1231,10 @@ def open_serial_debug_window():
             drop_label.config(text="")
 
         # 100ms 刷新一次
-        serial_debug_win.after(100, _append_lines)
+        try:
+            serial_debug_win.after(100, _append_lines)
+        except Exception:
+            return        
 
     def _on_close():
         global SERIAL_DEBUG_ENABLED, serial_debug_drop_count, serial_debug_win, serial_debug_text
@@ -1218,20 +1344,16 @@ def open_voice_text_dialog():
     text.insert("1.0", VOICE_TEXT)
 
     def do_preview():
-        # 预览用当前输入内容，不一定保存
         tmp = text.get("1.0", "end").strip()
         if not tmp:
             messagebox.showerror("错误", "播报内容不能为空")
             return
-        # 临时替换生成试听
-        global VOICE_TEXT
-        old = VOICE_TEXT
-        VOICE_TEXT = tmp
-        try:
-            generate_alert_voice(force=True)
-            play_alert()
-        finally:
-            VOICE_TEXT = old  # 不保存时恢复
+
+        # 走队列生成
+        generate_alert_voice(force=True, text=tmp)
+
+        # 稍微延迟播放，给生成一点时间（否则可能先播放到旧文件或没文件）
+        ui_post(lambda: root.after(350, lambda: play_alert(force=True)))
 
     def do_save():
         tmp = text.get("1.0", "end").strip()
@@ -1334,8 +1456,6 @@ def _start_single_instance_server(port: int, show_callback):
     本实例成为“主实例”：在后台监听端口。
     收到 SHOW 就调用 show_callback()（用 root.after 调回主线程）。
     """
-    _save_port(port)
-
     def _server():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1343,12 +1463,20 @@ def _start_single_instance_server(port: int, show_callback):
         try:
             srv.bind((SINGLE_INSTANCE_HOST, port))
         except OSError:
-            # 极小概率：端口在“检测后-真正 bind 前”被抢占
+            # bind 失败：不要留下“假端口文件”
             try:
                 srv.close()
             except Exception:
                 pass
-            return   # 👈 直接放弃单实例监听，但程序本身继续运行
+            try:
+                if os.path.exists(PORT_FILE):
+                    os.remove(PORT_FILE)
+            except Exception:
+                pass
+            return
+
+        # bind 成功后再写端口文件
+        _save_port(port)
 
         srv.listen(5)
 
@@ -1381,19 +1509,19 @@ def center_on_screen(win, w=None, h=None):
     x = (sw - w) // 2
     y = (sh - h) // 2
     win.geometry(f"{w}x{h}+{x}+{y}")
-    
-# 如果检测到已有实例：通知它显示窗口，然后直接退出当前进程（避免多开）
+
+# ================= 单实例：二次启动时通知已有实例（应放在 Tk 创建之前） =================
 if not ALLOW_MULTI_INSTANCE:
     if _try_notify_existing_instance():
         sys.exit(0)
-
+    
 # ================= GUI =================
 root = tk.Tk()
 root.withdraw()
 root.minsize(500, 200)
 
 popup_var = tk.BooleanVar(value=POPUP_ENABLED)
-threading.Thread(target=generate_alert_voice, daemon=True).start()
+generate_alert_voice(force=False)   # 或 force=True，程序启动时发一个“生成任务”（可选）
 
 def resource_path(relative):
     if getattr(sys, 'frozen', False):
@@ -1468,56 +1596,98 @@ else:
 tray_icon = None
 is_exiting = False
 
+# ================= 托盘回调：强制回主线程 =================
 def show_window():
-    root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
-
-if not ALLOW_MULTI_INSTANCE:
-    port = _pick_free_port()
-    if port is None:
-        # 极端情况：范围内全占用，就不做单实例（至少不崩）
-        msg = "⚠️ 单实例端口被占用，已降级为允许多开"
-        log_early(msg, tag="normal")
-
+    def _do():
+        try:
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+        except Exception:
+            pass
+    if threading.current_thread() is threading.main_thread():
+        _do()
     else:
-        _start_single_instance_server(port, lambda: root.after(0, show_window))
+        ui_post(_do)
 
 def hide_window():
-    root.after(0, root.withdraw)
+    def _do():
+        try:
+            root.withdraw()
+        except Exception:
+            pass
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
+
+# ================= 单实例：主实例启动监听（应放在 Tk 创建之后） =================
+if not ALLOW_MULTI_INSTANCE:
+    port = _pick_free_port()
+    if port is not None:
+        # 这里直接把 show_window 丢给 server 即可
+        # 因为 show_window 内部已经做了“回主线程”的 ui_post 处理
+        _start_single_instance_server(port, show_window)
+    else:
+        system_ui("⚠️ 单实例监听启动失败：端口占用（已放弃单实例唤醒）", "normal")
 
 def cleanup_and_exit():
-    """真正退出：停止串口线程、关闭串口、停止托盘、销毁窗口"""
-    global serial_running, serial_obj, is_exiting, tray_icon
-    if is_exiting:
-        return
-    is_exiting = True
+    """真正退出：停止串口线程、关闭串口、停止托盘、销毁窗口（主线程执行更稳）"""
+    def _do():
+        global serial_running, serial_obj, is_exiting, tray_icon
+        if is_exiting:
+            return
+        is_exiting = True
+        
+        try:
+            TK_SHUTDOWN.set()
+        except Exception:
+            pass
 
-    try:
-        serial_running = False
-    except Exception:
-        pass
+        try:
+            serial_running = False
+        except Exception:
+            pass
 
-    try:
-        if serial_obj:
-            serial_obj.close()
-    except Exception:
-        pass
+        try:
+            file_log_stop.set()
+        except Exception:
+            pass
 
-    try:
-        if tray_icon:
-            tray_icon.stop()
-    except Exception:
-        pass
+        try:
+            serial_stop_event.set()
+            serial_wakeup_event.set()
+        except Exception:
+            pass
 
-    try:
-        root.after(0, root.destroy)
-    except Exception:
-        pass
+        safe_close_serial()
 
-    try:
-        if os.path.exists(PORT_FILE):
-            os.remove(PORT_FILE)
-    except Exception:
-        pass
+        try:
+            if tray_icon:
+                tray_icon.stop()
+        except Exception:
+            pass
+
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+        try:
+            if os.path.exists(PORT_FILE):
+                os.remove(PORT_FILE)
+        except Exception:
+            pass
+
+        try:
+            TTS_STOP.set()
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 def on_close():
     """点右上角×：隐藏到托盘，不退出"""
@@ -1631,6 +1801,28 @@ def show_about():
     win.focus_force()
     win.bind("<Escape>", lambda _e: win.destroy())
 
+# ================= 线程安全 messagebox 调用（后台线程投递） =================
+def ui_messagebox(kind: str, title: str, message: str):
+    """
+    kind: 'info' | 'warning' | 'error' | 'askyesno'
+    """
+    def _do():
+        if kind == "info":
+            return messagebox.showinfo(title, message)
+        if kind == "warning":
+            return messagebox.showwarning(title, message)
+        if kind == "error":
+            return messagebox.showerror(title, message)
+        if kind == "askyesno":
+            return messagebox.askyesno(title, message)
+        return None
+
+    if threading.current_thread() is threading.main_thread():
+        return _do()
+    else:
+        ui_post(_do)
+        return None
+
 # ===== 用 grid 布局：内容区永远不会盖住状态栏 =====
 root.grid_rowconfigure(0, weight=1)   # 内容区可伸缩
 root.grid_rowconfigure(1, weight=0)   # 状态栏固定
@@ -1641,15 +1833,21 @@ main_frame = tk.Frame(root)
 main_frame.grid(row=0, column=0, sticky="nsew")
 
 text_area = ScrolledText(main_frame, font=("微软雅黑", 10))
-text_area.pack(fill=tk.BOTH, expand=True)  # 这里用 pack 没问题，因为只在 main_frame 内部
+text_area.pack(fill=tk.BOTH, expand=True)
+root.after(30, ui_pump)
 
-# 把早期提示补到窗口
-for m, t in PENDING_UI_LOGS:
-    try:
-        text_area.insert(tk.END, m + "\n", t)
-    except Exception:
-        pass
-PENDING_UI_LOGS.clear()
+# ================= 把早期提示补到窗口：从队列取出 =================
+try:
+    while True:
+        m, t = PENDING_UI_LOGS.get_nowait()
+        try:
+            text_area.insert(tk.END, m + "\n", t)
+        except Exception:
+            pass
+except queue.Empty:
+    pass
+except Exception:
+    pass
 
 # 底部状态栏
 status_frame = tk.Frame(root)
@@ -1660,7 +1858,20 @@ status_label = tk.Label(status_frame, textvariable=status_var, anchor="w")
 status_label.pack(side=tk.LEFT, padx=6)
 
 def set_status(text, color="black"):
-    root.after(0, lambda: (status_var.set(text), status_label.config(fg=color)))
+    if not tk_alive():
+        return
+
+    def _do():
+        try:
+            status_var.set(text)
+            status_label.config(fg=color)
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 text_area.tag_config("normal", foreground="black", font=("微软雅黑", 10))
 
@@ -1672,87 +1883,85 @@ def apply_sms_font_style():
 
 apply_sms_font_style()
 
+# ================= 统一线程安全 log：后台线程只投递，主线程执行 Tk =================
 def log(msg, tag="normal"):
-    """线程安全：在子线程调用时自动切回主线程执行"""
-    def _do():
-        # 1) UI
+    def _ui_and_file():
+        # --- UI ---
         try:
-            text_area.insert(tk.END, msg + "\n", tag)
-            text_area.see(tk.END)
+            if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
+                text_area.insert(tk.END, msg + "\n", tag)
+                text_area.see(tk.END)
+            else:
+                log_early(msg, tag)
+                return
+        except Exception:
+            try:
+                log_early(msg, tag)
+            except Exception:
+                pass
+            return
+
+        # --- 文件（COM 分日志）---
+        try:
+            prefix_snapshot = LOG_PREFIX
+            today = datetime.now().strftime("%Y-%m-%d")
+            path = os.path.join(LOG_DIR, f"sms_{prefix_snapshot}_{today}.txt")
+            line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n"
+            FILE_LOG_Q.put_nowait((path, line))
+        except queue.Full:
+            # 队列满：丢弃（避免阻塞 UI/串口线程）
+            pass
         except Exception:
             pass
 
-        # 2) 文件（COM 分日志，走 get_log_file -> sms_{LOG_PREFIX}_*.txt）
-        try:
-            with open(get_log_file(), "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
-        except Exception:
-            pass
-
-    # --- root / text_area 是否可用 ---
-    root_ok = False
-    try:
-        root_ok = ("root" in globals()) and (root is not None) and root.winfo_exists()
-    except Exception:
-        root_ok = False
-
-    text_ok = False
-    try:
-        text_ok = ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists()
-    except Exception:
-        text_ok = False
-
-    # UI 不可用：至少别丢（写 system + 缓存）
-    if not (root_ok and text_ok):
-        try:
-            log_early(msg, tag)
-        except Exception:
-            pass
-        return
-
-    # --- 主线程直接做；子线程丢回主线程 ---
-    try:
-        if threading.current_thread() is threading.main_thread():
-            _do()
-        else:
-            root.after(0, _do)
-    except Exception:
-        # after 不可用/竞态兜底
-        try:
-            log_early(msg, tag)
-        except Exception:
-            pass
+    # 主线程直接执行；非主线程投递到 UI 队列
+    if threading.current_thread() is threading.main_thread():
+        _ui_and_file()
+    else:
+        ui_post(_ui_and_file)
 
 # ================= 声音 =================
-def play_alert():
-    if not VOICE_ENABLED:
+def play_alert(force: bool = False):
+    if (not force) and (not VOICE_ENABLED):
         return
 
     try:
         if os.path.exists(TTS_FILE):
-            winsound.PlaySound(TTS_FILE,winsound.SND_FILENAME | winsound.SND_ASYNC)
+            winsound.PlaySound(TTS_FILE, winsound.SND_FILENAME | winsound.SND_ASYNC)
         else:
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
     except Exception:
         winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
 def show_sms_popup(msg: str):
-    """弹窗确认后，自动显示主程序窗口"""
     if not POPUP_ENABLED:
         return
 
-    def _popup_and_show():
-        messagebox.showinfo("短信提醒", msg)  # 用户点“确定”前会阻塞
-        show_window()  # 👈 关键：确认后自动打开主窗口
+    def _do():
+        try:
+            messagebox.showinfo("短信提醒", msg)
+            show_window()
+        except Exception:
+            pass
 
-    try:
-        root.after(0, _popup_and_show)
-    except Exception:
-        pass
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
-# ================= 清空窗口 =================
+# ================= 清空窗口 clear_window：永远线程安全 =================
 def clear_window():
-    text_area.delete("1.0", tk.END)
+    def _do():
+        try:
+            if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
+                text_area.delete("1.0", tk.END)
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 # ================= 打开日志目录 =================
 def open_log_dir():
@@ -1760,7 +1969,7 @@ def open_log_dir():
     if os.path.exists(log_path):
         os.startfile(log_path)   # Windows 下直接打开文件夹
     else:
-        messagebox.showwarning("提示", "日志目录不存在")
+        ui_messagebox("warning", "提示", "日志目录不存在")
 
 # ================= 日志清理 =================
 def _parse_date_from_log_filename(filename: str):
@@ -1950,7 +2159,7 @@ def open_update_proxy_dialog():
     def test_connection():
         # 先禁用按钮，避免重复点（需要 btn_test 变量，下面按钮处我也给你改法）
         try:
-            btn_test.config(state="disabled", text="测试中…")
+            ui_post(lambda: btn_test.config(state="disabled", text="测试中…"))
         except Exception:
             pass
 
@@ -2043,7 +2252,7 @@ def open_update_proxy_dialog():
 
                 messagebox.showinfo("测试结果", "\n".join(lines))
 
-            root.after(0, done)
+            ui_post(done)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2069,26 +2278,40 @@ def open_update_proxy_dialog():
     win.bind("<Escape>", lambda _e: win.destroy())
 
 def _auto_log_cleanup_tick():
-    """一次自动清理 + 重新安排下一次"""
-    global AUTO_CLEANUP_AFTER_ID
+    """一次自动清理 + 重新安排下一次（线程安全：确保 after 在主线程安排）"""
+    def _do():
+        global AUTO_CLEANUP_AFTER_ID
 
-    if not AUTO_LOG_CLEANUP:
-        AUTO_CLEANUP_AFTER_ID = None
-        return
+        if not AUTO_LOG_CLEANUP:
+            AUTO_CLEANUP_AFTER_ID = None
+            return
 
-    days = LOG_RETENTION_DAYS if LOG_RETENTION_DAYS >= 0 else 0
+        days = LOG_RETENTION_DAYS if LOG_RETENTION_DAYS >= 0 else 0
 
-    try:
-        n = cleanup_old_logs(days)
-        msg = f"🧹 自动日志清理：已删除 {n} 个旧日志文件（保留 {days} 天）"
-        # 显示到窗口 + 写入 system 日志
-        system_ui(msg, "normal")
+        try:
+            n = cleanup_old_logs(days)
+            msg = f"🧹 自动日志清理：已删除 {n} 个旧日志文件（保留 {days} 天）"
+            # 显示到窗口 + 写入 system 日志
+            system_ui(msg, "normal")
+        except Exception as e:
+            system_ui(f"⚠️ 自动日志清理失败：{e}")
 
-    except Exception as e:
-        system_ui(f"⚠️ 自动日志清理失败：{e}")
+        # 下一次
+        try:
+            if tk_alive():
+                AUTO_CLEANUP_AFTER_ID = root.after(
+                    AUTO_CLEANUP_INTERVAL_HOURS * 3600 * 1000,
+                    _auto_log_cleanup_tick
+                )
+            else:
+                AUTO_CLEANUP_AFTER_ID = None
+        except Exception:
+            AUTO_CLEANUP_AFTER_ID = None
 
-    # 下一次
-    AUTO_CLEANUP_AFTER_ID = root.after(AUTO_CLEANUP_INTERVAL_HOURS * 3600 * 1000, _auto_log_cleanup_tick)
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 def schedule_auto_log_cleanup(restart: bool = True, first_delay_sec: int = 60):
     """
@@ -2096,18 +2319,34 @@ def schedule_auto_log_cleanup(restart: bool = True, first_delay_sec: int = 60):
     - restart=True：会先取消旧定时器，避免重复跑
     - first_delay_sec：首次执行延迟（避免刚启动就占资源）
     """
-    global AUTO_CLEANUP_AFTER_ID
+    def _do():
+        global AUTO_CLEANUP_AFTER_ID
 
-    if restart and AUTO_CLEANUP_AFTER_ID is not None:
+        if restart and AUTO_CLEANUP_AFTER_ID is not None:
+            if tk_alive():
+                try:
+                    root.after_cancel(AUTO_CLEANUP_AFTER_ID)
+                except Exception:
+                    pass
+            AUTO_CLEANUP_AFTER_ID = None
+
+        if not AUTO_LOG_CLEANUP:
+            return
+
+        # 关键：root 不可用时不要 after
+        if not tk_alive():
+            AUTO_CLEANUP_AFTER_ID = None
+            return
+
         try:
-            root.after_cancel(AUTO_CLEANUP_AFTER_ID)
+            AUTO_CLEANUP_AFTER_ID = root.after(first_delay_sec * 1000, _auto_log_cleanup_tick)
         except Exception:
-            pass
-        AUTO_CLEANUP_AFTER_ID = None
+            AUTO_CLEANUP_AFTER_ID = None
 
-    if not AUTO_LOG_CLEANUP:
-        return
-    AUTO_CLEANUP_AFTER_ID = root.after(first_delay_sec * 1000, _auto_log_cleanup_tick)
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 # ================= 检测更新 =================
 def _ver_tuple(v: str):
@@ -2247,12 +2486,12 @@ def check_update_and_prompt():
             current = _ver_tuple(APP_VERSION)
 
             if latest <= current:
-                root.after(0, lambda: messagebox.showinfo("检测更新", f"当前已是最新版本：v{APP_VERSION}"))
+                ui_post(lambda: messagebox.showinfo("检测更新", f"当前已是最新版本：v{APP_VERSION}"))
                 return
 
             asset = _pick_exe_asset(rel)
             if not asset:
-                root.after(0, lambda: messagebox.showwarning(
+                ui_post(lambda: messagebox.showwarning(
                     "检测更新",
                     f"发现新版本：{tag}\n但 Release 里没有 .zip 附件。"
                 ))
@@ -2260,8 +2499,6 @@ def check_update_and_prompt():
 
             raw_url = asset.get("browser_download_url") or ""
             proxy_base, _api_proxy_base = _get_update_config()
-
-            # 下载链接：优先走代理（大陆可用），同时给用户一个“原始链接”
             proxy_url = (proxy_base + raw_url) if (proxy_base and raw_url.startswith("http")) else raw_url
 
             def ask():
@@ -2275,10 +2512,10 @@ def check_update_and_prompt():
                     except Exception:
                         pass
 
-            root.after(0, ask)
+            ui_post(ask)
 
         except Exception as e:
-            root.after(0, lambda: messagebox.showerror("检测更新失败", str(e)))
+            ui_post(lambda: messagebox.showerror("检测更新失败", str(e)))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -2289,9 +2526,20 @@ def clear_text_area_for_new_day():
     schedule_next_midnight_clear()
 
 def schedule_next_midnight_clear():
-    now = datetime.now()
-    next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    root.after(int((next_midnight - now).total_seconds() * 1000), clear_text_area_for_new_day)
+    def _do():
+        now = datetime.now()
+        next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        try:
+            if tk_alive():
+                ms = int((next_midnight - now).total_seconds() * 1000)
+                root.after(ms, clear_text_area_for_new_day)
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 
 # ================= 串口扫描 =================
 def scan_com_ports_all():
@@ -2364,6 +2612,126 @@ def _push_serial_debug(raw_line: str):
         serial_debug_queue.put_nowait(raw_line)
     except queue.Full:
         serial_debug_drop_count += 1
+
+def try_rebind_manual_port(reason: str = "") -> bool:
+    """
+    Manual 模式下：端口失效时尝试自动重绑到新的端口（仍保持 Manual）。
+    优先：LUAT Modem -> 若无则单一串口。
+    成功返回 True，失败返回 False。
+    """
+    global PORT, MODE
+
+    if MODE != "Manual":
+        return False
+
+    # 1) 优先找 LUAT Modem
+    dev, desc = (None, None)
+    try:
+        dev, desc = find_luat_best_port()
+    except Exception:
+        dev, desc = (None, None)
+
+    # 2) 否则：仅一个串口就用它
+    if not dev:
+        try:
+            ports_all = list(list_ports.comports())
+            if len(ports_all) == 1:
+                dev = ports_all[0].device
+                desc = ports_all[0].description or ""
+        except Exception:
+            dev = None
+
+    # 找不到候选
+    if not dev:
+        return False
+
+    # 候选就是当前端口也没意义
+    if dev == PORT:
+        return False
+
+    old_port = PORT
+    PORT = dev
+
+    # 写回配置：保持 Manual，但 port 更新
+    try:
+        if not config.has_section("serial"):
+            config["serial"] = {}
+        config.set("serial", "mode", "Manual")
+        config.set("serial", "port", PORT)
+        config.set("serial", "baud", str(BAUD))
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception:
+        pass
+
+    # UI 提示（线程安全：用 system_ui / set_status，它们自己已处理线程投递）
+    hint = f"🔁 手动模式端口失效，已自动重绑：{old_port} -> {PORT}"
+    if desc:
+        hint += f"（{desc}）"
+    if reason:
+        hint += f"；原因：{reason}"
+    system_ui(hint, "normal")
+    set_status(f"🟡 连接中：{PORT} @ {BAUD}", "orange")
+
+    # 让串口线程立刻醒来重连
+    try:
+        serial_wakeup_event.set()
+    except Exception:
+        pass
+    # 重绑成功：清零提示抑制，让下次还能正常提示
+    global _last_rebind_hint_msg, _last_rebind_hint_count
+    _last_rebind_hint_msg = None
+    _last_rebind_hint_count = 0
+
+    return True
+
+def rebind_hint_ui(msg: str):
+    """Manual 重绑提示：重复抑制，避免刷屏"""
+    global _last_rebind_hint_msg, _last_rebind_hint_count
+
+    try:
+        if _last_rebind_hint_msg == msg:
+            _last_rebind_hint_count += 1
+        else:
+            _last_rebind_hint_msg = msg
+            _last_rebind_hint_count = 1
+
+        if _last_rebind_hint_count < ERROR_REPEAT_LIMIT:
+            system_ui(msg, "normal")
+        elif _last_rebind_hint_count == ERROR_REPEAT_LIMIT:
+            system_ui(msg + "（后续同类提示已忽略）", "normal")
+        else:
+            # 超过阈值：彻底静默
+            pass
+    except Exception:
+        # 兜底：抑制逻辑崩了也别刷屏
+        try:
+            system_ui(msg, "normal")
+        except Exception:
+            pass
+
+def serial_error_ui(msg: str):
+    """串口异常提示：重复抑制，避免刷屏"""
+    global _last_serial_error_msg, _last_serial_error_count
+
+    try:
+        if _last_serial_error_msg == msg:
+            _last_serial_error_count += 1
+        else:
+            _last_serial_error_msg = msg
+            _last_serial_error_count = 1
+
+        if _last_serial_error_count < ERROR_REPEAT_LIMIT:
+            system_ui(msg, "normal")
+        elif _last_serial_error_count == ERROR_REPEAT_LIMIT:
+            system_ui(msg + "（后续同类错误已忽略）", "normal")
+        else:
+            pass
+    except Exception:
+        try:
+            system_ui(msg, "normal")
+        except Exception:
+            pass
 
 # ================= 串口线程（自动识别 + 自动重连） =================
 def read_serial():
@@ -2450,7 +2818,7 @@ def read_serial():
         pending_active = False
         follow_lines_left = 0
 
-    while serial_running:
+    while serial_running and (not serial_stop_event.is_set()):
         try:
             if MODE == "Auto":
                 dev, desc = find_luat_best_port()
@@ -2466,7 +2834,8 @@ def read_serial():
                         system_ui(f"🔌 未检测到 LUAT Modem 标识，但仅发现单一串口，自动连接：{dev}")
                     else:
                         set_status("🔍 扫描 LUAT Modem 中…", "orange")
-                        time.sleep(RECONNECT_INTERVAL)
+                        serial_wakeup_event.wait(timeout=RECONNECT_INTERVAL)
+                        serial_wakeup_event.clear()
                         continue
                 PORT = dev
                 set_status(f"🟡 连接中：{PORT}（{desc}） @ {BAUD}", "orange")
@@ -2477,7 +2846,9 @@ def read_serial():
                     continue
                 set_status(f"🟡 连接中：{PORT} @ {BAUD}", "orange")
 
-            serial_obj = serial.Serial(PORT, BAUD, timeout=1)
+            # 创建串口也要加锁，避免与 safe_close_serial() 并发
+            with serial_lock:
+                serial_obj = serial.Serial(PORT, BAUD, timeout=0.3)
 
             LOG_PREFIX = PORT.replace(":", "_")
 
@@ -2486,40 +2857,43 @@ def read_serial():
                 try:
                     time.sleep(delay)
 
-                    # 计算启动时要再等多少（与 system_ui 的延迟逻辑一致）
-                    try:
-                        elapsed = time.monotonic() - APP_START_MONO
-                        delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
-                    except Exception:
-                        delay_ms = 0
-
-                    # 写 system 日志并在窗口显示（system_ui 内部也会用 after 调度）
                     system_ui(f"🔌 串口已连接：{port} @ {baud}")
 
-                    # 同步安排状态栏更新，保证与日志显示时机一致
-                    try:
-                        def _update_status():
-                            try:
-                                status_var.set(f"🟢 已连接：{port} @ {baud}")
-                                status_label.config(fg="green")
-                            except Exception:
-                                pass
+                    def _update_status():
+                        try:
+                            status_var.set(f"🟢 已连接：{port} @ {baud}")
+                            status_label.config(fg="green")
+                        except Exception:
+                            pass
 
-                        if delay_ms > 0:
-                            root.after(delay_ms, _update_status)
-                        else:
-                            root.after(0, _update_status)
-                    except Exception:
-                        pass
+                    # 这里不要在后台线程 root.after
+                    def _schedule():
+                        try:
+                            elapsed = time.monotonic() - APP_START_MONO
+                            delay_ms = int(max(0.0, START_UI_DELAY - elapsed) * 1000)
+                        except Exception:
+                            delay_ms = 0
+                        try:
+                            if delay_ms > 0:
+                                root.after(delay_ms, _update_status)
+                            else:
+                                root.after(0, _update_status)
+                        except Exception:
+                            _update_status()
 
+                    ui_post(_schedule)   # 关键：回主线程安排 after
                 except Exception:
                     pass
 
             threading.Thread(target=_delayed_connected_log, args=(PORT, BAUD), daemon=True).start()
 
-            while serial_running:
+            while serial_running and (not serial_stop_event.is_set()):
+                # readline 必须在锁内，避免读的时候被别处 close
                 try:
-                    raw = serial_obj.readline()
+                    with serial_lock:
+                        if serial_obj is None:
+                            raise serial.SerialException("serial_obj is None (closed)")
+                        raw = serial_obj.readline()
                 except (PermissionError, OSError, serial.SerialException) as e:
                     raise e
 
@@ -2564,50 +2938,58 @@ def read_serial():
         except Exception as e:
             LOG_PREFIX = "system"
 
-            # 重复异常抑制：连续相同错误只显示有限次数，避免刷屏
-            try:
-                err_msg = str(e)
-                if _last_serial_error_msg == err_msg:
-                    _last_serial_error_count += 1
-                else:
-                    _last_serial_error_msg = err_msg
-                    _last_serial_error_count = 1
-
-                if _last_serial_error_count < ERROR_REPEAT_LIMIT:
-                    # 正常显示错误信息（前 N-1 次）
-                    system_ui(f"⚠️ 串口异常：{err_msg}")
-                elif _last_serial_error_count == ERROR_REPEAT_LIMIT:
-                    # 第 N 次
-                    port_display = PORT or "(未指定端口)"
-                    system_ui(f"⚠️ 串口异常：{port_display} 不存在（后续同类错误已忽略）")
-                else:
-                    # 超过阈值：继续抑制，不再重复显示相同错误
-                    pass
-            except Exception:
-                # 抑制逻辑出问题时兜底显示原始异常
-                try:
-                    system_ui(f"⚠️ 串口异常：{e}")
-                except Exception:
-                    pass
+            # 1) 打印原始异常
+            err_msg = str(e)
+            serial_error_ui(f"⚠️ 串口异常：{err_msg}")
 
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
 
-            try:
-                if serial_obj:
-                    serial_obj.close()
-            except Exception:
-                pass
+            safe_close_serial()
 
+            # 2) Manual：先尝试重绑（在 wait 之前做！）
+            if MODE == "Manual":
+                s = (repr(e) + " " + str(e)).lower()
+
+                # Windows/pyserial 常见拔插错误关键词
+                is_port_gone = any(x in s for x in [
+                    "could not open port",
+                    "file not found",
+                    "no such file",
+                    "the system cannot find the file specified",
+                    "cleartcommerror",                 # ClearCommError failed
+                    "clearcommerror",
+                    "semaphore timeout",               # Semaphore timeout period has expired
+                    "timeout period has expired",
+                    "device does not recognize",       # The device does not recognize the command
+                    "access is denied",                # 被系统/占用/权限
+                    "winerror 2",                      # 系统找不到文件
+                    "winerror 5",                      # 拒绝访问
+                    "winerror 31",                     # 设备未正常工作
+                    "winerror 1167",                   # device not connected
+                    "device not functioning",
+                    "设备", "不存在", "找不到", "系统找不到指定的文件"
+                ])
+
+                if is_port_gone:
+                    rebind_hint_ui("🧠 Manual：检测到疑似拔插/端口变化，尝试自动重绑…")
+
+                    ok = try_rebind_manual_port("端口号变化或设备插拔")
+                    if ok:
+                        # 重绑成功：立刻回到 while 外层，重新 open 新 PORT
+                        continue
+                else:
+                    # system_ui(f"DEBUG: is_port_gone=False, e={repr(e)}")
+                    pass
+
+            # 3) Auto：维持原逻辑（清 PORT 让它重新扫描）
             if MODE == "Auto":
                 PORT = ""
 
-            time.sleep(RECONNECT_INTERVAL)
+            # 4) 等待下一轮（只有在没有 continue 的情况下才会走到这里）
+            serial_wakeup_event.wait(timeout=RECONNECT_INTERVAL)
+            serial_wakeup_event.clear()            
 
-    try:
-        if serial_obj:
-            serial_obj.close()
-    except Exception:
-        pass
+    safe_close_serial()
 
 # ================= 串口设置窗口 =================
 def open_serial_setting():
@@ -2643,10 +3025,13 @@ def open_serial_setting():
             config.write(f)
 
         set_status("🟡 应用中，重连…", "orange")
+
+        # 线程安全关闭串口，触发 read_serial() 进入异常->重连
+        safe_close_serial()
+
         try:
-            if serial_obj:
-                serial_obj.close()
-        except:
+            serial_wakeup_event.set()
+        except Exception:
             pass
 
         system_ui(f"⚙️ 串口设置已更新：mode={MODE} port={PORT or '(Auto)'} baud={BAUD}")
