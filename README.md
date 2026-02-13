@@ -14,6 +14,47 @@
 ### [USB 驱动安装](https://docs.openluat.com/air724ug/common/usb_drv/)
 ---
 
+## 📦 依赖安装
+
+```bash
+pip install pyserial pystray pillow pyttsx3
+```
+
+## 🚀 源码运行
+```bash
+py sms.pyw
+```
+## 🏗 打包为 EXE
+
+安装 PyInstaller：
+```bash
+pip install pyinstaller
+```
+然后在项目目录下执行以下命令：
+```bash
+pyinstaller ^
+  --noconfirm ^
+  --onefile ^
+  --windowed ^
+  --name "sms" ^
+  --icon=icon.ico ^
+  --add-data "icon.ico;." ^
+  sms.pyw
+```
+生成的 exe 文件位于：
+```bash
+dist/sms.exe
+```
+## 📁 项目结构
+```
+Air724UG-SMS/
+│
+├── sms.pyw    # 主程序入口
+├── icon.ico   # 应用图标
+├── config.ini # 软件配置文件（首次运行自动创建）
+├── sms_logs/  # 短信日志存储目录
+└── tts/       # 语音播报缓存目录
+```
 ## ✨ 主要特性
 
 ### 🔌 串口与设备
