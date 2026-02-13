@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.3"  # 软件版本号
+APP_VERSION = "3.3.4"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -662,8 +662,12 @@ def open_sms_font_dialog():
     win.transient(root)
     win.grab_set()
 
+    bottom_line = tk.Frame(win, height=1, bg="#d4d4d4")
+    bottom_line.pack(side="bottom", fill="x")
+    bottom_line.pack_propagate(False)
+
     frame = tk.Frame(win, padx=14, pady=12)
-    frame.pack(fill=tk.BOTH, expand=True)
+    frame.pack(side="top", fill=tk.BOTH, expand=True)
 
     tk.Label(frame, text="字号：", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
 
@@ -1753,8 +1757,12 @@ def show_about():
     win.transient(root)
     win.grab_set()
 
+    bottom_line = tk.Frame(win, height=1, bg="#d4d4d4")
+    bottom_line.pack(side="bottom", fill="x")
+    bottom_line.pack_propagate(False)
+
     frame = tk.Frame(win, padx=20, pady=15)
-    frame.pack(fill=tk.BOTH, expand=True)
+    frame.pack(side="top", fill=tk.BOTH, expand=True)
 
     # 版本信息
     tk.Label(frame, text="短信监听系统", font=("微软雅黑", 12, "bold")).pack(pady=(0, 8))
@@ -3119,8 +3127,12 @@ def open_desktop_shortcut_dialog():
     win.transient(root)
     win.grab_set()
 
+    bottom_line = tk.Frame(win, height=1, bg="#d4d4d4")
+    bottom_line.pack(side="bottom", fill="x")
+    bottom_line.pack_propagate(False)
+
     frame = tk.Frame(win, padx=14, pady=12)
-    frame.pack(fill=tk.BOTH, expand=True)
+    frame.pack(side="top", fill=tk.BOTH, expand=True)
 
     tk.Label(frame, text="快捷方式名称：", font=("微软雅黑", 10)).grid(
         row=0, column=0, sticky="w"
