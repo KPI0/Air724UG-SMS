@@ -1,3 +1,26 @@
+# ================================================================
+#  短信监听系统
+#
+#  功能简介：
+#  ------------------------------------------------
+#  本软件用于监听 LUAT 模组（如 Air724UG）串口输出，
+#  实时识别指定短信回调日志，并进行如下处理：
+#
+#  1. 自动识别 LUAT Modem 串口（支持 Auto / Manual 模式）
+#  2. 严格匹配短信回调标识 [handler_sms.smsCallback]
+#  3. 支持关键词过滤（命中后才显示 / 弹窗 / 播报）
+#  4. 支持语音播报（可自定义播报内容）
+#  5. 支持短信弹窗提醒
+#  6. 支持串口调试窗口（原始数据旁路）
+#  7. 支持日志分端口记录与自动清理
+#  8. 支持单实例运行（可选允许多开）
+#  9. 支持开机自启与桌面快捷方式创建
+# 10. 支持在线检测更新（支持代理）
+#
+#  作者：KPI0
+#  GitHub：https://github.com/KPI0/Air724UG-SMS
+# ================================================================
+
 # ---- 标准库 ----
 import configparser
 import json
@@ -35,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.5"  # 软件版本号
+APP_VERSION = "3.3.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -149,16 +172,16 @@ if not os.path.exists(CONFIG_FILE):
     }
 
     config["ui"] = {
-    "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
-    "popup_enabled": "1",         # 0=关闭短信弹窗，1=打开短信弹窗（默认）
-    "voice_text": "注意！四川安播中心预警短信，请及时查看。",   # 默认语音播报内容
-    "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
-    "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
-    "log_retention_days": "30",   # 日志保留时间，单位：天
-    "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
-    "keywords": "【四川安播中心】",  # 默认关键词
-    "sms_font_size": "30",        # 默认字体大小
-    "sms_font_color": "#ff0000",  # 默认字体颜色
+        "voice_enabled": "1",         # 0=关闭语音播报，1=打开语音播报（默认）
+        "popup_enabled": "1",         # 0=关闭短信弹窗，1=打开短信弹窗（默认）
+        "voice_text": "注意！四川安播中心预警短信，请及时查看。",   # 默认语音播报内容
+        "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
+        "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
+        "log_retention_days": "30",   # 日志保留时间，单位：天
+        "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
+        "keywords": "【四川安播中心】",  # 默认关键词
+        "sms_font_size": "30",        # 默认字体大小
+        "sms_font_color": "#ff0000",  # 默认字体颜色
 
     }
 
@@ -3359,7 +3382,11 @@ def toggle_voice_broadcast():
     VOICE_ENABLED = not VOICE_ENABLED
     update_voice_menu_label()
     save_voice_setting()
-    msg = "🔊 语音播报：已开启" if VOICE_ENABLED else "🔇 语音播报：已关闭"
+
+    if VOICE_ENABLED:
+        msg = "🔊 语音播报：已开启"
+    else:
+        msg = "🔇 语音播报：已关闭"
 
     system_ui(msg, "normal")
 
@@ -3379,7 +3406,10 @@ def toggle_multi_instance():
     except Exception:
         pass
 
-    msg = "✅️ 程序多开：已开启" if ALLOW_MULTI_INSTANCE else "❌ 程序多开：已关闭"
+    if ALLOW_MULTI_INSTANCE:
+        msg = "✅️ 程序多开：已开启"
+    else:
+        msg = "❌ 程序多开：已关闭"
 
     system_ui(msg, "normal")
 
