@@ -35,7 +35,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.4"  # 软件版本号
+APP_VERSION = "3.3.5"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -3281,8 +3281,11 @@ def open_keywords_setting():
     win.transient(root)
     win.grab_set()
 
+    bottom_line = tk.Frame(win, height=1, bg="#7a7a7a")
+    bottom_line.pack(side="bottom", fill="x")
+    bottom_line.pack_propagate(False)
     frame = tk.Frame(win, padx=12, pady=10)
-    frame.pack(fill=tk.BOTH, expand=True)
+    frame.pack(side="top", fill=tk.BOTH, expand=True)
 
     tk.Label(frame, text="关键词列表：").grid(row=0, column=0, sticky="w")
 
