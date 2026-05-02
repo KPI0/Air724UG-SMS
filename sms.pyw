@@ -17,7 +17,7 @@
 #  9. 支持开机自启与桌面快捷方式创建
 # 10. 支持在线检测更新（支持代理）
 #
-#  作者：KPI0
+#  作者：ChatGPT、Gemini、KPI0
 #  GitHub：https://github.com/KPI0/Air724UG-SMS
 # ================================================================
 
@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.7"  # 软件版本号
+APP_VERSION = "3.3.8"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -920,6 +920,20 @@ def open_serial_debug_window():
         except Exception:
             pass
 
+        # ============ 控制发送按钮和输入框变灰 ============
+        try:
+            if running:
+                btn_send.state(["!disabled"])
+                send_entry.state(["!disabled"])
+                btn_quick.state(["!disabled"])
+            else:
+                btn_send.state(["disabled"])
+                send_entry.state(["disabled"])
+                btn_quick.state(["disabled"])
+        except Exception:
+            pass
+        # ================================================
+
     def _set_pause_state(is_paused: bool):
         nonlocal pause_banner_shown
         is_paused = bool(is_paused)
@@ -994,16 +1008,193 @@ def open_serial_debug_window():
     drop_label = ttk.Label(top, text="")
     drop_label.pack(side="right")
 
+    # ================= 发送命令区 =================
+    send_frame = ttk.Frame(serial_debug_win)
+    send_frame.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
+
+    send_var = tk.StringVar()
+    ttk.Label(send_frame, text="发送指令：").pack(side="left")
+    
+    # 输入框
+    send_entry = ttk.Entry(send_frame, textvariable=send_var)
+    send_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+    # AT 指令通常需要回车换行
+    crlf_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(send_frame, text="加回车换行(\\r\\n)", variable=crlf_var).pack(side="left", padx=(0, 8))
+
+    def _send_cmd(_event=None):
+        if not enabled_var.get():
+            return "break"
+        cmd = send_var.get()
+        if not cmd:
+            return "break"
+        
+        global serial_obj, serial_lock
+        
+        # 处理换行符并转码
+        cmd_bytes = (cmd + "\r\n").encode("utf-8", "ignore") if crlf_var.get() else cmd.encode("utf-8", "ignore")
+        display_suffix = "\\r\\n" if crlf_var.get() else ""
+        
+        # 线程安全地写入串口
+        with serial_lock:
+            if serial_obj is not None and serial_obj.is_open:
+                try:
+                    serial_obj.write(cmd_bytes)
+                    serial_obj.flush()
+                    # 回显到调试窗口
+                    _push_serial_debug(f">>> 发送: {cmd}{display_suffix}")
+                    # send_var.set("")  # 发送成功后清空输入框
+                except Exception as e:
+                    _push_serial_debug(f">>> 发送失败: {e}")
+            else:
+                _push_serial_debug(">>> 发送失败: 串口未连接")
+        return "break"
+
+    btn_send = ttk.Button(send_frame, text="发送", width=8, command=_send_cmd)
+    btn_send.pack(side="left")
+
+    # ============ 快捷命令发送函数与展开按钮 ============
+    def _quick_send(cmd):
+        send_var.set(cmd)
+        _send_cmd()
+
+    btn_quick = ttk.Button(send_frame, text="快捷命令 ▶")
+    btn_quick.pack(side="left", padx=(8, 0))
+    # ==========================================================
+
+    # 绑定回车键快捷发送
+    send_entry.bind("<Return>", _send_cmd)
+    # ====================================================
+
     body = ttk.Frame(serial_debug_win)
     body.pack(fill="both", expand=True, padx=8, pady=6)
 
-    yscroll = ttk.Scrollbar(body, orient="vertical")
+    # 告诉 body 使用网格布局：左边（第0列）自动伸缩，右边（第1列）自适应大小
+    body.grid_rowconfigure(0, weight=1)
+    body.grid_columnconfigure(0, weight=1)
+    body.grid_columnconfigure(1, weight=0)
+
+    # ==== 1. 左侧文本框容器 ====
+    text_frame = ttk.Frame(body)
+    text_frame.grid(row=0, column=0, sticky="nsew")
+
+    yscroll = ttk.Scrollbar(text_frame, orient="vertical")
     yscroll.pack(side="right", fill="y")
 
-    serial_debug_text = tk.Text(body, wrap="none", yscrollcommand=yscroll.set)
+    serial_debug_text = tk.Text(text_frame, wrap="none", yscrollcommand=yscroll.set)
     serial_debug_text.pack(side="left", fill="both", expand=True)
     yscroll.config(command=serial_debug_text.yview)
 
+    # ==== 2. 右侧常用指令面板 ====
+    quick_panel = ttk.LabelFrame(body, text="常用指令")
+    
+    # 改为 (指令, 中文注释) 的配对格式
+    common_cmds = [
+        ("AT", "测试通信"),
+        ("AT+CSQ", "查信号(RSSI/通用)"),
+        ("AT+CESQ", "查精确信号(4G RSRP)"),
+        ("AT+CGSN", "查模组IMEI"),
+        ("AT+RFTEMPERATURE?", "查模组温度"),
+        ("AT+CNUM", "查本机号码"),
+        ("AT+CPIN?", "查SIM卡状态"),
+        ("AT+ICCID", "查SIM卡ICCID"),
+        ("AT+CGATT?", "查网络附着"),
+        ("AT+RESET", "重启模组")
+    ]
+    
+    # 循环生成竖排按钮
+    for cmd, desc in common_cmds:
+        # 按钮外观显示包含中文，但点击事件(_quick_send)只传入纯正的 cmd
+        btn_text = f"{cmd}  ({desc})"
+        ttk.Button(quick_panel, text=btn_text, command=lambda c=cmd: _quick_send(c)).pack(fill="x", padx=6, pady=3)
+
+    # ================= 修改本机号码专属功能 =================
+    def _open_modify_number_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("修改本机号码")
+        win.geometry("300x140")
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入新的手机号码：").pack(anchor="w", pady=(0, 10))
+        num_var = tk.StringVar()
+        ent = ttk.Entry(frm, textvariable=num_var, width=28)
+        ent.pack(fill="x", pady=(0, 15))
+
+        def _do_modify():
+            phone = num_var.get().strip()
+            if not phone:
+                messagebox.showerror("错误", "手机号码不能为空", parent=win)
+                return
+            
+            win.destroy()
+            
+            # 准备要发送的两条指令
+            cmd1 = 'AT+CPBS="ON"'
+            cmd2 = f'AT+CPBW=1,"{phone}",145'
+
+            # 放到后台线程发送，防止 time.sleep 卡死软件界面
+            def _send_task():
+                global serial_obj, serial_lock
+                with serial_lock:
+                    if serial_obj is not None and serial_obj.is_open:
+                        try:
+                            # 发送第一条：设置电话本为本机
+                            serial_obj.write((cmd1 + "\r\n").encode("utf-8"))
+                            serial_obj.flush()
+                            _push_serial_debug(f">>> 发送: {cmd1}\\r\\n")
+                            
+                            # 延时 0.3 秒，给模组一点处理时间
+                            time.sleep(0.3)
+                            
+                            # 发送第二条：写入号码
+                            serial_obj.write((cmd2 + "\r\n").encode("utf-8"))
+                            serial_obj.flush()
+                            _push_serial_debug(f">>> 发送: {cmd2}\\r\\n")
+                        except Exception as e:
+                            _push_serial_debug(f">>> 发送失败: {e}")
+                    else:
+                        _push_serial_debug(">>> 发送失败: 串口未连接")
+                        
+            threading.Thread(target=_send_task, daemon=True).start()
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_modify).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent.focus_set()
+        win.bind("<Return>", lambda e: _do_modify())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # 在常用指令列表下方加一条分割线，再加这个专属按钮
+    #ttk.Separator(quick_panel, orient="horizontal").pack(fill="x", padx=6, pady=(5, 5))
+    ttk.Button(quick_panel, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
+
+    # ==== 3. 展开/收起控制逻辑 ====
+    panel_visible = False
+    def _toggle_quick_panel():
+        nonlocal panel_visible
+        if panel_visible:
+            # grid_remove() 会完美隐藏面板，并把位置“让”出来给文本框
+            quick_panel.grid_remove() 
+            btn_quick.config(text="快捷命令 ▶")
+            panel_visible = False
+        else:
+            # 重新显示在第1列
+            quick_panel.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+            btn_quick.config(text="快捷命令 ◀")
+            panel_visible = True
+
+    # 绑定到底部的快捷按钮上
+    btn_quick.config(command=_toggle_quick_panel)
     serial_debug_text.config(state="disabled")
     _update_state_label()
     serial_debug_text.tag_config("find_hit", background="yellow")
@@ -1231,7 +1422,7 @@ def open_serial_debug_window():
                     ln += "\n"
                 serial_debug_text.insert("end", ln)
             insert_end = serial_debug_text.index("end-1c")
-            term = find_var.get().strip()  # 你的 Ctrl+F 搜索词
+            term = find_var.get().strip()
             if term:
                 _highlight_range(term, insert_start, insert_end)
 
@@ -2039,6 +2230,25 @@ def clear_window():
     else:
         ui_post(_do)
 
+# ================= 重启设备 =================
+def send_reset_cmd():
+    """发送重启指令 AT+RESET"""
+    global serial_obj, serial_lock
+    # 检查串口是否连接
+    with serial_lock:
+        if serial_obj is not None and serial_obj.is_open:
+            try:
+                # 发送指令，AT指令通常需要回车换行
+                serial_obj.write(b"AT+RESET\r\n")
+                serial_obj.flush()
+                
+                # 在主窗口日志中记录
+                system_ui("🚀 已发送重启指令：AT+RESET", "normal")
+            except Exception as e:
+                system_ui(f"❌ 发送重启指令失败：{e}", "normal")
+        else:
+            messagebox.showwarning("提示", "串口当前未连接，无法发送指令")
+
 # ================= 打开日志目录 =================
 def open_log_dir():
     log_path = os.path.abspath(LOG_DIR)
@@ -2233,7 +2443,7 @@ def open_update_proxy_dialog():
         messagebox.showinfo("完成", "代理设置已保存")
 
     def test_connection():
-        # 先禁用按钮，避免重复点（需要 btn_test 变量，下面按钮处我也给你改法）
+        # 先禁用按钮，避免重复点
         try:
             ui_post(lambda: btn_test.config(state="disabled", text="测试中…"))
         except Exception:
@@ -2313,7 +2523,7 @@ def open_update_proxy_dialog():
                 for name, ok, info in checks:
                     lines.append(("✅ " if ok else "❌ ") + f"{name}：{info}")
 
-                # 是否下载代理 OK（你 checks 里成功时 name 是 "下载代理 {pb}"）
+                # 是否下载代理 OK
                 download_ok = any((ok is True) and isinstance(name, str) and name.startswith("下载代理 ")
                                   for (name, ok, _info) in checks)
 
@@ -3512,6 +3722,7 @@ file_menu = tk.Menu(menu_bar, tearoff=0)
 file_menu.add_command(label="清空窗口", command=clear_window)
 file_menu.add_command(label="打开日志", command=open_log_dir)
 file_menu.add_separator()
+file_menu.add_command(label="重启设备", command=send_reset_cmd)
 file_menu.add_command(label="退出", command=cleanup_and_exit)
 menu_bar.add_cascade(label="文件", menu=file_menu)
 
