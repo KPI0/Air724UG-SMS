@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.6"  # 软件版本号
+APP_VERSION = "3.3.7"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -1888,6 +1888,51 @@ status_var = tk.StringVar(value="🔍 启动中…")
 status_label = tk.Label(status_frame, textvariable=status_var, anchor="w")
 status_label.pack(side=tk.LEFT, padx=6)
 
+# ================= 温度 UI 与更新函数 =================
+temp_var = tk.StringVar(value="🌡️ -- ℃")
+temp_label = tk.Label(status_frame, textvariable=temp_var, anchor="w", fg="#0052cc") 
+temp_label.pack(side=tk.LEFT, padx=(20, 6))
+
+def set_temperature(temp_str):
+    if not tk_alive():
+        return
+    def _do():
+        try:
+            temp_var.set(f"🌡️ {temp_str} ℃")
+        except Exception:
+            pass
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
+
+# ================= 信号强度 UI 与更新函数 =================
+signal_var = tk.StringVar(value="📶 -- dBm")
+# 紧跟在温度标签左侧排列，用绿色显示
+signal_label = tk.Label(status_frame, textvariable=signal_var, anchor="w", fg="#008000") 
+signal_label.pack(side=tk.LEFT, padx=(20, 6))
+
+def set_signal(rsrp_val):
+    if not tk_alive():
+        return
+    def _do():
+        try:
+            val = int(rsrp_val) 
+            if val == 255:  # CESQ 协议中 255 代表未知/无信号
+                signal_var.set("📶 未知")
+            else:
+                # 4G RSRP 转 dBm 公式: RSRP参数 - 140
+                dbm = val - 140
+                signal_var.set(f"📶 {dbm} dBm")
+        except Exception:
+            signal_var.set("📶 -- dBm")
+            
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
+# ==========================================================
+
 def set_status(text, color="black"):
     if not tk_alive():
         return
@@ -2935,6 +2980,30 @@ def read_serial():
                         flush_pending()
                     continue
                 _push_serial_debug(line)
+
+                # ================= 解析温度数据 =================
+                if "+RFTEMPERATURE:" in line:
+                    try:
+                        # 解析示例: "[I]-[ril.proatc] +RFTEMPERATURE: 28.84"
+                        temp_val = line.split("+RFTEMPERATURE:")[1].strip()
+                        set_temperature(temp_val)
+                    except Exception:
+                        pass
+
+                # ================= 解析信号强度(CESQ 的 RSRP) =================
+                if "+CESQ:" in line:
+                    try:
+                        # 解析示例: "[I]-[ril.proatc] +CESQ: 99,99,255,255,26,49"
+                        # 取冒号后面的部分，再用逗号分割
+                        parts = line.split("+CESQ:")[1].split(",")
+                        # 确保分割出来的数据够长，取第6个参数(索引为5)
+                        if len(parts) >= 6:
+                            rsrp_str = parts[5].strip()
+                            set_signal(rsrp_str)
+                    except Exception:
+                        pass
+                # ==========================================================
+
                 if callback_prefix in line:
                     msg = line.split(callback_prefix, 1)[1].strip()
                     if msg:
@@ -2974,7 +3043,8 @@ def read_serial():
             serial_error_ui(f"⚠️ 串口异常：{err_msg}")
 
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
-
+            set_temperature("--")  # 断开时重置温度显示
+            set_signal("--")       # 断开时重置信号显示
             safe_close_serial()
 
             # 2) Manual：先尝试重绑（在 wait 之前做！）
