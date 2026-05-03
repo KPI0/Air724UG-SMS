@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.9"  # 软件版本号
+APP_VERSION = "3.4.0"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -929,7 +929,7 @@ def open_serial_debug_window():
             send_entry.state(state_val)
             btn_quick.state(state_val)
             
-            # 新增：遍历右侧面板的所有快捷按钮，统统跟随变灰/恢复
+            # 遍历右侧面板的所有快捷按钮，统统跟随变灰/恢复
             for child in quick_scroll_frame.winfo_children():
                 if isinstance(child, ttk.Button):
                     child.state(state_val)
@@ -1125,6 +1125,7 @@ def open_serial_debug_window():
         ("AT+CESQ", "查精确信号(4G RSRP)"),
         ("AT+CGSN", "查模组IMEI"),
         ("AT+MIFIMAC=R", "查WiFi热点MAC地址"),
+        ("AT+CGPADDR", "查PDP上下文IP地址"),
         ("AT+RFTEMPERATURE?", "查模组温度"),
         ("AT+CNUM", "查本机号码"),
         ("AT+COPS?", "查运营商"),
@@ -1144,7 +1145,8 @@ def open_serial_debug_window():
     def _open_input_pin_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("输入PIN码解锁")
-        win.geometry("300x140")
+        # 把窗口高度稍微调大一点 (140 -> 160) 给警告文本腾出空间
+        win.geometry("300x160") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1155,8 +1157,15 @@ def open_serial_debug_window():
         ttk.Label(frm, text="请输入 SIM 卡 PIN 码：").pack(anchor="w", pady=(0, 10))
         pin_var = tk.StringVar()
         ent = ttk.Entry(frm, textvariable=pin_var, width=28)
-        ent.pack(fill="x", pady=(0, 15))
+        ent.pack(fill="x", pady=(0, 5))  # 把底部的 pady 改小，让提示紧贴输入框
 
+        # ================= 红色警告提示文本 =================
+        tk.Label(
+            frm, 
+            text="⚠️ 警告：连续3次错误将锁定，需PUK码解锁！", 
+            fg="#d9534f",  # 使用醒目的偏红色作为警告
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
         def _do_unlock():
             if not enabled_var.get():
                 messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
@@ -1180,6 +1189,217 @@ def open_serial_debug_window():
         center_window(win, serial_debug_win)
         ent.focus_set()
         win.bind("<Return>", lambda e: _do_unlock())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ================= 输入PUK码解锁弹窗 =================
+    def _open_input_puk_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("输入PUK码解锁")
+        # 需要两个输入框，还要放警告文本，高度设为 230
+        win.geometry("300x280") 
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入 PUK 码 (通常为8位)：").pack(anchor="w")
+        puk_var = tk.StringVar()
+        ent_puk = ttk.Entry(frm, textvariable=puk_var, width=28)
+        ent_puk.pack(fill="x", pady=(2, 2))  # 把底部的边距调小，让警告语紧贴它
+
+        # ================= 红色警告提示文本移到这里 =================
+        tk.Label(
+            frm, 
+            text="⚠️ 致命警告：连续10次错误将永久烧毁SIM卡！", 
+            fg="#d9534f",  # 醒目红色
+            font=("微软雅黑", 9, "bold")
+        ).pack(anchor="w", pady=(0, 12))
+        # =========================================================
+
+        ttk.Label(frm, text="请设置 新 PIN 码 (通常为4-8位数字)：").pack(anchor="w")
+        new_pin_var = tk.StringVar()
+        ent_new_pin = ttk.Entry(frm, textvariable=new_pin_var, width=28)
+        ent_new_pin.pack(fill="x", pady=(2, 15))
+
+        def _do_unlock_puk():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            puk = puk_var.get().strip()
+            new_pin = new_pin_var.get().strip()
+            
+            if not puk or not new_pin:
+                messagebox.showerror("错误", "PUK码和新PIN码都不能为空！", parent=win)
+                return
+            
+            win.destroy()
+            # 自动拼接成 AT+CPIN="puk","new_pin" 的格式并直接发送
+            _quick_send(f'AT+CPIN="{puk}","{new_pin}"')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_unlock_puk).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent_puk.focus_set()
+        win.bind("<Return>", lambda e: _do_unlock_puk())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ================= 开启PIN码锁专属功能 =================
+    def _open_enable_pin_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("开启PIN码锁")
+        win.geometry("300x160")
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入当前的 PIN 码以开启锁定：").pack(anchor="w", pady=(0, 10))
+        pin_var = tk.StringVar()
+        ent = ttk.Entry(frm, textvariable=pin_var, width=28)
+        ent.pack(fill="x", pady=(0, 5))
+
+        # ================= 灰色提示文本 =================
+        tk.Label(
+            frm, 
+            text="💡 提示：开启后模组每次开机均需输入PIN码", 
+            fg="gray", 
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
+        # ===================================================
+
+        def _do_enable():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            pin = pin_var.get().strip()
+            if not pin:
+                messagebox.showerror("错误", "PIN码不能为空", parent=win)
+                return
+            
+            win.destroy()
+            # 自动拼接成 AT+CLCK="SC",1,"xxxx" 的格式并直接发送
+            _quick_send(f'AT+CLCK="SC",1,"{pin}"')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_enable).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent.focus_set()
+        win.bind("<Return>", lambda e: _do_enable())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ================= 关闭PIN码锁专属功能 =================
+    def _open_disable_pin_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("关闭PIN码锁")
+        win.geometry("300x160")
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入当前的 PIN 码以关闭锁定：").pack(anchor="w", pady=(0, 10))
+        pin_var = tk.StringVar()
+        ent = ttk.Entry(frm, textvariable=pin_var, width=28)
+        ent.pack(fill="x", pady=(0, 5))
+
+        # ================= 灰色提示文本 =================
+        tk.Label(
+            frm, 
+            text="💡 提示：关闭后模组开机将自动联网，不再拦截", 
+            fg="gray", 
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
+        # ===============================================
+
+        def _do_disable():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            pin = pin_var.get().strip()
+            if not pin:
+                messagebox.showerror("错误", "PIN码不能为空", parent=win)
+                return
+            
+            win.destroy()
+            # 自动拼接成 AT+CLCK="SC",0,"xxxx" 的格式并直接发送
+            _quick_send(f'AT+CLCK="SC",0,"{pin}"')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_disable).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent.focus_set()
+        win.bind("<Return>", lambda e: _do_disable())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ================= 修改PIN码专属功能 =================
+    def _open_modify_pin_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("修改PIN码")
+        # 需要两个输入框，所以高度设为 200
+        win.geometry("300x200") 
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入 旧 PIN 码：").pack(anchor="w")
+        old_pin_var = tk.StringVar()
+        ent_old = ttk.Entry(frm, textvariable=old_pin_var, width=28)
+        ent_old.pack(fill="x", pady=(2, 10))
+
+        ttk.Label(frm, text="请输入 新 PIN 码 (通常为4-8位数字)：").pack(anchor="w")
+        new_pin_var = tk.StringVar()
+        ent_new = ttk.Entry(frm, textvariable=new_pin_var, width=28)
+        ent_new.pack(fill="x", pady=(2, 15))
+
+        def _do_modify_pin():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            old_pin = old_pin_var.get().strip()
+            new_pin = new_pin_var.get().strip()
+
+            if not old_pin or not new_pin:
+                messagebox.showerror("错误", "旧PIN码和新PIN码都不能为空", parent=win)
+                return
+            
+            win.destroy()
+            # 自动拼接成 AT+CPWD="SC","old","new" 的格式并直接发送
+            _quick_send(f'AT+CPWD="SC","{old_pin}","{new_pin}"')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_modify_pin).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent_old.focus_set()
+        win.bind("<Return>", lambda e: _do_modify_pin())
         win.bind("<Escape>", lambda e: win.destroy())
 
     # ================= 修改本机号码专属功能 =================
@@ -1207,7 +1427,7 @@ def open_serial_debug_window():
             fg="gray", 
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 15))
-        # ===================================================
+        # ===============================================
 
         def _do_modify():
             if not enabled_var.get():
@@ -1223,7 +1443,7 @@ def open_serial_debug_window():
             # 如果用户忘了输 + 号，系统自动帮他补上国内的 +86 前缀
             if not phone.startswith("+"):
                 phone = "+86" + phone
-            # ========================================================
+            # ====================================================
             
             win.destroy()
             
@@ -1267,9 +1487,168 @@ def open_serial_debug_window():
         win.bind("<Return>", lambda e: _do_modify())
         win.bind("<Escape>", lambda e: win.destroy())
 
-    ttk.Button(quick_scroll_frame, text="输入PIN码解锁 🔑", command=_open_input_pin_dialog).pack(fill="x", padx=6, pady=(6, 6))
-    ttk.Button(quick_scroll_frame, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    # ================= 发送短信专属功能 (PDU 模式完美兼容版) =================
+    def _open_send_sms_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("发送短信")
+        # 高度稍微增加一点点，为了放下字数统计
+        win.minsize(320, 280) 
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
 
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="接收方手机号：").pack(anchor="w")
+        phone_var = tk.StringVar()
+        ent_phone = ttk.Entry(frm, textvariable=phone_var, width=32)
+        ent_phone.pack(fill="x", pady=(2, 10))
+
+        ttk.Label(frm, text="短信内容：").pack(anchor="w")
+        txt_msg = tk.Text(frm, height=4, width=30, font=("微软雅黑", 9))
+        txt_msg.pack(fill="x", pady=(2, 2))  # 缩小底边距，让字数统计贴紧输入框
+
+        # ================= 实时字数统计指示器 =================
+        count_var = tk.StringVar(value="已输入: 0 / 70 字")
+        count_label = tk.Label(frm, textvariable=count_var, fg="gray", font=("微软雅黑", 8))
+        count_label.pack(anchor="e", pady=(0, 5))  # 靠右(e)对齐
+
+        def _update_char_count(event=None):
+            # end-1c 是为了不把 Text 控件自带的末尾换行符算进去
+            content = txt_msg.get("1.0", "end-1c")
+            length = len(content)
+            count_var.set(f"已输入: {length} / 70 字")
+            
+            # 如果超长，字数统计变红警告
+            if length > 70:
+                count_label.config(fg="#d9534f")
+            else:
+                count_label.config(fg="gray")
+
+        # 绑定键盘松开事件，每次打字都会触发字数刷新
+        txt_msg.bind("<KeyRelease>", _update_char_count)
+
+        # ================= 提示文本更新 =================
+        tk.Label(
+            frm, 
+            text="💡 提示：当前仅支持单条发送，最大限制 70 字符\n(支持快捷键 Ctrl + Enter 发送)", 
+            fg="gray", 
+            justify="left",
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 10))
+        # ===================================================
+
+        def _do_send_sms():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            phone = phone_var.get().strip()
+            # 获取时去除首尾空白
+            msg = txt_msg.get("1.0", "end-1c").strip()
+            
+            if not phone or not msg:
+                messagebox.showerror("错误", "手机号和短信内容不能为空！", parent=win)
+                return
+                
+            # ================= 发送前拦截超长限制 =================
+            if len(msg) > 70:
+                messagebox.showerror(
+                    "字数超限", 
+                    f"当前输入了 {len(msg)} 个字符，已超过 70 字符最大限制！\n请删减后再发送。", 
+                    parent=win
+                )
+                return
+            # =====================================================
+            
+            win.destroy()
+            
+            # 放到后台线程发送
+            def _send_task():
+                global serial_obj, serial_lock
+                with serial_lock:
+                    if serial_obj is not None and serial_obj.is_open:
+                        try:
+                            # =============================================
+                            # 核心算法：将明文和手机号转化为标准 PDU 十六进制码
+                            # =============================================
+                            def _encode_pdu(p_str, m_str):
+                                p_str = p_str.strip()
+                                # 91 代表带+的国际格式，81 代表国内通用格式
+                                p_type = "91" if p_str.startswith("+") else "81"
+                                p_num = p_str.lstrip("+")
+                                p_len = f"{len(p_num):02X}" # 长度
+                                
+                                # 电话号码奇偶位反转 (如 138 变 31F8)
+                                if len(p_num) % 2 != 0:
+                                    p_num += "F"
+                                p_swap = "".join([p_num[i+1] + p_num[i] for i in range(0, len(p_num), 2)])
+                                
+                                # 短信内容使用 UCS2 (utf-16-be) 编码
+                                m_bytes = m_str.encode("utf-16-be")
+                                udl = f"{len(m_bytes):02X}" # 内容长度
+                                ud = m_bytes.hex().upper()  # 内容HEX
+                                
+                                # 拼接成完整的 PDU 字符串
+                                # 00(SMSC) 11(Type) 00(MR) [长度] [类型] [反转号码] 00(PID) 08(UCS2编码) C0(有效期) [正文长度] [正文HEX]
+                                p_data = f"001100{p_len}{p_type}{p_swap}0008C0{udl}{ud}"
+                                
+                                # AT+CMGS 需要的长度是不包含 SMSC(前两位"00") 的字节数
+                                c_len = (len(p_data) // 2) - 1
+                                return p_data, c_len
+                            # ==========================================
+
+                            pdu_str, cmgs_len = _encode_pdu(phone, msg)
+
+                            # 1. 切换到 PDU 模式 (0)
+                            cmd1 = "AT+CMGF=0"
+                            serial_obj.write((cmd1 + "\r\n").encode("utf-8"))
+                            serial_obj.flush()
+                            _push_serial_debug(f">>> 发送: {cmd1}\\r\\n")
+                            time.sleep(0.3) # 稍微给模组一点反应时间
+                            
+                            # 2. 发送目标数据长度
+                            cmd2 = f"AT+CMGS={cmgs_len}"
+                            serial_obj.write((cmd2 + "\r\n").encode("utf-8"))
+                            serial_obj.flush()
+                            _push_serial_debug(f">>> 发送: {cmd2}\\r\\n")
+                            
+                            # 【极其关键】：发送完 CMGS 后，必须强行等 1 秒，让模组吐出 "> "
+                            time.sleep(1.0)
+                            
+                            # 3. 发送 PDU 字符串，并追加 \x1a (Ctrl+Z) 结束符
+                            payload = pdu_str.encode("utf-8") + b"\x1a"
+                            serial_obj.write(payload)
+                            serial_obj.flush()
+                            _push_serial_debug(f">>> 发送 PDU 正文及 Ctrl+Z，等待模组响应...")
+                        except Exception as e:
+                            _push_serial_debug(f">>> 发送失败: {e}")
+                    else:
+                        _push_serial_debug(">>> 发送失败: 串口未连接")
+                        
+            threading.Thread(target=_send_task, daemon=True).start()
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_send_sms).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent_phone.focus_set()
+        
+        win.bind("<Control-Return>", lambda e: _do_send_sms())
+        win.bind("<Escape>", lambda e: win.destroy())
+    # ============================================================
+
+    ttk.Button(quick_scroll_frame, text="输入PIN码解锁 🔑", command=_open_input_pin_dialog).pack(fill="x", padx=6, pady=(6, 6))
+    ttk.Button(quick_scroll_frame, text="输入PUK码解锁 🔐", command=_open_input_puk_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="开启PIN码锁 🔒", command=_open_enable_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="关闭PIN码锁 🔓", command=_open_disable_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="修改PIN码 ✏️", command=_open_modify_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="发送短信 ✉️", command=_open_send_sms_dialog).pack(fill="x", padx=6, pady=(0, 6))
     # ==== 3. 展开/收起控制逻辑 ====
     panel_visible = False
     def _toggle_quick_panel():
