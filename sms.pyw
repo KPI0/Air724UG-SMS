@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.0"  # 软件版本号
+APP_VERSION = "3.4.1"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -179,7 +179,7 @@ if not os.path.exists(CONFIG_FILE):
         "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
         "log_retention_days": "30",   # 日志保留时间，单位：天
         "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
-        "keywords": "【四川安播中心】",  # 默认关键词
+        "keywords": '["【四川安播中心】"]',  # 默认关键词
         "sms_font_size": "30",        # 默认字体大小
         "sms_font_color": "#ff0000",  # 默认字体颜色
 
@@ -263,12 +263,20 @@ except Exception:
     VOICE_ENABLED = True
 
 # ================= 关键词（配置记忆） =================
-# 读取 config.ini 中的 ui.keywords（用 | 分隔）
-# 注意：允许 items 为空（表示不过滤：显示全部短信）
 KEYWORDS = []
 try:
     raw = config.get("ui", "keywords", fallback="").strip()
-    KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+    if raw:
+        # 如果是 JSON 数组格式（新版存储），则用 json 解析
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                KEYWORDS = json.loads(raw)
+            except Exception:
+                # 解析失败兜底
+                KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+        else:
+            # 兼容老版本的 "|" 分隔格式
+            KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
 except Exception:
     pass
 
@@ -1274,7 +1282,7 @@ def open_serial_debug_window():
             fg="gray", 
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 15))
-        # ===================================================
+        # ===============================================
 
         def _do_enable():
             if not enabled_var.get():
@@ -1537,7 +1545,7 @@ def open_serial_debug_window():
             justify="left",
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 10))
-        # ===================================================
+        # ===============================================
 
         def _do_send_sms():
             if not enabled_var.get():
@@ -3515,20 +3523,13 @@ def read_serial():
     pending_deadline = 0.0
     pending_active = False
 
-    def extract_sms_body(full_msg: str) -> str:
-        if not full_msg:
-            return ""
-        idx = full_msg.find("【")
-        if idx != -1:
-            return full_msg[idx:]
-        return full_msg
-
     def keyword_hit(full_msg: str) -> bool:
-        body = extract_sms_body(full_msg)
         if not KEYWORDS:
             return True
-        return any(k and (k in body) for k in KEYWORDS)
-
+        # 将短信内容统一转为小写，实现大小写不敏感匹配
+        msg_lower = full_msg.lower()
+        return any(k and (k.lower() in msg_lower) for k in KEYWORDS)
+    
     def flush_pending():
         nonlocal pending_parts, pending_display_lines, pending_deadline, pending_active, follow_lines_left
         if not pending_active:
@@ -3767,19 +3768,29 @@ def read_serial():
                         follow_lines_left = 0
                     continue
 
-                if follow_lines_left > 0 and pending_active:
-                    has_cjk = any(0x4e00 <= ord(ch) <= 0x9fff for ch in line) or ("【" in line) or ("】" in line)
-                    if has_cjk:
-                        pending_parts.append(line)
-                        pending_display_lines.append(line)
-                        pending_deadline = time.monotonic() + 0.6
-                        follow_lines_left -= 1
-
-                        if follow_lines_left <= 0:
-                            flush_pending()
-                    else:
+                # ================= 多行短信断行收集逻辑 =================
+                if pending_active:
+                    # 如果新的一行以系统日志标志开头，说明上一条短信已经彻底打印完了
+                    # (收紧 [ 的判断，防止短信内容中以 [温馨提示] 开头的行被误杀)
+                    if line.startswith("[I]-") or line.startswith("[W]-") or line.startswith("[E]-") or \
+                       line.startswith(">>>") or line.startswith("AT+") or line.startswith("+"):
                         flush_pending()
-                    continue
+                        # 注意：这里千万不要写 continue，必须让这行新日志继续往下走去解析
+                    else:
+                        # 如果没有系统前缀，说明它肯定是短信的断行正文（不管是纯英文、数字还是链接）
+                        if follow_lines_left > 0:
+                            pending_parts.append(line)
+                            pending_display_lines.append(line)
+                            pending_deadline = time.monotonic() + 0.6
+                            follow_lines_left -= 1
+                            if follow_lines_left <= 0:
+                                flush_pending()
+                        else:
+                            flush_pending()
+                            
+                        # 短信碎片收集完毕，直接 continue 读取下一行串口数据
+                        continue
+                # ===============================================================
 
                 continue
 
@@ -4045,7 +4056,8 @@ def open_keywords_setting():
         try:
             if not config.has_section("ui"):
                 config["ui"] = {}
-            config.set("ui", "keywords", "|".join(KEYWORDS))
+            # 使用 json 序列化保存，完美支持包含 "|"、引号等任何特殊字符
+            config.set("ui", "keywords", json.dumps(KEYWORDS, ensure_ascii=False))
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 config.write(f)
         except Exception:
