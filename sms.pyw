@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.3.8"  # 软件版本号
+APP_VERSION = "3.3.9"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -922,14 +922,17 @@ def open_serial_debug_window():
 
         # ============ 控制发送按钮和输入框变灰 ============
         try:
-            if running:
-                btn_send.state(["!disabled"])
-                send_entry.state(["!disabled"])
-                btn_quick.state(["!disabled"])
-            else:
-                btn_send.state(["disabled"])
-                send_entry.state(["disabled"])
-                btn_quick.state(["disabled"])
+            # 简化写法：根据 running 状态决定是恢复(!disabled)还是禁用(disabled)
+            state_val = ["!disabled"] if running else ["disabled"]
+            
+            btn_send.state(state_val)
+            send_entry.state(state_val)
+            btn_quick.state(state_val)
+            
+            # 新增：遍历右侧面板的所有快捷按钮，统统跟随变灰/恢复
+            for child in quick_scroll_frame.winfo_children():
+                if isinstance(child, ttk.Button):
+                    child.state(state_val)
         except Exception:
             pass
         # ================================================
@@ -1088,32 +1091,103 @@ def open_serial_debug_window():
 
     # ==== 2. 右侧常用指令面板 ====
     quick_panel = ttk.LabelFrame(body, text="常用指令")
+
+    # 给定一个适当的初始宽度防止太窄
+    quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=250) 
+    quick_scrollbar = ttk.Scrollbar(quick_panel, orient="vertical", command=quick_canvas.yview)
+    quick_scroll_frame = ttk.Frame(quick_canvas)
+
+    # 将 Frame 放入 Canvas
+    quick_scroll_window = quick_canvas.create_window((0, 0), window=quick_scroll_frame, anchor="nw")
+    quick_canvas.configure(yscrollcommand=quick_scrollbar.set)
+
+    quick_scrollbar.pack(side="right", fill="y")
+    quick_canvas.pack(side="left", fill="both", expand=True)
+
+    # 动态更新滚动区域（当按钮增多时，自动拉长可滚动范围）
+    quick_scroll_frame.bind("<Configure>", lambda e: quick_canvas.configure(scrollregion=quick_canvas.bbox("all")))
+    # 动态撑满宽度（让按钮横向填满面板）
+    quick_canvas.bind("<Configure>", lambda e: quick_canvas.itemconfig(quick_scroll_window, width=e.width))
+
+    # 绑定鼠标滚轮 (只有当鼠标悬浮在指令区时才生效)
+    def _bind_mousewheel(event):
+        quick_canvas.bind_all("<MouseWheel>", lambda e: quick_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+    def _unbind_mousewheel(event):
+        quick_canvas.unbind_all("<MouseWheel>")
+        
+    quick_canvas.bind("<Enter>", _bind_mousewheel)
+    quick_canvas.bind("<Leave>", _unbind_mousewheel)
+    # ==========================================================
     
-    # 改为 (指令, 中文注释) 的配对格式
     common_cmds = [
         ("AT", "测试通信"),
         ("AT+CSQ", "查信号(RSSI/通用)"),
         ("AT+CESQ", "查精确信号(4G RSRP)"),
         ("AT+CGSN", "查模组IMEI"),
+        ("AT+MIFIMAC=R", "查WiFi热点MAC地址"),
         ("AT+RFTEMPERATURE?", "查模组温度"),
         ("AT+CNUM", "查本机号码"),
-        ("AT+CPIN?", "查SIM卡状态"),
+        ("AT+COPS?", "查运营商"),
+        ("AT+CPIN?", "查PIN码锁状态"),
         ("AT+ICCID", "查SIM卡ICCID"),
+        ("AT+CIMI", "查SIM卡IMSI"),
         ("AT+CGATT?", "查网络附着"),
         ("AT+RESET", "重启模组")
     ]
     
     # 循环生成竖排按钮
     for cmd, desc in common_cmds:
-        # 按钮外观显示包含中文，但点击事件(_quick_send)只传入纯正的 cmd
         btn_text = f"{cmd}  ({desc})"
-        ttk.Button(quick_panel, text=btn_text, command=lambda c=cmd: _quick_send(c)).pack(fill="x", padx=6, pady=3)
+        ttk.Button(quick_scroll_frame, text=btn_text, command=lambda c=cmd: _quick_send(c)).pack(fill="x", padx=6, pady=3)
+    
+    # ================= 输入PIN码解锁弹窗 =================
+    def _open_input_pin_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("输入PIN码解锁")
+        win.geometry("300x140")
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入 SIM 卡 PIN 码：").pack(anchor="w", pady=(0, 10))
+        pin_var = tk.StringVar()
+        ent = ttk.Entry(frm, textvariable=pin_var, width=28)
+        ent.pack(fill="x", pady=(0, 15))
+
+        def _do_unlock():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            pin = pin_var.get().strip()
+            if not pin:
+                messagebox.showerror("错误", "PIN码不能为空", parent=win)
+                return
+            
+            win.destroy()
+            # 自动拼接成 AT+CPIN="xxxx" 的格式并直接发送
+            _quick_send(f'AT+CPIN="{pin}"')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_unlock).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent.focus_set()
+        win.bind("<Return>", lambda e: _do_unlock())
+        win.bind("<Escape>", lambda e: win.destroy())
 
     # ================= 修改本机号码专属功能 =================
     def _open_modify_number_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("修改本机号码")
-        win.geometry("300x140")
+        # 把窗口高度稍微调大一点 (140 -> 160) 给提示文本腾出空间
+        win.geometry("300x160") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1124,17 +1198,36 @@ def open_serial_debug_window():
         ttk.Label(frm, text="请输入新的手机号码：").pack(anchor="w", pady=(0, 10))
         num_var = tk.StringVar()
         ent = ttk.Entry(frm, textvariable=num_var, width=28)
-        ent.pack(fill="x", pady=(0, 15))
+        ent.pack(fill="x", pady=(0, 5))  # 把底部的 pady 改小，让提示紧贴输入框
+
+        # ================= 灰色提示文本 =================
+        tk.Label(
+            frm, 
+            text="💡 提示：需加 '+' 国际前缀 (如 +86138...)", 
+            fg="gray", 
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
+        # ===================================================
 
         def _do_modify():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
             phone = num_var.get().strip()
             if not phone:
                 messagebox.showerror("错误", "手机号码不能为空", parent=win)
                 return
             
+            # ================= 防呆/自动容错设计 =================
+            # 如果用户忘了输 + 号，系统自动帮他补上国内的 +86 前缀
+            if not phone.startswith("+"):
+                phone = "+86" + phone
+            # ========================================================
+            
             win.destroy()
             
-            # 准备要发送的两条指令
+            # 准备要发送的两条指令 (保持使用 145 国际格式)
             cmd1 = 'AT+CPBS="ON"'
             cmd2 = f'AT+CPBW=1,"{phone}",145'
 
@@ -1174,9 +1267,8 @@ def open_serial_debug_window():
         win.bind("<Return>", lambda e: _do_modify())
         win.bind("<Escape>", lambda e: win.destroy())
 
-    # 在常用指令列表下方加一条分割线，再加这个专属按钮
-    #ttk.Separator(quick_panel, orient="horizontal").pack(fill="x", padx=6, pady=(5, 5))
-    ttk.Button(quick_panel, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="输入PIN码解锁 🔑", command=_open_input_pin_dialog).pack(fill="x", padx=6, pady=(6, 6))
+    ttk.Button(quick_scroll_frame, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
 
     # ==== 3. 展开/收起控制逻辑 ====
     panel_visible = False
@@ -1492,6 +1584,12 @@ def open_serial_debug_window():
         except Exception:
             pass
 
+        # ===== 强制解绑滚轮，防止幽灵报错 =====
+        try:
+            serial_debug_win.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
         try:
             if serial_debug_text is not None and serial_debug_text.winfo_exists():
                 serial_debug_text.config(state="normal")
@@ -1750,7 +1848,7 @@ def resource_path(relative):
 try:
     root.iconbitmap(resource_path("icon.ico"))
 except Exception as e:
-    print("icon.ico 加载失败：", e)
+    log_file_only(f"icon.ico 加载失败：{e}")
 
 # 更改弹窗左上角图标：让所有弹窗继承 icon.ico
 try:
@@ -1797,7 +1895,7 @@ try:
 
 except Exception as _e:
     # 任何异常都不能影响主程序和弹窗正常使用
-    print("弹窗图标补丁加载失败：", _e)
+    log_file_only(f"弹窗图标补丁加载失败：{_e}")
 
 root.title("短信监听系统")
 root.geometry("760x520")
@@ -3212,7 +3310,68 @@ def read_serial():
                             set_signal(rsrp_str)
                     except Exception:
                         pass
-                # ==========================================================
+
+                # ================= 解析运营商(COPS) 并直接在窗口提示 =================
+                if "+COPS:" in line and '"' in line:
+                    try:
+                        # 解析示例: [I]-[ril.proatc] +COPS: 0,2,"46011",7
+                        plmn = line.split('+COPS:')[1].split('"')[1]
+                        
+                        # 运营商匹配字典
+                        carrier_map = {
+                            "46000": "中国移动", "46002": "中国移动", "46007": "中国移动","46008": "中国移动",
+                            "46001": "中国联通", "46006": "中国联通", "46009": "中国联通",
+                            "46003": "中国电信", "46005": "中国电信", "46011": "中国电信",
+                            "46013": "中国电信(物联卡)",
+                            "46004": "中国移动(物联卡)",
+                            "46015": "中国广电"
+                        }
+                        
+                        c_name = carrier_map.get(plmn, "未知运营商")
+                        # 追加一条醒目的提示打印到当前的串口调试窗口中
+                        _push_serial_debug(f">>> 识别到网络运营商：{c_name} ({plmn})")
+                    except Exception:
+                        pass
+
+                # ================= 解析SIM卡状态(CPIN) 并直接在窗口提示 =================
+                if "+CPIN:" in line:
+                    try:
+                        # 解析示例: [I]-[ril.proatc] +CPIN: READY
+                        cpin_status = line.split("+CPIN:")[1].strip()
+                        
+                        # 常见 PIN 状态字典
+                        cpin_map = {
+                            "READY": "PIN码锁未开启 (SIM卡正常)",
+                            "SIM PIN": "等待输入PIN码 (卡已被锁)",
+                            "SIM PUK": "等待输入PUK码 (需PUK解锁)",
+                            "NOT INSERTED": "未检测到SIM卡",
+                            "NOT READY": "SIM卡未准备好"
+                        }
+                        
+                        status_cn = cpin_map.get(cpin_status, f"未知状态 ({cpin_status})")
+                        # 追加一条醒目的提示打印到当前的串口调试窗口中
+                        _push_serial_debug(f">>> 识别到SIM卡状态：{status_cn}")
+                    except Exception:
+                        pass
+
+                # ================= 解析网络附着状态(CGATT) 并直接在窗口提示 =================
+                if "+CGATT:" in line:
+                    try:
+                        # 解析示例: [I]-[ril.proatc] +CGATT: 1
+                        cgatt_status = line.split("+CGATT:")[1].strip()
+                        
+                        if cgatt_status == "1":
+                            status_cn = "已附着数据网络 (通道已打通，可以上网)"
+                        elif cgatt_status == "0":
+                            status_cn = "未附着数据网络 (无法连接互联网)"
+                        else:
+                            status_cn = f"未知状态 ({cgatt_status})"
+                            
+                        # 追加一条醒目的提示打印到当前的串口调试窗口中
+                        _push_serial_debug(f">>> 识别到网络附着状态：{status_cn}")
+                    except Exception:
+                        pass
+                # =======================================================================
 
                 if callback_prefix in line:
                     msg = line.split(callback_prefix, 1)[1].strip()
