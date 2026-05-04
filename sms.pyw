@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.1"  # 软件版本号
+APP_VERSION = "3.4.2"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -1540,7 +1540,7 @@ def open_serial_debug_window():
         # ================= 提示文本更新 =================
         tk.Label(
             frm, 
-            text="💡 提示：当前仅支持单条发送，最大限制 70 字符\n(支持快捷键 Ctrl + Enter 发送)", 
+            text="注意: 当前仅支持单条发送，最大限制 70 字符\n💡 提示：支持 '+' 国际前缀 (如 +852...)", 
             fg="gray", 
             justify="left",
             font=("微软雅黑", 9)
@@ -1648,8 +1648,68 @@ def open_serial_debug_window():
         
         win.bind("<Control-Return>", lambda e: _do_send_sms())
         win.bind("<Escape>", lambda e: win.destroy())
-    # ============================================================
 
+    # ================= 拨打电话专属功能 =================
+    def _open_dial_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("拨打电话")
+        win.minsize(300, 160) 
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入要拨打的手机/电话号码：").pack(anchor="w", pady=(0, 10))
+        phone_var = tk.StringVar()
+        ent_phone = ttk.Entry(frm, textvariable=phone_var, width=28)
+        ent_phone.pack(fill="x", pady=(0, 5))
+
+        # ================= 灰色提示文本 =================
+        tk.Label(
+            frm, 
+            text="💡 提示：支持 '+' 国际前缀 (如 +852...)\n注意: 需确认 SIM 卡已开通语音/长途权限",
+            fg="gray", 
+            justify="left",
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
+        # ===============================================
+
+        def _do_dial():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            phone = phone_var.get().strip()
+            if not phone:
+                messagebox.showerror("错误", "号码不能为空", parent=win)
+                return
+            
+            # 发送拨号指令，注意：末尾的分号 ; 是灵魂！代表发起语音通话
+            _quick_send(f"ATD{phone};")
+
+        def _do_hangup():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+            # 发送挂机指令
+            _quick_send("ATH")
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        # 左侧放拨号，中间放挂断，右侧放取消
+        ttk.Button(btn_frm, text="📞 拨号", command=_do_dial).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="挂断", command=_do_hangup).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent_phone.focus_set()
+        win.bind("<Return>", lambda e: _do_dial())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+    # ============================================================
     ttk.Button(quick_scroll_frame, text="输入PIN码解锁 🔑", command=_open_input_pin_dialog).pack(fill="x", padx=6, pady=(6, 6))
     ttk.Button(quick_scroll_frame, text="输入PUK码解锁 🔐", command=_open_input_puk_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="开启PIN码锁 🔒", command=_open_enable_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
@@ -1657,6 +1717,8 @@ def open_serial_debug_window():
     ttk.Button(quick_scroll_frame, text="修改PIN码 ✏️", command=_open_modify_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="发送短信 ✉️", command=_open_send_sms_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="拨打电话 📞", command=_open_dial_dialog).pack(fill="x", padx=6, pady=(0, 6))
+
     # ==== 3. 展开/收起控制逻辑 ====
     panel_visible = False
     def _toggle_quick_panel():
@@ -3760,7 +3822,7 @@ def read_serial():
                         pending_display_lines = ["📩 收到短信：", msg]
                         pending_active = True
                         pending_deadline = time.monotonic() + 0.6
-                        follow_lines_left = 8
+                        follow_lines_left = 40
                     else:
                         pending_parts = []
                         pending_display_lines = []
