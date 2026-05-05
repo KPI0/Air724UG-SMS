@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.2"  # 软件版本号
+APP_VERSION = "3.4.3"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -328,6 +328,7 @@ serial_wakeup_event = threading.Event()
 TTS_LOCK = threading.Lock()
 TTS_REQ_Q = queue.Queue(maxsize=50)
 TTS_STOP = threading.Event()
+RING_TIMEOUT_ID = None
 
 # ================= Tk 线程安全：UI 任务队列（所有 Tk 操作只能在主线程） =================
 UI_TASK_QUEUE = queue.Queue(maxsize=10000)
@@ -1129,11 +1130,14 @@ def open_serial_debug_window():
     
     common_cmds = [
         ("AT", "测试通信"),
+        ("ATI", "查模块信息"),
+        ("AT+CGMR", "查固件版本"),
         ("AT+CSQ", "查信号(RSSI/通用)"),
         ("AT+CESQ", "查精确信号(4G RSRP)"),
         ("AT+CGSN", "查模组IMEI"),
         ("AT+MIFIMAC=R", "查WiFi热点MAC地址"),
         ("AT+CGPADDR", "查PDP上下文IP地址"),
+        ("AT+CGDCONT?", "查APN配置"),
         ("AT+RFTEMPERATURE?", "查模组温度"),
         ("AT+CNUM", "查本机号码"),
         ("AT+COPS?", "查运营商"),
@@ -1141,7 +1145,12 @@ def open_serial_debug_window():
         ("AT+ICCID", "查SIM卡ICCID"),
         ("AT+CIMI", "查SIM卡IMSI"),
         ("AT+CGATT?", "查网络附着"),
-        ("AT+RESET", "重启模组")
+        ("AT+CFUN=1,1", "重启基带"),
+        ("AT+RESET", "重启模组"),
+        ("AT+CFUN?", "查看当前飞行模式状态"),
+        ("AT+CFUN=0", "打开飞行模式"),
+        ("AT+CFUN=1", "关闭飞行模式"),
+
     ]
     
     # 循环生成竖排按钮
@@ -1609,6 +1618,11 @@ def open_serial_debug_window():
 
                             pdu_str, cmgs_len = _encode_pdu(phone, msg)
 
+                            # ======== 将发送行为写进主日志和界面 ========
+                            port_ui(f"📤 发送短信至 {phone}：", "normal")
+                            port_ui(msg, "sms")
+                            # =================================================
+
                             # 1. 切换到 PDU 模式 (0)
                             cmd1 = "AT+CMGF=0"
                             serial_obj.write((cmd1 + "\r\n").encode("utf-8"))
@@ -1632,9 +1646,12 @@ def open_serial_debug_window():
                             _push_serial_debug(f">>> 发送 PDU 正文及 Ctrl+Z，等待模组响应...")
                         except Exception as e:
                             _push_serial_debug(f">>> 发送失败: {e}")
+                            # 失败时也在主界面提示
+                            port_ui(f"❌ 发送短信失败：{e}", "normal")
                     else:
                         _push_serial_debug(">>> 发送失败: 串口未连接")
-                        
+                        # 失败时也在主界面提示
+                        port_ui("❌ 发送短信失败：串口未连接", "normal")
             threading.Thread(target=_send_task, daemon=True).start()
 
         btn_frm = ttk.Frame(frm)
@@ -1653,7 +1670,7 @@ def open_serial_debug_window():
     def _open_dial_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("拨打电话")
-        win.minsize(300, 160) 
+        win.minsize(300, 160)  # 修改为了自适应的 minsize
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1686,6 +1703,11 @@ def open_serial_debug_window():
                 messagebox.showerror("错误", "号码不能为空", parent=win)
                 return
             
+            # ======== 将拨号行为写进主日志和底部状态栏 ========
+            port_ui(f"📞 主动呼叫：拨打号码 {phone}", "normal")
+            set_status(f"📞 呼叫中：{phone}", "blue")
+            # ===============================================
+            
             # 发送拨号指令，注意：末尾的分号 ; 是灵魂！代表发起语音通话
             _quick_send(f"ATD{phone};")
 
@@ -1693,23 +1715,49 @@ def open_serial_debug_window():
             if not enabled_var.get():
                 messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
                 return
+            
+            # ======== 将主动挂机行为写进主日志 ========
+            port_ui("📞 已发送挂机指令 (ATH)", "normal")
+            global PORT, BAUD
+            set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")  # 点击后立刻强制恢复绿色状态
+            # ===============================================
+            
             # 发送挂机指令
             _quick_send("ATH")
+
+        # ================= 统一的“强行兜底挂机”关闭逻辑 =================
+        def _on_dial_close():
+            # 只要关闭窗口，不管有没有真正在打电话，都发一次 ATH 兜底
+            if enabled_var.get():
+                global PORT, BAUD
+                set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+                _quick_send("ATH")
+            
+            # 挂断后再销毁窗口
+            win.destroy()
+        # ===============================================================
 
         btn_frm = ttk.Frame(frm)
         btn_frm.pack(anchor="e")
         # 左侧放拨号，中间放挂断，右侧放取消
         ttk.Button(btn_frm, text="📞 拨号", command=_do_dial).pack(side="left", padx=(0, 8))
         ttk.Button(btn_frm, text="挂断", command=_do_hangup).pack(side="left", padx=(0, 8))
-        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+        
+        # 👇 把取消按钮的动作替换为我们新写的 _on_dial_close
+        ttk.Button(btn_frm, text="取消", command=_on_dial_close).pack(side="left")
 
         win.update_idletasks()
         center_window(win, serial_debug_win)
         ent_phone.focus_set()
-        win.bind("<Return>", lambda e: _do_dial())
-        win.bind("<Escape>", lambda e: win.destroy())
-
+        win.bind("<Return>", lambda e: _do_dial())        
+        
+        # 👇 拦截 Esc 键的关闭事件，绑定到 _on_dial_close
+        win.bind("<Escape>", lambda e: _on_dial_close())
+        
+        # 👇 拦截右上角红叉 (X) 的关闭事件，绑定到 _on_dial_close
+        win.protocol("WM_DELETE_WINDOW", _on_dial_close)
     # ============================================================
+
     ttk.Button(quick_scroll_frame, text="输入PIN码解锁 🔑", command=_open_input_pin_dialog).pack(fill="x", padx=6, pady=(6, 6))
     ttk.Button(quick_scroll_frame, text="输入PUK码解锁 🔐", command=_open_input_puk_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="开启PIN码锁 🔒", command=_open_enable_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
@@ -3575,7 +3623,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count
+    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count, RING_TIMEOUT_ID
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -3584,6 +3632,12 @@ def read_serial():
     pending_display_lines = []
     pending_deadline = 0.0
     pending_active = False
+
+    # ======== 来电与挂机防抖记录变量 ========
+    last_clip_time = 0.0
+    last_clip_num = ""
+    last_hangup_time = 0.0
+    ring_timeout_target = 0.0
 
     def keyword_hit(full_msg: str) -> bool:
         if not KEYWORDS:
@@ -3643,7 +3697,7 @@ def read_serial():
         pending_deadline = 0.0
         pending_active = False
         follow_lines_left = 0
-
+        
     while serial_running and (not serial_stop_event.is_set()):
         try:
             if MODE == "Auto":
@@ -3675,6 +3729,8 @@ def read_serial():
             # 创建串口也要加锁，避免与 safe_close_serial() 并发
             with serial_lock:
                 serial_obj = serial.Serial(PORT, BAUD, timeout=0.3)
+                # 自动发指令：开启来电显示号码功能
+                serial_obj.write(b"AT+CLIP=1\r\n")
 
             LOG_PREFIX = PORT.replace(":", "_")
 
@@ -3724,7 +3780,7 @@ def read_serial():
                     raise e
 
                 line = raw.decode("utf-8", "ignore").strip()
-                
+
                 if not line:
                     if pending_active and time.monotonic() > pending_deadline:
                         flush_pending()
@@ -3752,6 +3808,38 @@ def read_serial():
                             set_signal(rsrp_str)
                     except Exception:
                         pass
+
+                # ================= 解析来电提醒 (RING & CLIP) =================
+                if "+CLIP:" in line:
+                    try:
+                        m = re.search(r'\+CLIP:\s*"?(\+?\d+)"?', line)
+                        if m:
+                            caller_num = m.group(1)
+                        else:
+                            caller_num = "未知号码"
+
+                        now = time.monotonic()
+                        
+                        if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
+                            port_ui(f"📞 收到来电：来自 {caller_num}", "normal")
+                            set_status(f"🔔 响铃中：{caller_num}", "blue")
+                            last_clip_num = caller_num
+                            last_clip_time = now
+
+                        # 每次收到响铃，把超时目标时间推迟到 8 秒后
+                        ring_timeout_target = time.monotonic() + 8.0
+                    except Exception:
+                        pass
+                
+                # 解析真实挂断 (NO CARRIER / BUSY / NO ANSWER)
+                if "NO CARRIER" in line or "BUSY" in line or "NO ANSWER" in line:
+                    ring_timeout_target = 0.0  # <--- 核心修复：一旦真实挂断，立刻秒杀倒计时，绝不误报
+                    now = time.monotonic()
+                    if (now - last_hangup_time > 3.0):
+                        port_ui("📞 语音通话已结束", "normal")
+                        set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+                        last_hangup_time = now
+                        last_clip_num = ""
 
                 # ================= 解析运营商(COPS) 并直接在窗口提示 =================
                 if "+COPS:" in line and '"' in line:
@@ -3813,8 +3901,26 @@ def read_serial():
                         _push_serial_debug(f">>> 识别到网络附着状态：{status_cn}")
                     except Exception:
                         pass
-                # =======================================================================
 
+                # ================= 解析射频/飞行模式状态(CFUN) 并直接在窗口提示 =================
+                if "+CFUN:" in line:
+                    try:
+                        # 解析示例: [I]-[ril.proatc] +CFUN: 1
+                        cfun_status = line.split("+CFUN:")[1].strip()
+                        
+                        # 常见 CFUN 状态字典
+                        cfun_map = {
+                            "0": "飞行模式 (射频关闭)",
+                            "1": "正常模式 (射频开启)",
+                        }
+                        
+                        status_cn = cfun_map.get(cfun_status, f"未知状态 ({cfun_status})")
+                        # 追加一条醒目的提示打印到当前的串口调试窗口中
+                        _push_serial_debug(f">>> 识别到射频/飞行模式状态：{status_cn}")
+                    except Exception:
+                        pass
+
+                # ================= 短信接收核心逻辑 =================
                 if callback_prefix in line:
                     msg = line.split(callback_prefix, 1)[1].strip()
                     if msg:
