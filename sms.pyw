@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.4"  # 软件版本号
+APP_VERSION = "3.4.5"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -182,6 +182,9 @@ if not os.path.exists(CONFIG_FILE):
         "keywords": '["【四川安播中心】"]',  # 默认关键词
         "sms_font_size": "30",        # 默认字体大小
         "sms_font_color": "#ff0000",  # 默认字体颜色
+        "call_filter_mode": "Disabled", # Disabled=关闭过滤，Whitelist=白名单，Blacklist=黑名单
+        "call_whitelist": "[]",         # 默认来电白名单
+        "call_blacklist": "[]",         # 默认来电黑名单
 
     }
 
@@ -277,6 +280,28 @@ try:
         else:
             # 兼容老版本的 "|" 分隔格式
             KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+except Exception:
+    pass
+
+# ================= 防骚扰黑白名单（配置记忆） =================
+try:
+    CALL_FILTER_MODE = config.get("ui", "call_filter_mode", fallback="Disabled").strip()
+except Exception:
+    CALL_FILTER_MODE = "Disabled"
+
+CALL_WHITELIST = []
+try:
+    raw = config.get("ui", "call_whitelist", fallback="").strip()
+    if raw:
+        CALL_WHITELIST = json.loads(raw)
+except Exception:
+    pass
+
+CALL_BLACKLIST = []
+try:
+    raw = config.get("ui", "call_blacklist", fallback="").strip()
+    if raw:
+        CALL_BLACKLIST = json.loads(raw)
 except Exception:
     pass
 
@@ -3916,8 +3941,37 @@ def read_serial():
                         else:
                             caller_num = "未知号码"
 
+                        # 核心防御：黑白名单拦截逻辑
+                        blocked = False
+                        block_reason = ""
+                        if CALL_FILTER_MODE == "Whitelist":
+                            if caller_num not in CALL_WHITELIST:
+                                blocked = True
+                                block_reason = "不在白名单"
+                        elif CALL_FILTER_MODE == "Blacklist":
+                            if caller_num in CALL_BLACKLIST:
+                                blocked = True
+                                block_reason = "命中黑名单"
+
                         now = time.monotonic()
+
+                        if blocked:
+                            if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
+                                port_ui(f"防骚扰拦截：拒接 {caller_num} ({block_reason})", "warning")
+                                last_clip_num = caller_num
+                                last_clip_time = now
+                            
+                            # 最快速度夺取串口控制权，强行静默挂机
+                            with serial_lock:
+                                if serial_obj is not None and serial_obj.is_open:
+                                    try:
+                                        serial_obj.write(b"ATH\r\n")
+                                        serial_obj.flush()
+                                    except Exception:
+                                        pass
+                            continue  # ⛔ 强行中断！阻止后续的弹窗、响铃和看门狗刷新！
                         
+                        # (被拦截后就不会执行到这里，正常来电才会继续触发弹窗)                        
                         if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
                             port_ui(f"📞 收到来电：来自 {caller_num}", "normal")
                             set_status(f"🔔 响铃中：{caller_num}", "blue")
@@ -3925,7 +3979,7 @@ def read_serial():
                             last_clip_time = now
                             show_call_popup(caller_num)
 
-                        # 每次收到响铃，把超时目标时间推迟到 8 秒后
+                        # 每次收到响铃，把超时目标时间推迟到 12 秒后
                         ring_timeout_target = time.monotonic() + 12.0
                     except Exception:
                         pass
@@ -4360,7 +4414,7 @@ def open_keywords_setting():
         KEYWORDS.append(v)
         save_keywords_to_config()
         refresh_list(select_index=len(KEYWORDS) - 1)
-        system_ui(f"🧷 关键词增加：{v}")
+        system_ui(f"🧷 关键词 增加：{v}")
 
     def del_kw():
         global KEYWORDS
@@ -4376,7 +4430,7 @@ def open_keywords_setting():
         save_keywords_to_config()
         entry_var.set("")
         refresh_list(select_index=min(idx, len(KEYWORDS) - 1))
-        system_ui(f"🧷 关键词删除：{old}")
+        system_ui(f"🧷 关键词 删除：{old}")
 
     def edit_kw():
         global KEYWORDS
@@ -4396,7 +4450,7 @@ def open_keywords_setting():
         KEYWORDS[idx] = v
         save_keywords_to_config()
         refresh_list(select_index=idx)
-        system_ui(f"🧷 关键词修改：{old} -> {v}")
+        system_ui(f"🧷 关键词 修改：{old} -> {v}")
 
     win = tk.Toplevel(root)
     win.withdraw()
@@ -4456,6 +4510,134 @@ def open_keywords_setting():
 
     win.bind("<Return>", lambda _e: edit_kw())
     listbox.bind("<Delete>", lambda _e: del_kw())
+    win.bind("<Escape>", lambda _e: win.destroy())
+
+# ================= 防骚扰黑白名单设置窗口 =================
+def open_call_filter_setting():
+    win = tk.Toplevel(root)
+    win.withdraw()
+    win.title("来电防骚扰设置")
+    win.minsize(450, 380)
+    win.resizable(False, False)
+    win.transient(root)
+    win.grab_set()
+
+    frm = tk.Frame(win, padx=15, pady=15)
+    frm.pack(fill=tk.BOTH, expand=True)
+
+    # --- 模式选择区 ---
+    mode_frm = tk.LabelFrame(frm, text="过滤模式 (即时生效)", padx=10, pady=8)
+    mode_frm.pack(fill="x", pady=(0, 15))
+
+    mode_var = tk.StringVar(value=CALL_FILTER_MODE)
+
+    def on_mode_change():
+        global CALL_FILTER_MODE
+        CALL_FILTER_MODE = mode_var.get()
+        if "ui" not in config: config["ui"] = {}
+        config.set("ui", "call_filter_mode", CALL_FILTER_MODE)
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                config.write(f)
+        except Exception:
+            pass
+        
+        mode_cn = {"Disabled": "关闭过滤", "Whitelist": "白名单模式", "Blacklist": "黑名单模式"}[CALL_FILTER_MODE]
+        system_ui(f"防骚扰模式已切换为：{mode_cn}")
+
+    tk.Radiobutton(mode_frm, text="关闭过滤 (允许所有)", variable=mode_var, value="Disabled", command=on_mode_change).pack(side="left", padx=5)
+    tk.Radiobutton(mode_frm, text="白名单 (仅限名单内)", variable=mode_var, value="Whitelist", command=on_mode_change).pack(side="left", padx=5)
+    tk.Radiobutton(mode_frm, text="黑名单 (拦截名单内)", variable=mode_var, value="Blacklist", command=on_mode_change).pack(side="left", padx=5)
+
+    # --- 名单管理区 (使用 Notebook 选项卡) ---
+    notebook = ttk.Notebook(frm)
+    notebook.pack(fill="both", expand=True)
+
+    tab_white = tk.Frame(notebook, padx=10, pady=10)
+    tab_black = tk.Frame(notebook, padx=10, pady=10)
+    notebook.add(tab_white, text="白名单管理")
+    notebook.add(tab_black, text="黑名单管理")
+
+    # 辅助函数：构建左右布局的列表管理
+    def build_list_tab(parent_tab, target_list, config_key, list_name):
+        listbox = tk.Listbox(parent_tab, height=10)
+        listbox.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        right_frm = tk.Frame(parent_tab)
+        right_frm.pack(side="right", fill="y")
+
+        tk.Label(right_frm, text="手机/电话号码：").pack(anchor="w")
+
+        # ================= 提示语 =================
+        tk.Label(
+            right_frm, 
+            text="💡 提示：需包含国际前缀\n请与模块日志上报完全一致\n(如: +8618888888...)",
+            fg="gray", 
+            justify="left",
+            font=("微软雅黑", 8)
+        ).pack(anchor="w", pady=(0, 5))
+        # ==========================================
+
+        entry_var = tk.StringVar()
+        entry = ttk.Entry(right_frm, textvariable=entry_var, width=18)
+        entry.pack(anchor="w", pady=(0, 10))
+
+        def refresh():
+            listbox.delete(0, tk.END)
+            for num in target_list:
+                listbox.insert(tk.END, num)
+
+        def save():
+            if "ui" not in config: config["ui"] = {}
+            config.set("ui", config_key, json.dumps(target_list, ensure_ascii=False))
+            try:
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    config.write(f)
+            except Exception:
+                pass
+
+        def on_select(_e=None):
+            sel = listbox.curselection()
+            if sel: entry_var.set(target_list[sel[0]])
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        def add_num():
+            val = entry_var.get().strip()
+            if not val: return
+            if val in target_list:
+                messagebox.showwarning("提示", "该号码已在名单中", parent=win)
+                return
+            target_list.append(val)
+            save()
+            refresh()
+            entry_var.set("")
+            system_ui(f"🧷 {list_name} 增加：{val}")
+
+        def del_num():
+            sel = listbox.curselection()
+            if not sel: return
+            idx = sel[0]
+            val = target_list.pop(idx)
+            save()
+            refresh()
+            entry_var.set("")
+            system_ui(f"🧷 {list_name} 删除：{val}")
+
+        ttk.Button(right_frm, text="增加", command=add_num).pack(fill="x", pady=4)
+        ttk.Button(right_frm, text="删除", command=del_num).pack(fill="x", pady=4)
+        refresh()
+
+    build_list_tab(tab_white, CALL_WHITELIST, "call_whitelist", "白名单")
+    build_list_tab(tab_black, CALL_BLACKLIST, "call_blacklist", "黑名单")
+
+    # --- 底部 ---
+    tk.Button(frm, text="关闭窗口", width=12, command=win.destroy).pack(anchor="e", pady=(12, 0))
+
+    center_window(win, root)
+    win.deiconify()
+    win.lift()
+    win.focus_force()
     win.bind("<Escape>", lambda _e: win.destroy())
 
 # ================= 语音播报开关（菜单按钮） =================
@@ -4553,6 +4735,9 @@ menu_bar.add_command(label="串口设置", command=open_serial_setting)
 
 # 关键词设置
 menu_bar.add_command(label="关键词设置", command=open_keywords_setting)
+
+# 防骚扰设置
+menu_bar.add_command(label="防骚扰设置", command=open_call_filter_setting)
 
 # 语音播报
 menu_bar.add_command(label="🔊 语音播报", command=toggle_voice_broadcast)
