@@ -134,3 +134,6 @@ Air724UG-SMS/
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/4.png)   
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/5.png)   
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/6.png)   
+![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/7.png)   
+![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/8.png)   
+![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/9.png) 
