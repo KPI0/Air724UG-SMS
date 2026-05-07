@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.5"  # 软件版本号
+APP_VERSION = "3.4.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -1066,25 +1066,26 @@ def open_serial_debug_window():
         if not cmd:
             return "break"
         
-        global serial_obj, serial_lock
-        
         # 处理换行符并转码
         cmd_bytes = (cmd + "\r\n").encode("utf-8", "ignore") if crlf_var.get() else cmd.encode("utf-8", "ignore")
         display_suffix = "\\r\\n" if crlf_var.get() else ""
         
-        # 线程安全地写入串口
-        with serial_lock:
-            if serial_obj is not None and serial_obj.is_open:
-                try:
-                    serial_obj.write(cmd_bytes)
-                    serial_obj.flush()
-                    # 回显到调试窗口
-                    _push_serial_debug(f">>> 发送: {cmd}{display_suffix}")
-                    # send_var.set("")  # 发送成功后清空输入框
-                except Exception as e:
-                    _push_serial_debug(f">>> 发送失败: {e}")
-            else:
-                _push_serial_debug(">>> 发送失败: 串口未连接")
+        # 将发送动作包裹在一个独立函数里，丢进后台线程执行
+        def _send_task():
+            global serial_obj, serial_lock
+            with serial_lock:
+                if serial_obj is not None and serial_obj.is_open:
+                    try:
+                        serial_obj.write(cmd_bytes)
+                        serial_obj.flush()
+                        _push_serial_debug(f">>> 发送: {cmd}{display_suffix}")
+                    except Exception as e:
+                        _push_serial_debug(f">>> 发送失败: {e}")
+                else:
+                    _push_serial_debug(">>> 发送失败: 串口未连接")
+                    
+        # 开辟守护线程发送指令，彻底解放 GUI 主线程
+        threading.Thread(target=_send_task, daemon=True).start()
         return "break"
 
     btn_send = ttk.Button(send_frame, text="发送", width=8, command=_send_cmd)
@@ -1159,6 +1160,7 @@ def open_serial_debug_window():
         ("AT+CSQ", "查信号(RSSI/通用)"),
         ("AT+CESQ", "查精确信号(4G RSRP)"),
         ("AT+CGSN", "查模组IMEI"),
+        ("AT+WISN?", "查模组SN"),
         ("AT+MIFIMAC=R", "查WiFi热点MAC地址"),
         ("AT+CGPADDR", "查PDP上下文IP地址"),
         ("AT+CGDCONT?", "查APN配置"),
@@ -1174,6 +1176,7 @@ def open_serial_debug_window():
         ("AT+CFUN?", "查看当前飞行模式状态"),
         ("AT+CFUN=0", "打开飞行模式"),
         ("AT+CFUN=1", "关闭飞行模式"),
+        ("AT+EEMGINFO?", "查基站定位数据"),
 
     ]
     
@@ -1528,6 +1531,64 @@ def open_serial_debug_window():
         win.bind("<Return>", lambda e: _do_modify())
         win.bind("<Escape>", lambda e: win.destroy())
 
+    # ================= 修改设备SN码专属功能 =================
+    def _open_modify_sn_dialog():
+        win = tk.Toplevel(serial_debug_win)
+        win.title("修改设备SN码")
+        win.minsize(300, 160) 
+        win.resizable(False, False)
+        win.transient(serial_debug_win)
+        win.grab_set()
+
+        frm = ttk.Frame(win, padding=15)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="请输入新的 SN 码 (最长64位)：").pack(anchor="w", pady=(0, 10))
+        sn_var = tk.StringVar()
+        ent = ttk.Entry(frm, textvariable=sn_var, width=28)
+        ent.pack(fill="x", pady=(0, 5))
+
+        # ================= 警告与提示文本 =================
+        tk.Label(
+            frm, 
+            text="⚠️ 警告：修改SN码可能导致串口异常，请尝试多次插拔", 
+            fg="#d9534f", 
+            justify="left",
+            font=("微软雅黑", 9)
+        ).pack(anchor="w", pady=(0, 15))
+        # ===============================================
+
+        def _do_modify():
+            if not enabled_var.get():
+                messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
+                return
+
+            new_sn = sn_var.get().strip()
+            if not new_sn:
+                messagebox.showerror("错误", "SN码不能为空", parent=win)
+                return
+                
+            # 根据官方手册增加长度防呆拦截
+            if len(new_sn) > 64:
+                messagebox.showerror("错误", "SN码最长不能超过64位", parent=win)
+                return
+            
+            win.destroy()
+            
+            # 使用官方手册提供的专有指令：AT+WISN
+            _quick_send(f'AT+WISN={new_sn}')
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="e")
+        ttk.Button(btn_frm, text="发送指令", command=_do_modify).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frm, text="取消", command=win.destroy).pack(side="left")
+
+        win.update_idletasks()
+        center_window(win, serial_debug_win)
+        ent.focus_set()
+        win.bind("<Return>", lambda e: _do_modify())
+        win.bind("<Escape>", lambda e: win.destroy())
+    
     # ================= 发送短信专属功能 (PDU 模式完美兼容版) =================
     def _open_send_sms_dialog():
         win = tk.Toplevel(serial_debug_win)
@@ -1799,6 +1860,7 @@ def open_serial_debug_window():
     ttk.Button(quick_scroll_frame, text="关闭PIN码锁 🔓", command=_open_disable_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="修改PIN码 ✏️", command=_open_modify_pin_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="修改本机号码 ☎", command=_open_modify_number_dialog).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(quick_scroll_frame, text="修改SN码 🏷️", command=_open_modify_sn_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="发送短信 ✉️", command=_open_send_sms_dialog).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(quick_scroll_frame, text="拨打电话 📞", command=_open_dial_dialog).pack(fill="x", padx=6, pady=(0, 6))
 
@@ -3842,7 +3904,7 @@ def read_serial():
 
             # 创建串口也要加锁，避免与 safe_close_serial() 并发
             with serial_lock:
-                serial_obj = serial.Serial(PORT, BAUD, timeout=0.3)
+                serial_obj = serial.Serial(PORT, BAUD, timeout=0.3, write_timeout=0.5)
                 # 自动发指令：开启来电显示号码功能
                 serial_obj.write(b"AT+CLIP=1\r\n")
 
@@ -3884,12 +3946,15 @@ def read_serial():
             threading.Thread(target=_delayed_connected_log, args=(PORT, BAUD), daemon=True).start()
 
             while serial_running and (not serial_stop_event.is_set()):
-                # readline 必须在锁内，避免读的时候被别处 close
                 try:
+                    # 仅在获取串口对象时加锁，绝对不要把耗时的 readline 放在锁里阻塞！
                     with serial_lock:
-                        if serial_obj is None:
+                        if serial_obj is None or not serial_obj.is_open:
                             raise serial.SerialException("serial_obj is None (closed)")
-                        raw = serial_obj.readline()
+                        current_serial = serial_obj
+                    
+                    # 脱离锁的作用域后再进行 I/O 阻塞读取，极大提升 UI 并发响应速度
+                    raw = current_serial.readline()
                 except (PermissionError, OSError, serial.SerialException) as e:
                     raise e
 
@@ -4075,6 +4140,29 @@ def read_serial():
                         status_cn = cfun_map.get(cfun_status, f"未知状态 ({cfun_status})")
                         # 追加一条醒目的提示打印到当前的串口调试窗口中
                         _push_serial_debug(f">>> 识别到射频/飞行模式状态：{status_cn}")
+                    except Exception:
+                        pass
+
+                # ================= 解析基站定位数据(LTE) =================
+                if "+EEMLTESVC:" in line:
+                    try:
+                        parts = line.split("+EEMLTESVC:")[1].split(",")
+                        if len(parts) >= 10:
+                            raw_mcc = int(parts[0].strip())
+                            raw_mnc = int(parts[1].strip())
+                            tac = parts[3].strip()
+                            ci = parts[9].strip()
+                            
+                            # LUAT 模组底层特色修正：把被强行转成十进制的转回十六进制
+                            mcc = f"{raw_mcc:x}" 
+                            mnc = f"{raw_mnc:02x}"
+                            
+                            # 分行追加到当前的串口调试窗口中
+                            _push_serial_debug(">>> 📍 解析到基站定位数据：")
+                            _push_serial_debug(f"    MCC (国家代码) : {mcc}")
+                            _push_serial_debug(f"    MNC (网络代码) : {mnc}")
+                            _push_serial_debug(f"    LAC/TAC (区域) : {tac}")
+                            _push_serial_debug(f"    CI  (小区ID)   : {ci}")
                     except Exception:
                         pass
 
