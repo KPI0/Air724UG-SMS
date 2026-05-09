@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.7"  # 软件版本号
+APP_VERSION = "3.4.8"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -2553,6 +2553,11 @@ if not ALLOW_MULTI_INSTANCE:
 def cleanup_and_exit():
     """真正退出：停止串口线程、关闭串口、停止托盘、销毁窗口（主线程执行更稳）"""
     def _do():
+        # ==== 防误点确认弹窗 ====
+        # 加上 parent=root，保证哪怕窗口最小化到托盘了，弹窗依然能正常显示
+        if not messagebox.askyesno("退出软件", "确定要完全退出软件吗？\n\n退出后将停止监听短信和来电。", parent=root):
+            return
+        # ==============================
         global serial_running, serial_obj, is_exiting, tray_icon
         if is_exiting:
             return
@@ -2934,6 +2939,11 @@ def clear_window():
 # ================= 重启设备 =================
 def send_reset_cmd():
     """发送重启指令 AT+RESET"""
+    # ==== 防误点确认弹窗 ====
+    # 加上 parent=root，保证即便窗口最小化也能正常弹出在最顶层
+    if not messagebox.askyesno("重启硬件", "确定要重启底层通信模组吗？\n\n(设备重启期间将会短暂断开连接，随后自动重连)", parent=root):
+        return
+    # ==============================
     global serial_obj, serial_lock
     # 检查串口是否连接
     with serial_lock:
@@ -4187,7 +4197,7 @@ def read_serial():
                             mnc = f"{raw_mnc:02x}"
                             
                             # 分行追加到当前的串口调试窗口中
-                            _push_serial_debug(">>> 📍 解析到基站定位数据：")
+                            _push_serial_debug(">>> 解析到基站定位数据：")
                             _push_serial_debug(f"    MCC (国家代码) : {mcc}")
                             _push_serial_debug(f"    MNC (网络代码) : {mnc}")
                             _push_serial_debug(f"    LAC/TAC (区域) : {tac}")
@@ -4836,6 +4846,48 @@ def toggle_popup():
         msg = "❌ 短信弹窗：已关闭"
     system_ui(msg, "normal")
 
+# ================= 重启软件 =================
+def restart_software():
+    if not messagebox.askyesno("重启软件", "确定要重启软件吗？", parent=root):
+        return
+    
+    system_ui("🔄 正在重启软件...", "normal")
+    
+    # 1. 标记退出状态并释放底层串口资源
+    global is_exiting, serial_running, tray_icon
+    is_exiting = True
+    serial_running = False
+    safe_close_serial()
+    
+    # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
+    try:
+        if tray_icon:
+            tray_icon.stop()
+    except Exception:
+        pass
+        
+    # 3. 删除单实例端口文件锁 (防止新实例启动失败)
+    try:
+        if os.path.exists(PORT_FILE):
+            os.remove(PORT_FILE)
+    except Exception:
+        pass
+
+    # 4. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
+    try:
+        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
+        if getattr(sys, 'frozen', False):
+            # 如果是打包好的 exe
+            subprocess.Popen(new_args)
+        else:
+            # 如果是脚本模式
+            subprocess.Popen([sys.executable] + new_args)
+    except Exception:
+        pass
+        
+    # 5. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
+    os._exit(0)
+
 # ================= 菜单（一级串口设置） =================
 menu_bar = tk.Menu(root)
 
@@ -4843,8 +4895,9 @@ file_menu = tk.Menu(menu_bar, tearoff=0)
 file_menu.add_command(label="清空窗口", command=clear_window)
 file_menu.add_command(label="打开日志", command=open_log_dir)
 file_menu.add_separator()
-file_menu.add_command(label="重启设备", command=send_reset_cmd)
-file_menu.add_command(label="退出", command=cleanup_and_exit)
+file_menu.add_command(label="重启软件", command=restart_software)
+file_menu.add_command(label="重启硬件", command=send_reset_cmd)
+file_menu.add_command(label="退出软件", command=cleanup_and_exit)
 menu_bar.add_cascade(label="文件", menu=file_menu)
 
 # 串口设置
