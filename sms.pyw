@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.6"  # 软件版本号
+APP_VERSION = "3.4.7"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -1793,6 +1793,15 @@ def open_serial_debug_window():
                 messagebox.showerror("错误", "号码不能为空", parent=win)
                 return
             
+            # ================= 智能拨号防呆容错 =================
+            # 打电话（ATD）国内直拨不能带国际区号，否则会被基带以 ERROR 3 (无权限) 拦截
+            # 自动剥离国内号码的 +86 或 86 前缀
+            if phone.startswith("+86"):
+                phone = phone[3:]
+            elif phone.startswith("86") and len(phone) == 13:
+                phone = phone[2:]
+            # =================================================
+
             # ======== 标记为正在通话 ========
             is_dialing = True
             # ===============================
@@ -4006,23 +4015,43 @@ def read_serial():
                         else:
                             caller_num = "未知号码"
 
-                        # 核心防御：黑白名单拦截逻辑
+                        # ================= 智能号码归一化 (防 +86 坑) =================
+                        def _norm_phone(n_str):
+                            n_str = n_str.strip()
+                            if n_str.startswith("+86"): return n_str[3:]
+                            if n_str.startswith("86") and len(n_str) > 11: return n_str[2:]
+                            return n_str
+                            
+                        norm_caller = _norm_phone(caller_num)
+                        # ==============================================================
+
+                        # 核心防御：黑白名单智能拦截逻辑
                         blocked = False
                         block_reason = ""
+                        
                         if CALL_FILTER_MODE == "Whitelist":
-                            if caller_num not in CALL_WHITELIST:
-                                blocked = True
-                                block_reason = "不在白名单"
+                            # 默认拦截，除非在白名单找到匹配
+                            blocked = True
+                            block_reason = "不在白名单"
+                            for w_num in CALL_WHITELIST:
+                                if _norm_phone(w_num) == norm_caller:
+                                    blocked = False
+                                    block_reason = ""
+                                    break
+                                    
                         elif CALL_FILTER_MODE == "Blacklist":
-                            if caller_num in CALL_BLACKLIST:
-                                blocked = True
-                                block_reason = "命中黑名单"
+                            # 默认放行，一旦在黑名单找到匹配则立刻拦截
+                            for b_num in CALL_BLACKLIST:
+                                if _norm_phone(b_num) == norm_caller:
+                                    blocked = True
+                                    block_reason = "命中黑名单"
+                                    break
 
                         now = time.monotonic()
 
                         if blocked:
                             if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
-                                port_ui(f"防骚扰拦截：拒接 {caller_num} ({block_reason})", "warning")
+                                port_ui(f"🚫 防骚扰拦截：拒接 {caller_num} ({block_reason})", "warning")
                                 last_clip_num = caller_num
                                 last_clip_time = now
                             
@@ -4349,7 +4378,7 @@ def open_serial_setting():
 
     tk.Label(
         tip_frame,
-        text="提示：",
+        text="💡 提示：",
         fg="gray",
         font=("微软雅黑", 9, "bold"),
         anchor="w",
@@ -4502,7 +4531,7 @@ def open_keywords_setting():
         KEYWORDS.append(v)
         save_keywords_to_config()
         refresh_list(select_index=len(KEYWORDS) - 1)
-        system_ui(f"🧷 关键词 增加：{v}")
+        system_ui(f"💬 关键词 增加：{v}")
 
     def del_kw():
         global KEYWORDS
@@ -4518,7 +4547,7 @@ def open_keywords_setting():
         save_keywords_to_config()
         entry_var.set("")
         refresh_list(select_index=min(idx, len(KEYWORDS) - 1))
-        system_ui(f"🧷 关键词 删除：{old}")
+        system_ui(f"💬 关键词 删除：{old}")
 
     def edit_kw():
         global KEYWORDS
@@ -4538,11 +4567,11 @@ def open_keywords_setting():
         KEYWORDS[idx] = v
         save_keywords_to_config()
         refresh_list(select_index=idx)
-        system_ui(f"🧷 关键词 修改：{old} -> {v}")
+        system_ui(f"💬 关键词 修改：{old} -> {v}")
 
     win = tk.Toplevel(root)
     win.withdraw()
-    win.title("关键词设置")
+    win.title("短信关键词设置")
     win.geometry("420x290")
     win.resizable(False, False)
     win.transient(root)
@@ -4575,7 +4604,7 @@ def open_keywords_setting():
     # ===== 关键词规则提示 =====
     tip = tk.Label(
         frame,
-        text="提示：关键词为空时，全部短信都会显示",
+        text="💡 提示：关键词为空时，不做过滤全部短信都会显示。",
         fg="gray",
         font=("微软雅黑", 9),
         anchor="w"
@@ -4700,7 +4729,7 @@ def open_call_filter_setting():
             save()
             refresh()
             entry_var.set("")
-            system_ui(f"🧷 {list_name} 增加：{val}")
+            system_ui(f"📞 {list_name} 增加：{val}")
 
         def del_num():
             sel = listbox.curselection()
@@ -4710,7 +4739,7 @@ def open_call_filter_setting():
             save()
             refresh()
             entry_var.set("")
-            system_ui(f"🧷 {list_name} 删除：{val}")
+            system_ui(f"📞 {list_name} 删除：{val}")
 
         ttk.Button(right_frm, text="增加", command=add_num).pack(fill="x", pady=4)
         ttk.Button(right_frm, text="删除", command=del_num).pack(fill="x", pady=4)
@@ -4821,7 +4850,7 @@ menu_bar.add_cascade(label="文件", menu=file_menu)
 # 串口设置
 menu_bar.add_command(label="串口设置", command=open_serial_setting)
 
-# 关键词设置
+# 短信关键词设置
 menu_bar.add_command(label="关键词设置", command=open_keywords_setting)
 
 # 防骚扰设置
