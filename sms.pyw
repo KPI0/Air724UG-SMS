@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.8"  # 软件版本号
+APP_VERSION = "3.4.9"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -308,6 +308,8 @@ except Exception:
 # ================= 串口控制 =================
 serial_obj = None
 serial_running = True
+ring_timeout_target = 0.0 
+current_dial_num = ""      
 
 # ================= 串口对象并发保护（避免多线程 close/read 竞态） =================
 serial_lock = threading.Lock()
@@ -362,14 +364,29 @@ file_log_stop = threading.Event()
 def file_log_worker():
     while not file_log_stop.is_set():
         try:
+            # 阻塞获取第一条，如果0.5秒没日志就休息
             path, line = FILE_LOG_Q.get(timeout=0.5)
         except queue.Empty:
             continue
-        try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line)
-        except Exception:
-            pass
+            
+        # 核心优化：瞬间吸干当前队列里所有积压的日志，按文件路径打包
+        batch = {path: [line]}
+        while True:
+            try:
+                p, l = FILE_LOG_Q.get_nowait()
+                if p not in batch:
+                    batch[p] = []
+                batch[p].append(l)
+            except queue.Empty:
+                break # 吸干了，跳出循环
+                
+        # 批量写入：无论刚才吸了 10 行还是 100 行，每个文件只打开/关闭一次！
+        for p, lines in batch.items():
+            try:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.writelines(lines)
+            except Exception:
+                pass
 
 threading.Thread(target=file_log_worker, daemon=True).start()
 
@@ -447,8 +464,7 @@ def ui_only(msg: str, tag="normal"):
     def _do():
         try:
             if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
-                text_area.insert(tk.END, msg + "\n", tag)
-                text_area.see(tk.END)
+                safe_insert_main_text(msg, tag)
             else:
                 # UI 未就绪则缓存
                 try:
@@ -490,8 +506,7 @@ def system_ui(message: str, tag="normal"):
     def _do_ui():
         try:
             if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
-                text_area.insert(tk.END, message + "\n", tag)
-                text_area.see(tk.END)
+                safe_insert_main_text(message, tag)
             else:
                 # UI 不可用：缓存给后续补显示
                 PENDING_UI_LOGS.put_nowait((message, tag))
@@ -868,7 +883,7 @@ def open_serial_debug_window():
     serial_debug_win.withdraw()
     serial_debug_win.title("串口调试")
     serial_debug_win.geometry("900x520")
-    serial_debug_win.minsize(630, 300)
+    serial_debug_win.minsize(800, 300)
     serial_debug_win.lift()
     serial_debug_win.focus_force()
     top = ttk.Frame(serial_debug_win)
@@ -1127,7 +1142,7 @@ def open_serial_debug_window():
     quick_panel = ttk.LabelFrame(body, text="常用指令")
 
     # 给定一个适当的初始宽度防止太窄
-    quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=250) 
+    quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=330) 
     quick_scrollbar = ttk.Scrollbar(quick_panel, orient="vertical", command=quick_canvas.yview)
     quick_scroll_frame = ttk.Frame(quick_canvas)
 
@@ -1189,8 +1204,6 @@ def open_serial_debug_window():
     def _open_input_pin_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("输入PIN码解锁")
-        # 把窗口高度稍微调大一点 (140 -> 160) 给警告文本腾出空间
-        win.geometry("300x160") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1239,8 +1252,6 @@ def open_serial_debug_window():
     def _open_input_puk_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("输入PUK码解锁")
-        # 需要两个输入框，还要放警告文本，高度设为 230
-        win.geometry("300x280") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1298,7 +1309,6 @@ def open_serial_debug_window():
     def _open_enable_pin_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("开启PIN码锁")
-        win.geometry("300x160")
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1314,7 +1324,7 @@ def open_serial_debug_window():
         # ================= 灰色提示文本 =================
         tk.Label(
             frm, 
-            text="💡 提示：开启后模组每次开机均需输入PIN码", 
+            text="💡 提示：开启后模组每次开机均需输入PIN码。", 
             fg="gray", 
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 15))
@@ -1349,7 +1359,6 @@ def open_serial_debug_window():
     def _open_disable_pin_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("关闭PIN码锁")
-        win.geometry("300x160")
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1365,7 +1374,7 @@ def open_serial_debug_window():
         # ================= 灰色提示文本 =================
         tk.Label(
             frm, 
-            text="💡 提示：关闭后模组开机将自动联网，不再拦截", 
+            text="💡 提示：关闭后模组开机将自动联网，不再拦截。", 
             fg="gray", 
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 15))
@@ -1400,8 +1409,6 @@ def open_serial_debug_window():
     def _open_modify_pin_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("修改PIN码")
-        # 需要两个输入框，所以高度设为 200
-        win.geometry("300x200") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1450,8 +1457,6 @@ def open_serial_debug_window():
     def _open_modify_number_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("修改本机号码")
-        # 把窗口高度稍微调大一点 (140 -> 160) 给提示文本腾出空间
-        win.geometry("300x160") 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1467,7 +1472,7 @@ def open_serial_debug_window():
         # ================= 灰色提示文本 =================
         tk.Label(
             frm, 
-            text="💡 提示：需加 '+' 国际前缀 (如 +8618888888...)", 
+            text="💡 提示：需加 '+' 国际前缀 (如 +8618888888...)。", 
             fg="gray", 
             font=("微软雅黑", 9)
         ).pack(anchor="w", pady=(0, 15))
@@ -1535,7 +1540,6 @@ def open_serial_debug_window():
     def _open_modify_sn_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("修改设备SN码")
-        win.minsize(300, 160) 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1551,7 +1555,7 @@ def open_serial_debug_window():
         # ================= 警告与提示文本 =================
         tk.Label(
             frm, 
-            text="⚠️ 警告：修改SN码可能导致串口异常，请尝试多次插拔", 
+            text="⚠️ 警告：修改SN码可能导致串口异常，请尝试多次插拔。", 
             fg="#d9534f", 
             justify="left",
             font=("微软雅黑", 9)
@@ -1593,8 +1597,6 @@ def open_serial_debug_window():
     def _open_send_sms_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("发送短信")
-        # 高度稍微增加一点点，为了放下字数统计
-        win.minsize(320, 280) 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1634,7 +1636,7 @@ def open_serial_debug_window():
         # ================= 提示文本更新 =================
         tk.Label(
             frm, 
-            text="注意: 当前仅支持单条发送，最大限制 70 字符\n💡 提示：支持 '+' 国际前缀 (如 +8618888888...)", 
+            text="注意: 当前仅支持单条发送，最大限制 70 字符。\n💡 提示：支持 '+' 国际前缀 (如 +8618888888...)。", 
             fg="gray", 
             justify="left",
             font=("微软雅黑", 9)
@@ -1755,7 +1757,6 @@ def open_serial_debug_window():
     def _open_dial_dialog():
         win = tk.Toplevel(serial_debug_win)
         win.title("拨打电话")
-        win.minsize(300, 160) 
         win.resizable(False, False)
         win.transient(serial_debug_win)
         win.grab_set()
@@ -1775,7 +1776,7 @@ def open_serial_debug_window():
         # ================= 灰色提示文本 =================
         tk.Label(
             frm, 
-            text="💡 提示：支持 '+' 国际前缀 (如 +8618888888...)\n注意: 需确认 SIM 卡已开通语音/长途权限",
+            text="💡 提示：支持 '+' 国际前缀 (如 +8618888888...)。\n注意: 需确认 SIM 卡已开通语音/长途权限。",
             fg="gray", 
             justify="left",
             font=("微软雅黑", 9)
@@ -1783,7 +1784,9 @@ def open_serial_debug_window():
         # ===============================================
 
         def _do_dial():
-            nonlocal is_dialing  # 声明使用外层变量
+            nonlocal is_dialing  
+            global current_dial_num  # 引入全局变量
+            
             if not enabled_var.get():
                 messagebox.showwarning("提示", "请先勾选顶部的“启用原始输出旁路”", parent=win)
                 return
@@ -1794,17 +1797,14 @@ def open_serial_debug_window():
                 return
             
             # ================= 智能拨号防呆容错 =================
-            # 打电话（ATD）国内直拨不能带国际区号，否则会被基带以 ERROR 3 (无权限) 拦截
-            # 自动剥离国内号码的 +86 或 86 前缀
             if phone.startswith("+86"):
                 phone = phone[3:]
             elif phone.startswith("86") and len(phone) == 13:
                 phone = phone[2:]
             # =================================================
 
-            # ======== 标记为正在通话 ========
             is_dialing = True
-            # ===============================
+            current_dial_num = phone  # 把号码存到全局变量里，等接通时用
             
             port_ui(f"📞 主动呼叫：拨打号码 {phone}", "normal")
             set_status(f"📞 呼叫中：{phone}", "blue")
@@ -2433,7 +2433,19 @@ def center_on_screen(win, w=None, h=None):
 if not ALLOW_MULTI_INSTANCE:
     if _try_notify_existing_instance():
         sys.exit(0)
-    
+
+# ================= 开启 Windows 高DPI 极致清晰支持 (全世代兼容) =================
+try:
+    import ctypes
+    # 优先尝试 Windows 8.1 / 10 / 11 的现代 API
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        # 如果失败（说明是 Windows 7 或更老），回退使用老版本 API
+        ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
+
 # ================= GUI =================
 root = tk.Tk()
 root.withdraw()
@@ -2501,11 +2513,11 @@ except Exception as _e:
     log_file_only(f"弹窗图标补丁加载失败：{_e}")
 
 root.title("短信监听系统")
-root.geometry("760x520")
+root.geometry("800x520")
 
 root.update_idletasks()
 if not START_MINIMIZED:
-    center_on_screen(root, 760, 520)
+    center_on_screen(root, 800, 520)
     root.deiconify()
 else:
     # 自启：保持隐藏，托盘可“显示”
@@ -2856,14 +2868,40 @@ def apply_sms_font_style():
 
 apply_sms_font_style()
 
+# ================= 主窗口智能插入防爆内存 =================
+def safe_insert_main_text(msg, tag="normal"):
+    if ("text_area" not in globals()) or (text_area is None) or not text_area.winfo_exists():
+        return False
+    
+    # 1. 智能滚动：判断当前滚动条是不是在最底部
+    try:
+        is_at_bottom = text_area.yview()[1] >= 0.98
+    except Exception:
+        is_at_bottom = True
+
+    text_area.insert(tk.END, msg + "\n", tag)
+
+    # 2. 内存保护：主屏幕永远只保留最近的 3000 行
+    try:
+        total_lines = int(text_area.index("end-1c").split(".")[0])
+        if total_lines > 3000:
+            text_area.delete("1.0", f"{total_lines - 3000 + 1}.0")
+    except Exception:
+        pass
+
+    # 3. 只有当用户原本就在底部时，才自动往下滚；否则绝不强行拉底画面！
+    if is_at_bottom:
+        text_area.see(tk.END)
+    
+    return True
+
 # ================= 统一线程安全 log：后台线程只投递，主线程执行 Tk =================
 def log(msg, tag="normal"):
     def _ui_and_file():
         # --- UI ---
         try:
             if ("text_area" in globals()) and (text_area is not None) and text_area.winfo_exists():
-                text_area.insert(tk.END, msg + "\n", tag)
-                text_area.see(tk.END)
+                safe_insert_main_text(msg, tag)
             else:
                 log_early(msg, tag)
                 return
@@ -3755,7 +3793,7 @@ def show_call_popup(caller_num):
 
         win = tk.Toplevel(root)
         win.title("来电提醒")
-        win.minsize(320, 160)
+        win.minsize(300, 0)
         win.resizable(False, False)
         # 不使用 grab_set() 模态，允许用户同时操作主界面
         win.attributes("-topmost", True)  # 保持置顶显示
@@ -3763,11 +3801,16 @@ def show_call_popup(caller_num):
         frm = ttk.Frame(win, padding=15)
         frm.pack(fill="both", expand=True)
 
-        tk.Label(frm, text="📞 收到新来电", font=("微软雅黑", 11, "bold"), fg="#0052cc").pack(pady=(0, 8))
+        # 提取为变量，方便接通后修改文字和颜色
+        lbl_title = tk.Label(frm, text="📞 收到新来电", font=("微软雅黑", 11, "bold"), fg="#0052cc")
+        lbl_title.pack(pady=(0, 8))
         tk.Label(frm, text=f"{caller_num}", font=("微软雅黑", 16, "bold"), fg="#d9534f").pack(pady=(0, 20))
 
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(anchor="center")
+
         def _answer():
-            global serial_obj, serial_lock
+            global serial_obj, serial_lock, ring_timeout_target
             with serial_lock:
                 if serial_obj is not None and serial_obj.is_open:
                     try:
@@ -3776,7 +3819,19 @@ def show_call_popup(caller_num):
                     except Exception:
                         pass
             port_ui("📞 已发送接听指令 (ATA)", "normal")
-            close_call_popup()
+            
+            # 将状态切换为“通话中”，并设为 -1.0 激活免疫状态
+            set_status(f"📞 通话中：{caller_num}", "blue")
+            ring_timeout_target = -1.0
+            
+            # 🛑 核心变形魔法：不关闭弹窗，变成“通话中控制面板” 🛑
+            lbl_title.config(text="📞 正在通话中...", fg="#2ecc71") # 标题变成原谅绿
+            btn_answer.pack_forget() # 隐藏接听按钮
+            btn_ignore.pack_forget() # 隐藏忽略按钮
+            # 此时界面上就只剩下一个“挂断”按钮了！
+            
+            # 终极防呆：接通后，如果用户点右上角的 X 关闭窗口，也等同于挂机
+            win.protocol("WM_DELETE_WINDOW", _hangup)
 
         def _hangup():
             global serial_obj, serial_lock
@@ -3794,11 +3849,15 @@ def show_call_popup(caller_num):
             # 仅仅关掉弹窗，不发任何指令，让模组继续响铃
             close_call_popup()
 
-        btn_frm = ttk.Frame(frm)
-        btn_frm.pack(anchor="center")
-        ttk.Button(btn_frm, text="✅ 接听", command=_answer).pack(side="left", padx=6)
-        ttk.Button(btn_frm, text="❌ 挂断", command=_hangup).pack(side="left", padx=6)
-        ttk.Button(btn_frm, text="忽略", command=_ignore).pack(side="left", padx=6)
+        btn_answer = ttk.Button(btn_frm, text="✅ 接听", command=_answer)
+        btn_answer.pack(side="left", padx=6)
+        
+        btn_hangup = ttk.Button(btn_frm, text="❌ 挂断", command=_hangup)
+        btn_hangup.pack(side="left", padx=6)
+        
+        btn_ignore = ttk.Button(btn_frm, text="忽略", command=_ignore)
+        btn_ignore.pack(side="left", padx=6)
+        
         win.protocol("WM_DELETE_WINDOW", close_call_popup)
         center_window(win, root)
         win.lift()
@@ -3818,7 +3877,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count
+    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count, ring_timeout_target, current_dial_num
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -3833,6 +3892,7 @@ def read_serial():
     last_clip_num = ""
     last_hangup_time = 0.0
     ring_timeout_target = 0.0
+    current_dial_num = ""
 
     def keyword_hit(full_msg: str) -> bool:
         if not KEYWORDS:
@@ -3938,8 +3998,11 @@ def read_serial():
 
                     def _update_status():
                         try:
-                            status_var.set(f"🟢 已连接：{port} @ {baud}")
-                            status_label.config(fg="green")
+                            # 终极细节：如果这2秒内刚好进来了电话，千万不要去覆盖“响铃”或“呼叫”状态！
+                            current_state = status_var.get()
+                            if "响铃" not in current_state and "通话" not in current_state and "呼叫" not in current_state:
+                                status_var.set(f"🟢 已连接：{port} @ {baud}")
+                                status_label.config(fg="green")
                         except Exception:
                             pass
 
@@ -4090,11 +4153,15 @@ def read_serial():
 
                 elif "RING" == line or line.endswith("RING"):
                     # 只要收到 RING，说明电话还在响，刷新看门狗时间
-                    ring_timeout_target = time.monotonic() + 12.0
+                    # 核心防呆：如果已经接听（-1.0 免疫态），则直接无视缓存里滞后的 RING！
+                    if ring_timeout_target != -1.0:
+                        ring_timeout_target = time.monotonic() + 12.0
 
-                # 解析真实挂断 (NO CARRIER / BUSY / NO ANSWER)
+                # ================= 解析真实挂断 (NO CARRIER / BUSY / NO ANSWER) =================
                 if "NO CARRIER" in line or "BUSY" in line or "NO ANSWER" in line:
-                    ring_timeout_target = 0.0  # <--- 核心修复：一旦真实挂断，立刻秒杀倒计时，绝不误报
+                    ring_timeout_target = 0.0  
+                    current_dial_num = ""      # 电话挂断时，清空主动呼出记录
+                    
                     now = time.monotonic()
                     if (now - last_hangup_time > 3.0):
                         port_ui("📞 语音通话已结束", "normal")
@@ -4102,6 +4169,13 @@ def read_serial():
                         last_hangup_time = now
                         last_clip_num = ""
                         close_call_popup()
+
+                # ================= 解析对方接听状态 (+CIEV: "CALL",1) =================
+                if line == "CONNECT" or ("+CIEV:" in line and '"CALL",1' in line.replace(" ", "").upper()):
+                    if current_dial_num:
+                        port_ui(f"📞 对方已接听：{current_dial_num}", "normal")
+                        set_status(f"📞 通话中：{current_dial_num}", "blue")
+                        ring_timeout_target = 0.0  # 确保强制关闭看门狗倒计时
 
                 # ================= 解析运营商(COPS) 并直接在窗口提示 =================
                 if "+COPS:" in line and '"' in line:
@@ -4244,11 +4318,15 @@ def read_serial():
                         # 短信碎片收集完毕，直接 continue 读取下一行串口数据
                         continue
                 # ===============================================================
-
-                continue
-
+                
         except Exception as e:
             LOG_PREFIX = "system"
+
+            # 物理断开时，强行重置所有通话状态，并瞬间销毁弹窗防卡死
+            ring_timeout_target = 0.0
+            current_dial_num = ""
+            close_call_popup() 
+            # =======================================================
 
             # 1) 打印原始异常
             err_msg = str(e)
@@ -4353,7 +4431,6 @@ def open_serial_setting():
     win = tk.Toplevel(root)
     win.withdraw()
     win.title("串口设置")
-    win.geometry("340x240")
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -4582,7 +4659,6 @@ def open_keywords_setting():
     win = tk.Toplevel(root)
     win.withdraw()
     win.title("短信关键词设置")
-    win.geometry("420x290")
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -4595,7 +4671,7 @@ def open_keywords_setting():
 
     tk.Label(frame, text="关键词列表：").grid(row=0, column=0, sticky="w")
 
-    listbox = tk.Listbox(frame, height=8, width=38)
+    listbox = tk.Listbox(frame, height=8, width=20)
     listbox.grid(row=1, column=0, rowspan=4, sticky="nsew", pady=(6, 0))
     listbox.bind("<<ListboxSelect>>", on_select)
 
@@ -4644,7 +4720,6 @@ def open_call_filter_setting():
     win = tk.Toplevel(root)
     win.withdraw()
     win.title("来电防骚扰设置")
-    win.minsize(450, 380)
     win.resizable(False, False)
     win.transient(root)
     win.grab_set()
@@ -4698,7 +4773,7 @@ def open_call_filter_setting():
         # ================= 提示语 =================
         tk.Label(
             right_frm, 
-            text="💡 提示：需包含国际前缀\n请与模块日志上报完全一致\n(如: +8618888888...)",
+            text="💡 提示：需包含国际前缀\n请与模块日志上报完全一致\n(如: +8618888888...)。",
             fg="gray", 
             justify="left",
             font=("微软雅黑", 8)
