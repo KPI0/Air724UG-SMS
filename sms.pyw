@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.1"  # 软件版本号
+APP_VERSION = "3.5.2"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -324,6 +324,33 @@ def safe_close_serial():
         except Exception:
             pass
         serial_obj = None
+        unlock_port_mutex()
+
+# ================= 自动连接提示重复抑制 =================
+_last_auto_connect_msg = None
+_last_auto_connect_count = 0
+
+def auto_connect_ui(msg: str):
+    """自动连接提示：重复抑制，避免刷屏"""
+    global _last_auto_connect_msg, _last_auto_connect_count
+    try:
+        if _last_auto_connect_msg == msg:
+            _last_auto_connect_count += 1
+        else:
+            _last_auto_connect_msg = msg
+            _last_auto_connect_count = 1
+
+        if _last_auto_connect_count < ERROR_REPEAT_LIMIT:
+            system_ui(msg, "normal")
+        elif _last_auto_connect_count == ERROR_REPEAT_LIMIT:
+            system_ui(msg + "（后续同类提示已忽略）", "normal")
+        else:
+            pass
+    except Exception:
+        try:
+            system_ui(msg, "normal")
+        except Exception:
+            pass
 
 # ================= 串口错误重复抑制 =================
 # 用于抑制连续重复显示相同的串口异常（避免日志刷屏）
@@ -2337,6 +2364,36 @@ def save_desktop_shortcut_name(name: str):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         config.write(f)
 
+# ================= 多开并发：物理端口保护锁 =================
+current_port_mutex = None
+
+def lock_port_mutex(port_name):
+    global current_port_mutex
+    unlock_port_mutex()
+    if not port_name: return
+    # 删除了 Global\ 前缀，避免需要管理员权限才能上锁
+    mutex_name = f"Air724UG_PORT_{port_name}"
+    current_port_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+
+def unlock_port_mutex():
+    global current_port_mutex
+    if current_port_mutex:
+        try:
+            ctypes.windll.kernel32.CloseHandle(current_port_mutex)
+        except Exception:
+            pass
+        current_port_mutex = None
+
+def is_port_locked_by_other(port_name):
+    if not port_name: return False
+    mutex_name = f"Air724UG_PORT_{port_name}"
+    # 使用 OpenMutexW (0x00100000 为 SYNCHRONIZE 权限) 是判断锁是否被别人占用的最完美方式
+    handle = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, mutex_name)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True  # 只要能打开，说明锁存在，已经被别人占用了！
+    return False
+
 # ================= 单实例：Windows Mutex 锁 =================
 import ctypes
 
@@ -3533,6 +3590,7 @@ def find_luat_best_port():
     3) 优先选择 description 包含 MODEM 的口
     返回： (device, desc) 或 (None, None)
     """
+    global PORT # 引入当前的记忆端口
     exclude_tokens = [
         "DIAG", "NPI", "MOS", "DEBUG", "DOWNLOAD",
         "CP ", "CP_", "AP ", "AP_",  # 有些驱动会写 CP/AP
@@ -3541,6 +3599,8 @@ def find_luat_best_port():
     candidates = []
     for p in list_ports.comports():
         dev = p.device
+        if is_port_locked_by_other(dev):
+            continue
         desc = (p.description or "")
         hwid = (p.hwid or "")
 
@@ -3559,14 +3619,17 @@ def find_luat_best_port():
         # 注意：desc 可能是 "LUAT USB Device 1 AT"
         if " AT" in desc_u or desc_u.endswith("AT"):
             continue
-
+        if "MODEM" not in desc_u and "DEVICE 0" not in desc_u:
+            if dev != PORT:  # 除非它恰好就是我们记忆里强行绑定的那个口
+                continue
         score = 0
         if "MODEM" in desc_u:
             score += 100
         # 轻微偏好 Device 0（很多 LUAT 的 Modem 是 0）
         if "USB DEVICE 0" in desc_u:
             score += 10
-
+        if dev == PORT:
+            score += 1000
         candidates.append((score, dev, desc))
 
     if not candidates:
@@ -3899,44 +3962,69 @@ def read_serial():
         
     while serial_running and (not serial_stop_event.is_set()):
         try:
+            target_port = PORT
+            desc_str = ""
+
             if MODE == "Auto":
                 dev, desc = find_luat_best_port()
                 if dev:
-                    system_ui(f"🔌 检测到 LUAT Modem 标识，自动连接：{dev}（{desc}）")
+                    auto_connect_ui(f"🔌 检测到 LUAT Modem 标识，自动连接：{dev}（{desc}）")
+                    target_port = dev
+                    desc_str = f"（{desc}）"
                 if not dev:
-                    # 若未检测到带有 LUAT 标识的设备，但系统只存在一个串口，则自动连接该端口
                     ports_all = list(list_ports.comports())
-                    if len(ports_all) == 1:
-                        single = ports_all[0]
-                        dev = single.device
+                    # 过滤掉被其他多开实例占用的单一串口
+                    available_ports = [p for p in ports_all if not is_port_locked_by_other(p.device)]
+                    if len(available_ports) == 1:
+                        single = available_ports[0]
+                        target_port = single.device
                         desc = single.description or ""
-                        system_ui(f"🔌 未检测到 LUAT Modem 标识，但仅发现单一串口，自动连接：{dev}")
+                        auto_connect_ui(f"🔌 未检测到 LUAT Modem 标识，但仅发现单一串口，自动连接：{target_port}")
+                        desc_str = f"（{desc}）"
                     else:
                         set_status("🔍 扫描 LUAT Modem 中…", "orange")
                         serial_wakeup_event.wait(timeout=RECONNECT_INTERVAL)
                         serial_wakeup_event.clear()
                         continue
-                PORT = dev
-                set_status(f"🟡 连接中：{PORT}（{desc}） @ {BAUD}", "orange")
             else:
-                if not PORT:
+                if not target_port:
                     set_status("🔒 手动模式：未指定串口", "red")
                     time.sleep(RECONNECT_INTERVAL)
                     continue
-                set_status(f"🟡 连接中：{PORT} @ {BAUD}", "orange")
+
+            set_status(f"🟡 连接中：{target_port}{desc_str} @ {BAUD}", "orange")
+
+            if is_port_locked_by_other(target_port):
+                serial_error_ui(f"⚠️ 端口冲突：{target_port} 已被本软件的其他实例占用，已绕过。")
+                set_status(f"🔴 端口冲突绕过中", "red")
+                time.sleep(RECONNECT_INTERVAL)
+                continue
 
             # 创建串口也要加锁，避免与 safe_close_serial() 并发
             with serial_lock:
-                serial_obj = serial.Serial(PORT, BAUD, timeout=0.3, write_timeout=0.5)
-                # 自动发指令：开启来电显示号码功能
+                # 使用目标端口尝试连接
+                serial_obj = serial.Serial(target_port, BAUD, timeout=0.3, write_timeout=0.5)
+                lock_port_mutex(target_port)  # 成功打开后再上锁
+                
+                # 自动发指令：尝试与模组进行真实通信
                 serial_obj.write(b"AT+CLIP=1\r\n")
+                serial_obj.flush() # 强行等待写入完成，测试端口是否真的是活的
 
-            LOG_PREFIX = PORT.replace(":", "_")
+                if MODE == "Auto":
+                    PORT = target_port
+
+            LOG_PREFIX = target_port.replace(":", "_")
 
             # 延迟 2 秒再输出已连接日志，与检测日志隔开（不阻塞主线程）
             def _delayed_connected_log(port, baud, delay=2):
                 try:
                     time.sleep(delay)
+                    # 一旦真正连接成功，立刻清零所有的防抖拦截计数器，让下次断开时还能正常提示
+                    global _last_auto_connect_msg, _last_auto_connect_count, _last_serial_error_msg, _last_serial_error_count
+                    _last_auto_connect_msg = None
+                    _last_auto_connect_count = 0
+                    _last_serial_error_msg = None
+                    _last_serial_error_count = 0
 
                     system_ui(f"🔌 串口已连接：{port} @ {baud}")
 
@@ -4324,7 +4412,7 @@ def read_serial():
 
             # 3) Auto：维持原逻辑（清 PORT 让它重新扫描）
             if MODE == "Auto":
-                PORT = ""
+                pass
 
             # 4) 等待下一轮（只有在没有 continue 的情况下才会走到这里）
             serial_wakeup_event.wait(timeout=RECONNECT_INTERVAL)
