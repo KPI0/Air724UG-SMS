@@ -2387,12 +2387,12 @@ def unlock_port_mutex():
 def is_port_locked_by_other(port_name):
     if not port_name: return False
     mutex_name = f"Air724UG_PORT_{port_name}"
-    # 使用 OpenMutexW (0x00100000 为 SYNCHRONIZE 权限) 是判断锁是否被别人占用的最完美方式
-    handle = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, mutex_name)
+    # 终极修复：使用 CreateMutexW 并检查错误码 183，这比 OpenMutex 更加稳定，无视权限组差异
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    err = ctypes.windll.kernel32.GetLastError()
     if handle:
         ctypes.windll.kernel32.CloseHandle(handle)
-        return True  # 只要能打开，说明锁存在，已经被别人占用了！
-    return False
+    return err == 183  # 183 = ERROR_ALREADY_EXISTS (说明绝对被其他多开实例占用了)
 
 # ================= 单实例：Windows Mutex 锁 =================
 import ctypes
@@ -3619,9 +3619,12 @@ def find_luat_best_port():
         # 注意：desc 可能是 "LUAT USB Device 1 AT"
         if " AT" in desc_u or desc_u.endswith("AT"):
             continue
-        if "MODEM" not in desc_u and "DEVICE 0" not in desc_u:
-            if dev != PORT:  # 除非它恰好就是我们记忆里强行绑定的那个口
+            
+        # 终极修复：必须严格包含 MODEM 字样。Device 7 等无用诊断口全部屏蔽！
+        if "MODEM" not in desc_u:
+            if dev != PORT:  # 除非它是我们记忆里真正连过的老相好
                 continue
+                
         score = 0
         if "MODEM" in desc_u:
             score += 100
@@ -4977,7 +4980,6 @@ def toggle_popup():
 # ================= 重启软件 =================
 def restart_software():
     global is_exiting, serial_running, tray_icon, app_mutex
-    # 拦截提前：防止用户疯狂连点导致弹出多个重启确认框
     if is_exiting:
         return
         
@@ -4987,7 +4989,6 @@ def restart_software():
     is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
     
-    # 1. 标记退出状态并释放底层串口资源
     serial_running = False
     safe_close_serial()
 
@@ -4999,30 +5000,9 @@ def restart_software():
     except Exception:
         pass
 
-    # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
     try:
         if tray_icon:
             tray_icon.stop()
-    except Exception:
-        pass
-
-    # 3. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
-    try:
-        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
-        
-        # 核心修复 1：洗脑新进程，剔除 PyInstaller 环境变量，防止它去抢夺老进程的临时目录
-        env = os.environ.copy()
-        env.pop("_MEIPASS2", None)
-        
-        # 核心修复 2：DETACHED_PROCESS (0x00000008)，让新进程彻底脱离父进程独立运行
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-        
-        if getattr(sys, 'frozen', False):
-            # 如果是打包好的 exe
-            subprocess.Popen(new_args, env=env, close_fds=True, creationflags=flags)
-        else:
-            # 如果是脚本模式
-            subprocess.Popen([sys.executable] + new_args, env=env, close_fds=True, creationflags=flags)
     except Exception:
         pass
 
@@ -5034,7 +5014,32 @@ def restart_software():
     except Exception:
         pass
 
-    # 4. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
+    # 👇 终极修复：VBS 延迟重启法（彻底解决 PyInstaller _MEI 临时目录占用报错）
+    try:
+        exe_path = os.path.abspath(sys.argv[0])
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+        
+        args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
+        args_str = " ".join([f'""{arg}""' for arg in args_list])
+        
+        # 让 VBS 替我们等待 1.5 秒（给旧进程充足时间自毁清缓存），然后再拉起新进程，最后 VBS 自毁
+        vbs_code = f'''
+WScript.Sleep 1500
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """" & "{exe_path}" & """ {args_str}", 1, False
+Set fso = CreateObject("Scripting.FileSystemObject")
+fso.DeleteFile WScript.ScriptFullName
+'''
+        vbs_path = os.path.join(tempfile.gettempdir(), "sms_restart_helper.vbs")
+        with open(vbs_path, "w", encoding="mbcs") as f:
+            f.write(vbs_code)
+        
+        os.startfile(vbs_path) # 呼叫 Windows 异步执行脚本
+    except Exception:
+        pass
+
+    # 瞬间结束当前老进程，放权给卸载程序
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
