@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.2"  # 软件版本号
+APP_VERSION = "3.5.3"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -5009,12 +5009,20 @@ def restart_software():
     # 3. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
     try:
         new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
+        
+        # 核心修复 1：洗脑新进程，剔除 PyInstaller 环境变量，防止它去抢夺老进程的临时目录
+        env = os.environ.copy()
+        env.pop("_MEIPASS2", None)
+        
+        # 核心修复 2：DETACHED_PROCESS (0x00000008)，让新进程彻底脱离父进程独立运行
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        
         if getattr(sys, 'frozen', False):
             # 如果是打包好的 exe
-            subprocess.Popen(new_args)
+            subprocess.Popen(new_args, env=env, close_fds=True, creationflags=flags)
         else:
             # 如果是脚本模式
-            subprocess.Popen([sys.executable] + new_args)
+            subprocess.Popen([sys.executable] + new_args, env=env, close_fds=True, creationflags=flags)
     except Exception:
         pass
 
