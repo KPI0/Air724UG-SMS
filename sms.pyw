@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.0"  # 软件版本号
+APP_VERSION = "3.5.1"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -557,51 +557,74 @@ def set_autostart(enable: bool):
         ui_messagebox("error", "错误", f"设置开机自启失败：\n{e}")
 
 # ================= TTS语音播报 =================
-def _generate_alert_voice_impl(text: str, force: bool = False):
-    """真正生成 wav 的实现：只允许在 worker 里调用"""
-    if not text:
-        text = DEFAULT_VOICE_TEXT
+def _tts_worker():
+    while not TTS_STOP.is_set():
+        try:
+            task = TTS_REQ_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
 
-    if (not force) and os.path.exists(TTS_FILE):
-        return
+        # 兼容旧参数和新参数解包
+        if len(task) == 3:
+            text, force, play_after = task
+        else:
+            text, force = task
+            play_after = False
 
-    with TTS_LOCK:
-        os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
+        if not text:
+            text = DEFAULT_VOICE_TEXT
 
-        tmp_path = TTS_FILE + ".tmp.wav"
-        engine = None
+        # 如果不强制生成，且文件已存在，直接跳过
+        if (not force) and os.path.exists(TTS_FILE):
+            try:
+                TTS_REQ_Q.task_done()
+            except Exception:
+                pass
+            if play_after:
+                play_alert(force=True)
+            continue
 
         try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 150)
-            engine.save_to_file(text, tmp_path)
-            engine.runAndWait()
-
-            # 原子替换：避免生成一半被播放/读取
-            os.replace(tmp_path, TTS_FILE)
-
-        except Exception:
-            # 清理 tmp，避免留下脏文件
-            try:
+            with TTS_LOCK:
+                os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
+                tmp_path = TTS_FILE + ".tmp.wav"
+                
+                # 核心修复 1：每次重新 init，避开 pyttsx3 长驻缓存的 Bug
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 150)
+                engine.save_to_file(text, tmp_path)
+                engine.runAndWait()
+                engine.stop()
+                del engine  # 核心修复 2：强制释放 COM 内存，防止内存泄漏
+                
+                # 原子替换，只有成功生成了才覆盖原文件
                 if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-            raise
-
-        finally:
-            # 尽力释放 TTS 引擎资源（降低 runAndWait 卡死/退出残留概率）
+                    os.replace(tmp_path, TTS_FILE)
+                    
+        except Exception as e:
+            # 清理可能损坏的 tmp 文件
             try:
-                if engine is not None:
-                    engine.stop()
+                if os.path.exists(TTS_FILE + ".tmp.wav"):
+                    os.remove(TTS_FILE + ".tmp.wav")
             except Exception:
                 pass
+            log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+        finally:
+            try:
+                TTS_REQ_Q.task_done()
+            except Exception:
+                pass
+        
+        # 核心修复 3：文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
+        if play_after:
+            play_alert(force=True)
 
-def generate_alert_voice(force: bool = False, text: str = None):
+threading.Thread(target=_tts_worker, daemon=True).start()
+
+def generate_alert_voice(force: bool = False, text: str = None, play_after: bool = False):
     """
     对外接口：任何线程都可调用。
-    - 默认使用当前 VOICE_TEXT 快照
-    - 或者传 text（用于试听/临时生成，不要改全局 VOICE_TEXT）
+    - play_after: 专门用于试听，生成完毕后立刻回调播放，防止文件锁冲突
     """
     try:
         if text is None:
@@ -612,27 +635,18 @@ def generate_alert_voice(force: bool = False, text: str = None):
         text_snapshot = DEFAULT_VOICE_TEXT
 
     try:
-        TTS_REQ_Q.put_nowait((text_snapshot, bool(force)))
-    except queue.Full:
-        log_file_only("⚠️ TTS 请求队列已满，已丢弃一次生成请求")
-
-def _tts_worker():
-    while not TTS_STOP.is_set():
-        try:
-            text, force = TTS_REQ_Q.get(timeout=0.5)
-        except queue.Empty:
-            continue
-
-        try:
-            _generate_alert_voice_impl(text=text, force=force)
-        except Exception as e:
-            log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
-        finally:
+        # 核心防御：清空积压队列（防抖）。如果用户狂点“试听”，直接丢弃旧任务，只执行最后一次
+        while not TTS_REQ_Q.empty():
             try:
+                TTS_REQ_Q.get_nowait()
                 TTS_REQ_Q.task_done()
             except Exception:
-                pass
-threading.Thread(target=_tts_worker, daemon=True).start()
+                break
+
+        # 把 play_after 也打包塞进队列
+        TTS_REQ_Q.put_nowait((text_snapshot, bool(force), bool(play_after)))
+    except queue.Full:
+        log_file_only("⚠️ TTS 请求队列已满，已丢弃一次生成请求")
 
 # ================= 获取桌面路径 =================
 def get_desktop_dir():
@@ -763,7 +777,8 @@ def open_sms_font_dialog():
     PREVIEW_TEXT = "短信内容"
 
     def refresh_preview():
-        preview_canvas.update_idletasks()
+        # 1. 强制系统处理所有事件并完成重绘，获取真实物理尺寸
+        preview_canvas.update()
 
         try:
             s = int(size_var.get().strip())
@@ -772,15 +787,21 @@ def open_sms_font_dialog():
 
         c = (color_var.get().strip() or SMS_FONT_COLOR)
 
+        # 2. 终极防呆兜底：如果极端情况下依然返回 1，则使用创建时的默认物理像素 (560x110)
+        cw = preview_canvas.winfo_width()
+        ch = preview_canvas.winfo_height()
+        if cw <= 1: cw = 560
+        if ch <= 1: ch = 110
+
         # 预览用字号：避免裁剪（高度的 70% 比较合适）
-        max_size = max(8, int(preview_canvas.winfo_height() * 0.7))
+        max_size = max(8, int(ch * 0.7))
         s_preview = min(s, max_size)
 
         preview_canvas.delete("all")
         try:
             preview_canvas.create_text(
-                preview_canvas.winfo_width() // 2,
-                preview_canvas.winfo_height() // 2,
+                cw // 2,
+                ch // 2,
                 text=PREVIEW_TEXT,
                 anchor="c",
                 font=("微软雅黑", s_preview),
@@ -788,8 +809,8 @@ def open_sms_font_dialog():
             )
         except Exception:
             preview_canvas.create_text(
-                preview_canvas.winfo_width() // 2,
-                preview_canvas.winfo_height() // 2,
+                cw // 2,
+                ch // 2,
                 text=PREVIEW_TEXT,
                 anchor="c",
                 font=("微软雅黑", 30),
@@ -1181,6 +1202,7 @@ def open_serial_debug_window():
         ("AT+CGDCONT?", "查APN配置"),
         ("AT+RFTEMPERATURE?", "查模组温度"),
         ("AT+CNUM", "查本机号码"),
+        ("AT+CSCA?", "查短信中心号码"),
         ("AT+COPS?", "查运营商"),
         ("AT+CPIN?", "查PIN码锁状态"),
         ("AT+ICCID", "查SIM卡ICCID"),
@@ -1694,12 +1716,19 @@ def open_serial_debug_window():
                                 udl = f"{len(m_bytes):02X}" # 内容长度
                                 ud = m_bytes.hex().upper()  # 内容HEX
                                 
-                                # 拼接成完整的 PDU 字符串
-                                # 00(SMSC) 11(Type) 00(MR) [长度] [类型] [反转号码] 00(PID) 08(UCS2编码) C0(有效期) [正文长度] [正文HEX]
-                                p_data = f"001100{p_len}{p_type}{p_swap}0008C0{udl}{ud}"
+                                # 1. 短信中心号码 (SMSC) 信息。00 表示使用 SIM 卡内设定的默认中心号码
+                                smsc = "00"
                                 
-                                # AT+CMGS 需要的长度是不包含 SMSC(前两位"00") 的字节数
-                                c_len = (len(p_data) // 2) - 1
+                                # 2. 传送协议数据单元 (TPDU)
+                                # 11(Type) 00(MR) [长度] [类型] [反转号码] 00(PID) 08(UCS2编码) C0(有效期) [正文长度] [正文HEX]
+                                tpdu = f"1100{p_len}{p_type}{p_swap}0008C0{udl}{ud}"
+                                
+                                # 完整的 PDU 是 SMSC + TPDU
+                                p_data = smsc + tpdu
+                                
+                                # 3. AT+CMGS 所需的长度是严格的 TPDU 字节数（完全排除 SMSC）
+                                c_len = len(tpdu) // 2
+                                
                                 return p_data, c_len
                             # ==========================================
 
@@ -2248,6 +2277,7 @@ def open_serial_debug_window():
 
     _append_lines()
 
+# ================= 语音播报开关（菜单按钮） =================
 def open_voice_text_dialog():
     win = tk.Toplevel(root)
     win.withdraw()
@@ -2265,19 +2295,16 @@ def open_voice_text_dialog():
     def do_preview():
         tmp = text.get("1.0", "end").strip()
         if not tmp:
-            messagebox.showerror("错误", "播报内容不能为空")
+            messagebox.showerror("错误", "播报内容不能为空", parent=win)
             return
 
-        # 走队列生成
-        generate_alert_voice(force=True, text=tmp)
-
-        # 稍微延迟播放，给生成一点时间（否则可能先播放到旧文件或没文件）
-        ui_post(lambda: root.after(350, lambda: play_alert(force=True)))
+        # 走队列生成，并在生成完成后自动回调播放（传入 play_after=True）
+        generate_alert_voice(force=True, text=tmp, play_after=True)
 
     def do_save():
         tmp = text.get("1.0", "end").strip()
         if not tmp:
-            messagebox.showerror("错误", "播报内容不能为空")
+            messagebox.showerror("错误", "播报内容不能为空", parent=win)
             return
 
         global VOICE_TEXT
@@ -2310,109 +2337,25 @@ def save_desktop_shortcut_name(name: str):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         config.write(f)
 
-# ================= 单实例：二次启动时唤醒已有实例 =================
-SINGLE_INSTANCE_HOST = "127.0.0.1"
+# ================= 单实例：Windows Mutex 锁 =================
+import ctypes
 
-# 端口文件：记录“主实例当前使用的端口”，让二次启动能找到它
-PORT_FILE = os.path.join(tempfile.gettempdir(), "sms_single_instance_port.txt")
+app_mutex = None
 
-# 端口尝试范围（足够小，不会乱；足够大，基本不冲突）
-PORT_RANGE = range(45678, 45699)
-
-def _read_saved_port():
-    try:
-        with open(PORT_FILE, "r", encoding="utf-8") as f:
-            p = int(f.read().strip())
-            return p
-    except Exception:
-        return None
-
-def _save_port(port: int):
-    try:
-        with open(PORT_FILE, "w", encoding="utf-8") as f:
-            f.write(str(port))
-    except Exception:
-        pass
-
-def _pick_free_port():
-    """从范围里挑一个能 bind 的端口"""
-    for p in PORT_RANGE:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((SINGLE_INSTANCE_HOST, p))
-            s.close()
-            return p
-        except OSError:
-            try:
-                s.close()
-            except Exception:
-                pass
-            continue
-    return None
-
-def _try_notify_existing_instance() -> bool:
-    """如果已有实例在监听，则发送 SHOW 并返回 True；否则返回 False"""
-    port = _read_saved_port()
-    if not port:
-        return False
-
-    try:
-        with socket.create_connection((SINGLE_INSTANCE_HOST, port), timeout=0.3) as s:
-            s.sendall(b"SHOW")
-        return True
-
-    except OSError:
-        # 连接失败：大概率是旧的 port 文件残留，清理一下
-        try:
-            os.remove(PORT_FILE)
-        except Exception:
-            pass
-        return False
-
-def _start_single_instance_server(port: int, show_callback):
-    """
-    本实例成为“主实例”：在后台监听端口。
-    收到 SHOW 就调用 show_callback()（用 root.after 调回主线程）。
-    """
-    def _server():
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        try:
-            srv.bind((SINGLE_INSTANCE_HOST, port))
-        except OSError:
-            # bind 失败：不要留下“假端口文件”
-            try:
-                srv.close()
-            except Exception:
-                pass
-            try:
-                if os.path.exists(PORT_FILE):
-                    os.remove(PORT_FILE)
-            except Exception:
-                pass
-            return
-
-        # bind 成功后再写端口文件
-        _save_port(port)
-
-        srv.listen(5)
-
-        while True:
-            try:
-                conn, _addr = srv.accept()
-                with conn:
-                    data = conn.recv(1024) or b""
-                    if b"SHOW" in data:
-                        try:
-                            show_callback()
-                        except Exception:
-                            pass
-            except Exception:
-                time.sleep(0.2)
-
-    threading.Thread(target=_server, daemon=True).start()
+def check_single_instance():
+    global app_mutex
+    # 创建一个系统全局唯一的互斥量名称
+    mutex_name = "Global\\Air724UG_SMS_Monitor_Mutex_V3"
+    
+    # 调用 Windows 内核 API 创建互斥量
+    app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    last_error = ctypes.windll.kernel32.GetLastError()
+    
+    # 183 (ERROR_ALREADY_EXISTS) 表示互斥量已被另一个实例创建
+    if last_error == 183:
+        # 发现已有实例运行，弹出系统原生提示框并立刻退出
+        ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
+        sys.exit(0)
 
 def center_on_screen(win, w=None, h=None):
     """将窗口居中到屏幕（主窗口建议传入 w/h，避免 withdraw 状态取到 minsize）。"""
@@ -2429,10 +2372,9 @@ def center_on_screen(win, w=None, h=None):
     y = (sh - h) // 2
     win.geometry(f"{w}x{h}+{x}+{y}")
 
-# ================= 单实例：二次启动时通知已有实例（应放在 Tk 创建之前） =================
+# ================= 单实例：二次启动拦截（应放在 Tk 创建之前） =================
 if not ALLOW_MULTI_INSTANCE:
-    if _try_notify_existing_instance():
-        sys.exit(0)
+    check_single_instance()
 
 # ================= 开启 Windows 高DPI 极致清晰支持 (全世代兼容) =================
 try:
@@ -2552,27 +2494,18 @@ def hide_window():
     else:
         ui_post(_do)
 
-# ================= 单实例：主实例启动监听（应放在 Tk 创建之后） =================
-if not ALLOW_MULTI_INSTANCE:
-    port = _pick_free_port()
-    if port is not None:
-        # 这里直接把 show_window 丢给 server 即可
-        # 因为 show_window 内部已经做了“回主线程”的 ui_post 处理
-        _start_single_instance_server(port, show_window)
-    else:
-        system_ui("⚠️ 单实例监听启动失败：端口占用（已放弃单实例唤醒）", "normal")
-
 def cleanup_and_exit():
     """真正退出：停止串口线程、关闭串口、停止托盘、销毁窗口（主线程执行更稳）"""
     def _do():
-        # ==== 防误点确认弹窗 ====
-        # 加上 parent=root，保证哪怕窗口最小化到托盘了，弹窗依然能正常显示
-        if not messagebox.askyesno("退出软件", "确定要完全退出软件吗？\n\n退出后将停止监听短信和来电。", parent=root):
-            return
-        # ==============================
         global serial_running, serial_obj, is_exiting, tray_icon
+        # 拦截提前：如果已经在退出了，就不再弹第二个确认框！
         if is_exiting:
             return
+            
+        # ==== 防误点确认弹窗 ====
+        if not messagebox.askyesno("退出软件", "确定要完全退出软件吗？\n\n退出后将停止监听短信和来电。", parent=root):
+            return
+            
         is_exiting = True
         
         try:
@@ -2614,12 +2547,6 @@ def cleanup_and_exit():
 
         try:
             root.destroy()
-        except Exception:
-            pass
-
-        try:
-            if os.path.exists(PORT_FILE):
-                os.remove(PORT_FILE)
         except Exception:
             pass
 
@@ -2940,9 +2867,18 @@ def log(msg, tag="normal"):
         ui_post(_ui_and_file)
 
 # ================= 声音 =================
+_last_play_time = 0.0  # 记录上次播报时间（防抖用）
+
 def play_alert(force: bool = False):
+    global _last_play_time
     if (not force) and (not VOICE_ENABLED):
         return
+
+    # 3秒冷却防抖。避免瞬间涌入十几条短信导致播报疯狂重叠卡顿
+    now = time.monotonic()
+    if (not force) and (now - _last_play_time < 3.0):
+        return
+    _last_play_time = now
 
     try:
         if os.path.exists(TTS_FILE):
@@ -3000,7 +2936,7 @@ def send_reset_cmd():
                 serial_obj.flush()
                 
                 # 在主窗口日志中记录
-                system_ui("🚀 已发送重启指令：AT+RESET", "normal")
+                system_ui("🔄 已发送重启指令：AT+RESET", "normal")
             except Exception as e:
                 system_ui(f"❌ 发送重启指令失败：{e}", "normal")
         else:
@@ -4044,10 +3980,16 @@ def read_serial():
                         current_serial = serial_obj
                     
                     # 脱离锁的作用域后再进行 I/O 阻塞读取，极大提升 UI 并发响应速度
-                    raw = current_serial.readline()
-                except (PermissionError, OSError, serial.SerialException) as e:
+                    try:
+                        raw = current_serial.readline()
+                    except Exception as inner_e:
+                        # 专门捕获由于并发 safe_close_serial 导致底层句柄被抽走引发的非标准异常
+                        # 例如 ValueError: Attempting to use a port that is not open 等
+                        raise serial.SerialException(f"并发读取被中断: {inner_e}")
+                        
+                except Exception as e:
+                    # 统一拦截所有 I/O 和 并发抽锁 造成的异常，并抛给外层重连机制
                     raise e
-
                 line = raw.decode("utf-8", "ignore").strip()
                 
                 # ======== 纯线程安全看门狗（检查是否未接听挂断） ========
@@ -4294,7 +4236,7 @@ def read_serial():
                         pending_parts = [msg]
                         pending_display_lines = ["📩 收到短信：", msg]
                         pending_active = True
-                        pending_deadline = time.monotonic() + 0.6
+                        pending_deadline = time.monotonic() + 1.0
                         follow_lines_left = 40
                     else:
                         pending_parts = []
@@ -4316,7 +4258,7 @@ def read_serial():
                         if follow_lines_left > 0:
                             pending_parts.append(line)
                             pending_display_lines.append(line)
-                            pending_deadline = time.monotonic() + 0.6
+                            pending_deadline = time.monotonic() + 0.4
                             follow_lines_left -= 1
                             if follow_lines_left <= 0:
                                 flush_pending()
@@ -4738,7 +4680,7 @@ def open_call_filter_setting():
             pass
         
         mode_cn = {"Disabled": "关闭过滤", "Whitelist": "白名单模式", "Blacklist": "黑名单模式"}[CALL_FILTER_MODE]
-        system_ui(f"防骚扰模式已切换为：{mode_cn}")
+        system_ui(f"📞 防骚扰模式已切换为：{mode_cn}")
 
     tk.Radiobutton(mode_frm, text="关闭过滤 (允许所有)", variable=mode_var, value="Disabled", command=on_mode_change).pack(side="left", padx=5)
     tk.Radiobutton(mode_frm, text="白名单 (仅限名单内)", variable=mode_var, value="Whitelist", command=on_mode_change).pack(side="left", padx=5)
@@ -4946,32 +4888,37 @@ def toggle_popup():
 
 # ================= 重启软件 =================
 def restart_software():
+    global is_exiting, serial_running, tray_icon, app_mutex
+    # 拦截提前：防止用户疯狂连点导致弹出多个重启确认框
+    if is_exiting:
+        return
+        
     if not messagebox.askyesno("重启软件", "确定要重启软件吗？", parent=root):
         return
     
+    is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
     
     # 1. 标记退出状态并释放底层串口资源
-    global is_exiting, serial_running, tray_icon
-    is_exiting = True
     serial_running = False
     safe_close_serial()
-    
+
+    try:
+        if app_mutex:
+            import ctypes
+            ctypes.windll.kernel32.ReleaseMutex(app_mutex)
+            ctypes.windll.kernel32.CloseHandle(app_mutex)
+    except Exception:
+        pass
+
     # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
     try:
         if tray_icon:
             tray_icon.stop()
     except Exception:
         pass
-        
-    # 3. 删除单实例端口文件锁 (防止新实例启动失败)
-    try:
-        if os.path.exists(PORT_FILE):
-            os.remove(PORT_FILE)
-    except Exception:
-        pass
 
-    # 4. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
+    # 3. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
     try:
         new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
         if getattr(sys, 'frozen', False):
@@ -4991,7 +4938,7 @@ def restart_software():
     except Exception:
         pass
 
-    # 5. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
+    # 4. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
