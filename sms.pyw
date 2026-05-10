@@ -4980,6 +4980,7 @@ def toggle_popup():
 # ================= 重启软件 =================
 def restart_software():
     global is_exiting, serial_running, tray_icon, app_mutex
+    # 拦截提前：防止用户疯狂连点导致弹出多个重启确认框
     if is_exiting:
         return
         
@@ -4989,6 +4990,7 @@ def restart_software():
     is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
     
+    # 1. 标记退出状态并释放底层串口资源
     serial_running = False
     safe_close_serial()
 
@@ -5000,9 +5002,22 @@ def restart_software():
     except Exception:
         pass
 
+    # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
     try:
         if tray_icon:
             tray_icon.stop()
+    except Exception:
+        pass
+
+    # 3. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
+    try:
+        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
+        if getattr(sys, 'frozen', False):
+            # 如果是打包好的 exe
+            subprocess.Popen(new_args)
+        else:
+            # 如果是脚本模式
+            subprocess.Popen([sys.executable] + new_args)
     except Exception:
         pass
 
@@ -5014,38 +5029,7 @@ def restart_software():
     except Exception:
         pass
 
-    # 终极修复：VBS 延迟重启法 + 环境变量剥离（彻底斩断 MEI 临时文件夹死锁）
-    try:
-        exe_path = os.path.abspath(sys.argv[0])
-        if getattr(sys, 'frozen', False):
-            exe_path = sys.executable
-        
-        args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
-        args_str = " ".join([f'""{arg}""' for arg in args_list])
-        
-        # 核心变动：在 VBS 中增加清除 _MEIPASS2 等变量的逻辑，让新进程完全独立解压！
-        vbs_code = f'''
-WScript.Sleep 1500
-Set WshShell = CreateObject("WScript.Shell")
-On Error Resume Next
-WshShell.Environment("Process").Remove("_MEIPASS2")
-WshShell.Environment("Process").Remove("_MEIPASS")
-WshShell.Environment("Process").Remove("TCL_LIBRARY")
-WshShell.Environment("Process").Remove("TK_LIBRARY")
-On Error GoTo 0
-WshShell.Run """" & "{exe_path}" & """ {args_str}", 1, False
-Set fso = CreateObject("Scripting.FileSystemObject")
-fso.DeleteFile WScript.ScriptFullName
-'''
-        vbs_path = os.path.join(tempfile.gettempdir(), "sms_restart_helper.vbs")
-        with open(vbs_path, "w", encoding="mbcs") as f:
-            f.write(vbs_code)
-        
-        os.startfile(vbs_path) # 呼叫 Windows 异步执行脚本
-    except Exception:
-        pass
-
-    # 瞬间结束当前老进程，放权给卸载程序
+    # 4. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
