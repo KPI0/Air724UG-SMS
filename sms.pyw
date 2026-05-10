@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.3"  # 软件版本号
+APP_VERSION = "3.5.4"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -5014,7 +5014,7 @@ def restart_software():
     except Exception:
         pass
 
-    # 👇 终极修复：VBS 延迟重启法（彻底解决 PyInstaller _MEI 临时目录占用报错）
+    # 终极修复：VBS 延迟重启法 + 环境变量剥离（彻底斩断 MEI 临时文件夹死锁）
     try:
         exe_path = os.path.abspath(sys.argv[0])
         if getattr(sys, 'frozen', False):
@@ -5023,10 +5023,16 @@ def restart_software():
         args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
         args_str = " ".join([f'""{arg}""' for arg in args_list])
         
-        # 让 VBS 替我们等待 1.5 秒（给旧进程充足时间自毁清缓存），然后再拉起新进程，最后 VBS 自毁
+        # 核心变动：在 VBS 中增加清除 _MEIPASS2 等变量的逻辑，让新进程完全独立解压！
         vbs_code = f'''
 WScript.Sleep 1500
 Set WshShell = CreateObject("WScript.Shell")
+On Error Resume Next
+WshShell.Environment("Process").Remove("_MEIPASS2")
+WshShell.Environment("Process").Remove("_MEIPASS")
+WshShell.Environment("Process").Remove("TCL_LIBRARY")
+WshShell.Environment("Process").Remove("TK_LIBRARY")
+On Error GoTo 0
 WshShell.Run """" & "{exe_path}" & """ {args_str}", 1, False
 Set fso = CreateObject("Scripting.FileSystemObject")
 fso.DeleteFile WScript.ScriptFullName
