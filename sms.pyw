@@ -4980,7 +4980,6 @@ def toggle_popup():
 # ================= 重启软件 =================
 def restart_software():
     global is_exiting, serial_running, tray_icon, app_mutex
-    # 拦截提前：防止用户疯狂连点导致弹出多个重启确认框
     if is_exiting:
         return
         
@@ -4990,7 +4989,6 @@ def restart_software():
     is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
     
-    # 1. 标记退出状态并释放底层串口资源
     serial_running = False
     safe_close_serial()
 
@@ -5002,22 +5000,9 @@ def restart_software():
     except Exception:
         pass
 
-    # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
     try:
         if tray_icon:
             tray_icon.stop()
-    except Exception:
-        pass
-
-    # 3. 拉起一个新的自己 (过滤掉自启参数，防止重启后再次隐藏窗口)
-    try:
-        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
-        if getattr(sys, 'frozen', False):
-            # 如果是打包好的 exe
-            subprocess.Popen(new_args)
-        else:
-            # 如果是脚本模式
-            subprocess.Popen([sys.executable] + new_args)
     except Exception:
         pass
 
@@ -5029,7 +5014,37 @@ def restart_software():
     except Exception:
         pass
 
-    # 4. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
+    # 终极无痕重启方案（摒弃所有 BAT/VBS 脚本，告别黑框，直击灵魂）
+    try:
+        # 1. 彻底清洗环境变量，断绝新旧进程的 PyInstaller 临时目录共享
+        clean_env = os.environ.copy()
+        for k in ["_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"]:
+            clean_env.pop(k, None)
+
+        # 2. 获取程序路径并过滤自启参数
+        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
+        if not getattr(sys, 'frozen', False):
+            new_args.insert(0, sys.executable)
+            
+        # 3. 确保 CWD（当前工作目录）绝对不在旧的 _MEI 临时文件夹内
+        # 这是之前报错的核心原因！必须强行把新进程的脚从旧坑里拔出来！
+        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+        # 4. 设置静默脱离标志 (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        flags = 0x00000008 | 0x00000200
+
+        # 5. 直接拉起新进程，无黑框、无残留句柄
+        subprocess.Popen(
+            new_args,
+            env=clean_env,
+            cwd=exe_dir,
+            close_fds=True,
+            creationflags=flags
+        )
+    except Exception as e:
+        log_file_only(f"重启拉起新进程失败：{e}")
+
+    # 瞬间退出旧进程，放权给卸载程序删缓存
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
