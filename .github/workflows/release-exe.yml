@@ -47,6 +47,7 @@ jobs:
             --name "sms" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
+            --hidden-import "pyttsx3.drivers.sapi5" `
             sms.pyw
 
       - name: Zip EXE

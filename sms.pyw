@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.4.9"  # 软件版本号
+APP_VERSION = "3.5.0"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -2605,6 +2605,14 @@ def cleanup_and_exit():
             pass
 
         try:
+            while not FILE_LOG_Q.empty():
+                p, l = FILE_LOG_Q.get_nowait()
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(l)
+        except Exception:
+            pass
+
+        try:
             root.destroy()
         except Exception:
             pass
@@ -2781,7 +2789,7 @@ try:
     while True:
         m, t = PENDING_UI_LOGS.get_nowait()
         try:
-            text_area.insert(tk.END, m + "\n", t)
+            safe_insert_main_text(m, t)
         except Exception:
             pass
 except queue.Empty:
@@ -4465,24 +4473,9 @@ def open_serial_setting():
 
     tk.Label(
         tip_frame,
-        text="💡 提示：",
+        text="💡 提示：\nAuto 自动优先识别 LUAT Modem\nManual 手动锁定所选 COM",
         fg="gray",
-        font=("微软雅黑", 9, "bold"),
-        anchor="w",
-    ).pack(anchor="w")
-
-    tk.Label(
-        tip_frame,
-        text="Auto 自动优先识别 LUAT Modem",
-        fg="gray",
-        font=("微软雅黑", 9),
-        anchor="w",
-    ).pack(anchor="w")
-
-    tk.Label(
-        tip_frame,
-        text="Manual 手动锁定所选 COM",
-        fg="gray",
+        justify="left",
         font=("微软雅黑", 9),
         anchor="w",
     ).pack(anchor="w")
@@ -4663,7 +4656,7 @@ def open_keywords_setting():
     win.transient(root)
     win.grab_set()
 
-    bottom_line = tk.Frame(win, height=1, bg="#7a7a7a")
+    bottom_line = tk.Frame(win, height=1, bg="#d4d4d4")
     bottom_line.pack(side="bottom", fill="x")
     bottom_line.pack_propagate(False)
     frame = tk.Frame(win, padx=12, pady=10)
@@ -4826,8 +4819,38 @@ def open_call_filter_setting():
             entry_var.set("")
             system_ui(f"📞 {list_name} 删除：{val}")
 
+        def edit_num():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("提示", "请先在左侧列表中选择要修改的号码", parent=win)
+                return
+            idx = sel[0]
+            old_val = target_list[idx]
+            new_val = entry_var.get().strip()
+
+            if not new_val:
+                messagebox.showerror("错误", "号码不能为空", parent=win)
+                return
+            
+            # 如果没改动，直接返回
+            if new_val == old_val:
+                return
+
+            # 防止修改后的号码和列表里其他的冲突
+            if new_val in target_list:
+                messagebox.showwarning("提示", "该号码已在名单中", parent=win)
+                return
+
+            target_list[idx] = new_val
+            save()
+            refresh()
+            # 修改完后让它继续保持选中状态
+            listbox.selection_set(idx)
+            system_ui(f"📞 {list_name} 修改：{old_val} -> {new_val}")
+
         ttk.Button(right_frm, text="增加", command=add_num).pack(fill="x", pady=4)
         ttk.Button(right_frm, text="删除", command=del_num).pack(fill="x", pady=4)
+        ttk.Button(right_frm, text="修改", command=edit_num).pack(fill="x", pady=4)
         refresh()
 
     build_list_tab(tab_white, CALL_WHITELIST, "call_whitelist", "白名单")
@@ -4959,7 +4982,15 @@ def restart_software():
             subprocess.Popen([sys.executable] + new_args)
     except Exception:
         pass
-        
+
+    try:
+        while not FILE_LOG_Q.empty():
+            p, l = FILE_LOG_Q.get_nowait()
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(l)
+    except Exception:
+        pass
+
     # 5. 瞬间结束当前老进程 (让 OS 立即回收所有内存和 socket 端口)
     os._exit(0)
 
