@@ -4980,6 +4980,7 @@ def toggle_popup():
 # ================= 重启软件 =================
 def restart_software():
     global is_exiting, serial_running, tray_icon, app_mutex
+    # 拦截提前：防止用户疯狂连点导致弹出多个重启确认框
     if is_exiting:
         return
         
@@ -4989,6 +4990,7 @@ def restart_software():
     is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
     
+    # 1. 标记退出状态并释放底层串口资源
     serial_running = False
     safe_close_serial()
 
@@ -5000,12 +5002,14 @@ def restart_software():
     except Exception:
         pass
 
+    # 2. 销毁右下角托盘图标 (防止留下幽灵图标)
     try:
         if tray_icon:
             tray_icon.stop()
     except Exception:
         pass
 
+    # 3. 保存最后一口气的日志
     try:
         while not FILE_LOG_Q.empty():
             p, l = FILE_LOG_Q.get_nowait()
@@ -5014,37 +5018,45 @@ def restart_software():
     except Exception:
         pass
 
-    # 终极无痕重启方案（摒弃所有 BAT/VBS 脚本，告别黑框，直击灵魂）
+    # 终极无痕修复：VBS 隐身延迟 + Python 纯净环境变量（真正的免黑框、不丢菜单）
     try:
-        # 1. 彻底清洗环境变量，断绝新旧进程的 PyInstaller 临时目录共享
+        exe_path = os.path.abspath(sys.argv[0])
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+            
+        args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
+        # VBS 中的参数需要内部双引号包裹
+        args_str = " ".join([f'""{arg}""' for arg in args_list])
+        
+        # 4. 物理清洗环境变量：确保新进程绝对不认识旧进程的临时目录
         clean_env = os.environ.copy()
         for k in ["_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"]:
             clean_env.pop(k, None)
-
-        # 2. 获取程序路径并过滤自启参数
-        new_args = [arg for arg in sys.argv if arg != AUTOSTART_FLAG]
-        if not getattr(sys, 'frozen', False):
-            new_args.insert(0, sys.executable)
             
-        # 3. 确保 CWD（当前工作目录）绝对不在旧的 _MEI 临时文件夹内
-        # 这是之前报错的核心原因！必须强行把新进程的脚从旧坑里拔出来！
-        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-
-        # 4. 设置静默脱离标志 (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-        flags = 0x00000008 | 0x00000200
-
-        # 5. 直接拉起新进程，无黑框、无残留句柄
+        # 5. 生成 VBS 脚本：利用 WScript.Sleep 制造 1.5 秒硬延迟，且绝对不产生黑框
+        vbs_code = f'''
+WScript.Sleep 1500
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """" & "{exe_path}" & """ {args_str}", 1, False
+Set fso = CreateObject("Scripting.FileSystemObject")
+fso.DeleteFile WScript.ScriptFullName
+'''
+        vbs_path = os.path.join(tempfile.gettempdir(), "sms_restart_helper.vbs")
+        with open(vbs_path, "w", encoding="mbcs") as f:
+            f.write(vbs_code)
+            
+        # 6. 拉起 VBS 脚本：使用 clean_env 注入纯净灵魂，脱离工作目录
         subprocess.Popen(
-            new_args,
-            env=clean_env,
-            cwd=exe_dir,
-            close_fds=True,
-            creationflags=flags
+            ["wscript.exe", "//Nologo", vbs_path],
+            env=clean_env,                    # 注入洗脑后的干净环境
+            cwd=os.path.dirname(exe_path),    # 把脚从 Temp 文件夹挪开，防止锁住目录
+            close_fds=True,                   # 斩断所有底层文件句柄继承
+            creationflags=0x08000000          # CREATE_NO_WINDOW 隐藏控制台
         )
     except Exception as e:
         log_file_only(f"重启拉起新进程失败：{e}")
 
-    # 瞬间退出旧进程，放权给卸载程序删缓存
+    # 7. 瞬间结束当前老进程，触发 PyInstaller 卸载器光速清理旧文件
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
