@@ -1,7 +1,7 @@
-pyttsx3
-pyserial
-pystray
-pillow
-pywin32
-setuptools
+pyttsx3==2.99
+pyserial==3.5
+pystray==0.19.5
+pillow==12.2.0
+pywin32==311
+setuptools==82.0.1
 pyinstaller==6.20.0

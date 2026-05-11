@@ -3200,6 +3200,7 @@ def open_update_proxy_dialog():
             pass
 
         api_raw = api_var.get().strip()
+        proxy_raw = proxy_var.get().strip()
 
         def classify_err(e: Exception) -> str:
             s = str(e)
@@ -3250,7 +3251,7 @@ def open_update_proxy_dialog():
                 asset = _pick_exe_asset(release_json)
                 if asset:
                     raw_url = asset.get("browser_download_url") or ""
-                    pb = _normalize(proxy_var.get())
+                    pb = _normalize(proxy_raw)
                     if pb and raw_url.startswith("http"):
                         test_url = pb + raw_url
                         try:
@@ -3551,7 +3552,8 @@ def check_update_and_prompt():
             ui_post(ask)
 
         except Exception as e:
-            ui_post(lambda: messagebox.showerror("检测更新失败", str(e)))
+            err = str(e)
+            ui_post(lambda err=err: messagebox.showerror("检测更新失败", err))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -5010,9 +5012,31 @@ def restart_software():
         for k in ("_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"):
             clean_env.pop(k, None)
 
-        # 使用 VBS 脚本制造“外部延迟”并重启。
-        vbs_code = f'''
-WScript.Sleep 2000
+        current_pid = os.getpid()
+        # 使用 VBS 轮询旧进程 PID；旧进程真正退出后再启动，避免撞单实例锁。
+        vbs_code = fr'''
+Dim targetPid, query, wmi, processes
+On Error Resume Next
+targetPid = {current_pid}
+Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+If Err.Number <> 0 Then
+    Err.Clear
+    WScript.Sleep 2000
+Else
+    Do
+        query = "SELECT ProcessId FROM Win32_Process WHERE ProcessId = " & targetPid
+        Set processes = wmi.ExecQuery(query)
+        If Err.Number <> 0 Then
+            Err.Clear
+            WScript.Sleep 2000
+            Exit Do
+        End If
+        If processes.Count = 0 Then Exit Do
+        WScript.Sleep 200
+    Loop
+End If
+On Error GoTo 0
+WScript.Sleep 300
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run """{exe_path}"" {args_str}", 1, False
 Set fso = CreateObject("Scripting.FileSystemObject")
