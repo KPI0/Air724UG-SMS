@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.4"  # 软件版本号
+APP_VERSION = "3.5.5"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -4322,6 +4322,10 @@ def read_serial():
 
                 # ================= 短信接收核心逻辑 =================
                 if callback_prefix in line:
+                    # 如果上一条短信仍在收集，先结算，避免被下一条 callback 覆盖。
+                    if pending_active:
+                        flush_pending()
+
                     msg = line.split(callback_prefix, 1)[1].strip()
                     if msg:
                         pending_parts = [msg]
@@ -4985,39 +4989,8 @@ def restart_software():
         
     if not messagebox.askyesno("重启软件", "确定要重启软件吗？", parent=root):
         return
-    
-    is_exiting = True
-    system_ui("🔄 正在重启软件...", "normal")
-    
-    # 1. 停止串口并释放互斥锁
-    serial_running = False
-    safe_close_serial()
 
-    try:
-        if app_mutex:
-            import ctypes
-            ctypes.windll.kernel32.ReleaseMutex(app_mutex)
-            ctypes.windll.kernel32.CloseHandle(app_mutex) [cite: 502]
-    except Exception:
-        pass
-
-    # 2. 销毁托盘
-    try:
-        if tray_icon:
-            tray_icon.stop()
-    except Exception:
-        pass
-
-    # 3. 强行刷新剩余日志 [cite: 503]
-    try:
-        while not FILE_LOG_Q.empty():
-            p, l = FILE_LOG_Q.get_nowait()
-            with open(p, "a", encoding="utf-8") as f:
-                f.write(l)
-    except Exception:
-        pass
-
-    # 4. 构建重启指令 
+    # 先启动外部重启助手；只有这一步成功，才退出当前软件。
     try:
         if getattr(sys, 'frozen', False):
             exe_path = sys.executable
@@ -5036,8 +5009,8 @@ def restart_software():
         # 兼容旧版 PyInstaller/运行时残留变量，避免新进程继续指向旧的临时目录。
         for k in ("_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"):
             clean_env.pop(k, None)
-        # 5. 使用 VBS 脚本制造“外部延迟”并重启 
-        # 增加 WScript.Sleep 时间到 2000ms，确保旧进程已销毁
+
+        # 使用 VBS 脚本制造“外部延迟”并重启。
         vbs_code = f'''
 WScript.Sleep 2000
 Set WshShell = CreateObject("WScript.Shell")
@@ -5049,18 +5022,54 @@ fso.DeleteFile WScript.ScriptFullName
         with open(vbs_path, "w", encoding="mbcs") as f:
             f.write(vbs_code)
             
-        # 6. 使用清洗后的环境启动 VBS [cite: 506]
         subprocess.Popen(
             ["wscript.exe", "//Nologo", vbs_path],
-            env=clean_env, 
+            env=clean_env,
             cwd=os.path.dirname(exe_path),
             close_fds=True,
             creationflags=0x08000000
         )
     except Exception as e:
-        log_file_only(f"重启尝试失败：{e}")
+        err = f"重启尝试失败：{e}"
+        log_file_only(err)
+        try:
+            messagebox.showerror("重启失败", f"启动重启助手失败，当前软件将继续运行。\n\n{e}", parent=root)
+        except Exception:
+            system_ui(err, "normal")
+        return
 
-    # 7. 立即退出，让系统回收 DLL 句柄
+    is_exiting = True
+    system_ui("🔄 正在重启软件...", "normal")
+    
+    # 1. 停止串口并释放互斥锁
+    serial_running = False
+    safe_close_serial()
+
+    try:
+        if app_mutex:
+            import ctypes
+            ctypes.windll.kernel32.ReleaseMutex(app_mutex)
+            ctypes.windll.kernel32.CloseHandle(app_mutex)
+    except Exception:
+        pass
+
+    # 2. 销毁托盘
+    try:
+        if tray_icon:
+            tray_icon.stop()
+    except Exception:
+        pass
+
+    # 3. 强行刷新剩余日志
+    try:
+        while not FILE_LOG_Q.empty():
+            p, l = FILE_LOG_Q.get_nowait()
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(l)
+    except Exception:
+        pass
+
+    # 4. 立即退出，让系统回收 DLL 句柄
     os._exit(0)
 
 # ================= 菜单（一级串口设置） =================
