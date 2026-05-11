@@ -1,6 +1,7 @@
 pyttsx3
 pyserial
-pystray 
+pystray
 pillow
 pywin32
 setuptools
+pyinstaller==6.20.0
