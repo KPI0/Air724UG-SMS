@@ -58,7 +58,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.5"  # 软件版本号
+APP_VERSION = "3.5.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -2401,15 +2401,29 @@ app_mutex = None
 
 def check_single_instance():
     global app_mutex
-    # 创建一个系统全局唯一的互斥量名称
-    mutex_name = "Global\\Air724UG_SMS_Monitor_Mutex_V3"
+    # 当前用户会话内唯一；不使用 Global\，避免普通用户权限下创建失败
+    mutex_name = "Air724UG_SMS_Monitor_Mutex_V3"
     
     # 调用 Windows 内核 API 创建互斥量
     app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     last_error = ctypes.windll.kernel32.GetLastError()
+
+    if not app_mutex:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"无法创建单实例锁，程序为避免多开将退出。\n错误码：{last_error}",
+            "启动失败",
+            0x10
+        )
+        sys.exit(1)
     
     # 183 (ERROR_ALREADY_EXISTS) 表示互斥量已被另一个实例创建
     if last_error == 183:
+        try:
+            ctypes.windll.kernel32.CloseHandle(app_mutex)
+        except Exception:
+            pass
+        app_mutex = None
         # 发现已有实例运行，弹出系统原生提示框并立刻退出
         ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
         sys.exit(0)
@@ -4996,12 +5010,17 @@ def restart_software():
     try:
         if getattr(sys, 'frozen', False):
             exe_path = sys.executable
+            launch_args = []
         else:
-            exe_path = os.path.abspath(sys.argv[0])
+            # 源码模式用 pythonw.exe 启动脚本，避免 .pyw 文件关联打开编辑器。
+            exe_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            if not os.path.exists(exe_path):
+                exe_path = sys.executable
+            launch_args = [os.path.abspath(sys.argv[0])]
             
         # 移除自启标识，避免重启后变最小化
-        args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
-        args_str = " ".join([f'"{arg}"' for arg in args_list])
+        launch_args.extend(arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG)
+        args_str = " ".join([f'"{arg}"' for arg in launch_args])
         
         # PyInstaller 6.9+ 会把 sys.executable 启动的同一个 exe 默认当作子进程，
         # 让它复用当前 onefile 的 _MEI 解压目录；重启场景必须显式重置环境。
