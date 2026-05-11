@@ -5028,16 +5028,14 @@ def restart_software():
         args_list = [arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG]
         args_str = " ".join([f'"{arg}"' for arg in args_list])
         
-        # 核心修复：完全清洗所有 PyInstaller 相关的环境变量 
-        # 这一步如果不彻底，新进程就会去撞旧进程的 _MEIPASS 目录，导致 DLL 加载错误
+        # PyInstaller 6.9+ 会把 sys.executable 启动的同一个 exe 默认当作子进程，
+        # 让它复用当前 onefile 的 _MEI 解压目录；重启场景必须显式重置环境。
         clean_env = os.environ.copy()
-        keys_to_purge = [
-            "_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", 
-            "TCL_LIBRARY", "TK_LIBRARY"
-        ]
-        for k in keys_to_purge:
-            clean_env.pop(k, None)
+        clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
 
+        # 兼容旧版 PyInstaller/运行时残留变量，避免新进程继续指向旧的临时目录。
+        for k in ("_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"):
+            clean_env.pop(k, None)
         # 5. 使用 VBS 脚本制造“外部延迟”并重启 
         # 增加 WScript.Sleep 时间到 2000ms，确保旧进程已销毁
         vbs_code = f'''
