@@ -172,6 +172,20 @@ os.makedirs(TTS_DIR, exist_ok=True)
 
 # ================= 读取配置 =================
 config = configparser.ConfigParser(interpolation=None)
+
+def safe_save_config():
+    """原子级保存配置：防突然断电导致 config.ini 清零损坏"""
+    tmp_file = CONFIG_FILE + ".tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            config.write(f)
+        os.replace(tmp_file, CONFIG_FILE)  # 原子替换，绝对安全
+    except Exception as e:
+        try:
+            log_file_only(f"配置保存失败: {e}")
+        except Exception:
+            pass # 启动初期如果 log 函数还没加载好，静默忽略避免崩溃
+
 if not os.path.exists(CONFIG_FILE):
     config["serial"] = {
         "port": "",
@@ -213,16 +227,6 @@ if not os.path.exists(CONFIG_FILE):
     safe_save_config()
 
 config.read(CONFIG_FILE, encoding="utf-8")
-
-def safe_save_config():
-    """原子级保存配置：防突然断电导致 config.ini 清零损坏"""
-    tmp_file = CONFIG_FILE + ".tmp"
-    try:
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            config.write(f)
-        os.replace(tmp_file, CONFIG_FILE)  # 原子替换，绝对安全
-    except Exception as e:
-        log_file_only(f"配置保存失败: {e}")
 
 # ===== 语音播报内容（从配置读取）=====
 DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
