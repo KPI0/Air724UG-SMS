@@ -22,7 +22,9 @@
 # ================================================================
 
 # ---- 标准库 ----
+import asyncio
 import configparser
+import hmac
 import json
 import os
 import re
@@ -47,6 +49,11 @@ import pyttsx3
 from PIL import Image
 from serial.tools import list_ports
 
+try:
+    import websockets
+except Exception:
+    websockets = None
+
 # ---- tkinter ----
 import tkinter as tk
 from tkinter import messagebox, ttk, colorchooser
@@ -58,7 +65,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.6"  # 软件版本号
+APP_VERSION = "3.5.7"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -194,6 +201,14 @@ if not os.path.exists(CONFIG_FILE):
         "proxy_base": "https://gh-proxy.com/",
     }
 
+    # 云端控制（WebSocket 客户端）
+    config["cloud_control"] = {
+        "enabled": "0",
+        "url": "",
+        "device_secret": "",
+        "reconnect_interval": "5",
+    }
+
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         config.write(f)
 
@@ -238,6 +253,33 @@ MODE = config.get("serial", "mode", fallback="Auto").strip().lower()
 if MODE not in ("auto", "manual"):
     MODE = "auto"
 MODE = "Auto" if MODE == "auto" else "Manual"
+
+# ===== 云端控制（WebSocket）配置 =====
+try:
+    CLOUD_CONTROL_ENABLED = config.getboolean("cloud_control", "enabled", fallback=False)
+except Exception:
+    CLOUD_CONTROL_ENABLED = False
+
+try:
+    CLOUD_WS_URL = config.get("cloud_control", "url", fallback="").strip()
+except Exception:
+    CLOUD_WS_URL = ""
+
+# IMEI 只来自当前串口设备的 AT+CGSN 响应，不写入配置，避免多开实例共用 config.ini 时串号。
+CLOUD_DEVICE_IMEI = ""
+
+try:
+    CLOUD_DEVICE_SECRET = config.get("cloud_control", "device_secret", fallback="").strip()
+except Exception:
+    CLOUD_DEVICE_SECRET = ""
+
+try:
+    CLOUD_WS_RECONNECT_INTERVAL = max(
+        1,
+        config.getint("cloud_control", "reconnect_interval", fallback=5)
+    )
+except Exception:
+    CLOUD_WS_RECONNECT_INTERVAL = 5
 
 # ===== 短信字体（从配置读取）=====
 try:
@@ -377,6 +419,19 @@ serial_debug_queue = queue.Queue(maxsize=5000)  # 防止无限涨
 serial_debug_win = None
 serial_debug_text = None
 serial_debug_drop_count = 0
+cloud_control_win = None
+cloud_ws_loop = None
+cloud_ws_conn = None
+cloud_ws_thread = None
+cloud_ws_lock = threading.Lock()
+cloud_stop_event = threading.Event()
+CLOUD_SERIAL_LOG_Q = queue.Queue(maxsize=1000)
+CLOUD_SERIAL_LOG_DRAIN_BATCH = 100
+cloud_serial_log_lock = threading.Lock()
+cloud_serial_log_drain_scheduled = False
+cloud_connected = False
+cloud_imei_verified = False
+cloud_imei_query_deadline = 0.0
 serial_stop_event = threading.Event()
 serial_wakeup_event = threading.Event()
 TTS_LOCK = threading.Lock()
@@ -2540,6 +2595,29 @@ else:
 tray_icon = None
 is_exiting = False
 
+def stop_tray_icon(wait_after=0.45):
+    global tray_icon
+    icon = tray_icon
+    tray_icon = None
+    if icon is None:
+        return
+
+    try:
+        icon.visible = False
+    except Exception:
+        pass
+    try:
+        icon.stop()
+    except Exception:
+        pass
+
+    # 给 Windows 托盘一点时间处理 Shell_NotifyIcon 删除请求，避免重启时短暂出现双图标。
+    try:
+        if wait_after:
+            time.sleep(wait_after)
+    except Exception:
+        pass
+
 # ================= 托盘回调：强制回主线程 =================
 def show_window():
     def _do():
@@ -2600,13 +2678,14 @@ def cleanup_and_exit():
         except Exception:
             pass
 
-        safe_close_serial()
-
         try:
-            if tray_icon:
-                tray_icon.stop()
+            stop_cloud_control(update_status=False)
         except Exception:
             pass
+
+        safe_close_serial()
+
+        stop_tray_icon(wait_after=0.25)
 
         try:
             while not FILE_LOG_Q.empty():
@@ -2846,6 +2925,27 @@ def set_signal(rsrp_val):
         _do()
     else:
         ui_post(_do)
+
+# ================= 云端控制状态 UI 与更新函数 =================
+cloud_var = tk.StringVar(value="🌐 等待连接" if CLOUD_CONTROL_ENABLED else "🌐 已关闭")
+cloud_label = tk.Label(status_frame, textvariable=cloud_var, anchor="w", fg="#666666")
+cloud_label.pack(side=tk.LEFT, padx=(20, 6))
+
+def set_cloud_status(text, color="#666666"):
+    if not tk_alive():
+        return
+
+    def _do():
+        try:
+            cloud_var.set(text)
+            cloud_label.config(fg=color)
+        except Exception:
+            pass
+
+    if threading.current_thread() is threading.main_thread():
+        _do()
+    else:
+        ui_post(_do)
 # ==========================================================
 
 def set_status(text, color="black"):
@@ -3012,6 +3112,894 @@ def send_reset_cmd():
                 system_ui(f"❌ 发送重启指令失败：{e}", "normal")
         else:
             messagebox.showwarning("提示", "串口当前未连接，无法发送指令")
+
+# ================= 云端控制（WebSocket） =================
+def _normalize_imei(value: str) -> str:
+    return re.sub(r"\D", "", str(value or "").strip())
+
+def _cloud_runtime_imei() -> str:
+    if not cloud_imei_verified:
+        return ""
+    return _normalize_imei(CLOUD_DEVICE_IMEI)
+
+def _cloud_identity_payload():
+    imei = _cloud_runtime_imei()
+    return {
+        "imei": imei,
+        "device_imei": imei,
+        "device_name": socket.gethostname(),
+        "app_version": APP_VERSION,
+    }
+
+async def _cloud_send_register(ws):
+    payload = {
+        "type": "device_login",
+        "event": "register",
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **_cloud_identity_payload(),
+        "secret": CLOUD_DEVICE_SECRET,
+        "serial_port": PORT,
+        "serial_baud": BAUD,
+        "serial_mode": MODE,
+    }
+    try:
+        await ws.send(json.dumps(payload, ensure_ascii=False))
+        _cloud_log(f"已上报设备IMEI：{_cloud_runtime_imei()}")
+    except Exception as e:
+        _cloud_log(f"上报设备身份失败：{e}")
+
+def _notify_cloud_identity_changed():
+    try:
+        loop = cloud_ws_loop
+        ws = cloud_ws_conn
+        if loop is not None and loop.is_running() and ws is not None and cloud_connected and _cloud_runtime_imei():
+            asyncio.run_coroutine_threadsafe(_cloud_send_register(ws), loop)
+    except Exception:
+        pass
+
+def _set_cloud_device_imei(imei: str, source=""):
+    global CLOUD_DEVICE_IMEI, cloud_imei_verified
+
+    normalized = _normalize_imei(imei)
+    if normalized and not (14 <= len(normalized) <= 17):
+        return False
+
+    if normalized == _normalize_imei(CLOUD_DEVICE_IMEI):
+        if normalized:
+            cloud_imei_verified = True
+        return True
+
+    CLOUD_DEVICE_IMEI = normalized
+    cloud_imei_verified = bool(normalized)
+
+    if CLOUD_DEVICE_IMEI:
+        _cloud_log(f"设备IMEI已更新：{CLOUD_DEVICE_IMEI}" + (f"（{source}）" if source else ""))
+        _notify_cloud_identity_changed()
+
+    return True
+
+def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, device_secret=None):
+    global CLOUD_CONTROL_ENABLED, CLOUD_WS_URL, CLOUD_WS_RECONNECT_INTERVAL, CLOUD_DEVICE_SECRET
+
+    if enabled is not None:
+        CLOUD_CONTROL_ENABLED = bool(enabled)
+    if url is not None:
+        CLOUD_WS_URL = str(url).strip()
+    if device_secret is not None:
+        CLOUD_DEVICE_SECRET = str(device_secret).strip()
+    if reconnect_interval is not None:
+        try:
+            CLOUD_WS_RECONNECT_INTERVAL = max(1, int(reconnect_interval))
+        except Exception:
+            CLOUD_WS_RECONNECT_INTERVAL = 5
+
+    try:
+        if "cloud_control" not in config:
+            config["cloud_control"] = {}
+        config["cloud_control"]["enabled"] = "1" if CLOUD_CONTROL_ENABLED else "0"
+        config["cloud_control"]["url"] = CLOUD_WS_URL
+        if config.has_option("cloud_control", "device_imei"):
+            config.remove_option("cloud_control", "device_imei")
+        config["cloud_control"]["device_secret"] = CLOUD_DEVICE_SECRET
+        config["cloud_control"]["reconnect_interval"] = str(CLOUD_WS_RECONNECT_INTERVAL)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            config.write(f)
+    except Exception as e:
+        system_ui(f"❌ 云端控制配置保存失败：{e}", "normal")
+
+def _cloud_log(message: str, show_main=False):
+    try:
+        log_file_only(f"🌐 {message}")
+    except Exception:
+        pass
+
+    if show_main:
+        system_ui(f"🌐 {message}", "normal")
+
+async def _cloud_send_payload(ws, payload):
+    try:
+        await ws.send(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        pass
+
+def _clear_cloud_serial_log_queue():
+    try:
+        while True:
+            CLOUD_SERIAL_LOG_Q.get_nowait()
+    except queue.Empty:
+        pass
+    except Exception:
+        pass
+
+def _reset_cloud_serial_log_state():
+    global cloud_serial_log_drain_scheduled
+    _clear_cloud_serial_log_queue()
+    try:
+        with cloud_serial_log_lock:
+            cloud_serial_log_drain_scheduled = False
+    except Exception:
+        pass
+
+async def _cloud_drain_serial_log_queue(ws):
+    global cloud_serial_log_drain_scheduled
+
+    should_continue = False
+    try:
+        sent = 0
+        while sent < CLOUD_SERIAL_LOG_DRAIN_BATCH:
+            if ws is not cloud_ws_conn or not cloud_connected:
+                _clear_cloud_serial_log_queue()
+                return
+            try:
+                payload = CLOUD_SERIAL_LOG_Q.get_nowait()
+            except queue.Empty:
+                return
+
+            await ws.send(json.dumps(payload, ensure_ascii=False))
+            sent += 1
+    except Exception:
+        _clear_cloud_serial_log_queue()
+    finally:
+        with cloud_serial_log_lock:
+            should_continue = (
+                not CLOUD_SERIAL_LOG_Q.empty()
+                and ws is cloud_ws_conn
+                and cloud_connected
+            )
+            if not should_continue:
+                cloud_serial_log_drain_scheduled = False
+
+        if should_continue:
+            try:
+                asyncio.create_task(_cloud_drain_serial_log_queue(ws))
+            except Exception:
+                with cloud_serial_log_lock:
+                    cloud_serial_log_drain_scheduled = False
+
+def _schedule_cloud_serial_log_drain(loop, ws):
+    global cloud_serial_log_drain_scheduled
+
+    with cloud_serial_log_lock:
+        if cloud_serial_log_drain_scheduled:
+            return
+        cloud_serial_log_drain_scheduled = True
+
+    try:
+        asyncio.run_coroutine_threadsafe(_cloud_drain_serial_log_queue(ws), loop)
+    except Exception:
+        with cloud_serial_log_lock:
+            cloud_serial_log_drain_scheduled = False
+
+def _cloud_send_serial_log(line: str):
+    text = str(line or "").strip()
+    if not text:
+        return
+    if len(text) > 2000:
+        text = text[:2000] + "..."
+
+    try:
+        loop = cloud_ws_loop
+        ws = cloud_ws_conn
+        if loop is None or not loop.is_running() or ws is None or not cloud_connected:
+            return
+        if not _cloud_runtime_imei():
+            return
+
+        payload = {
+            "type": "log",
+            "tag": "debug",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **_cloud_identity_payload(),
+            "serial_port": PORT,
+            "serial_baud": BAUD,
+            "data": f"[串口] {text}",
+            "raw": text,
+        }
+
+        try:
+            CLOUD_SERIAL_LOG_Q.put_nowait(payload)
+        except queue.Full:
+            try:
+                CLOUD_SERIAL_LOG_Q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                CLOUD_SERIAL_LOG_Q.put_nowait(payload)
+            except queue.Full:
+                return
+
+        _schedule_cloud_serial_log_drain(loop, ws)
+    except Exception:
+        pass
+
+def _cloud_secret_matches(data: dict) -> bool:
+    expected = str(CLOUD_DEVICE_SECRET or "").strip()
+    incoming = (
+        data.get("secret")
+        or data.get("device_secret")
+        or data.get("password")
+        or data.get("pwd")
+        or data.get("token")
+        or ""
+    )
+    incoming = str(incoming).strip()
+
+    if not expected:
+        _cloud_log("已拒绝云端指令：本机云端控制密码为空")
+        return False
+    if not incoming:
+        _cloud_log("已拒绝云端指令：缺少密码")
+        return False
+    if not hmac.compare_digest(incoming, expected):
+        _cloud_log("已拒绝云端指令：密码错误")
+        return False
+    return True
+
+def _cloud_safe_preview(raw: str) -> str:
+    def _mask(obj):
+        if isinstance(obj, dict):
+            masked = {}
+            for k, v in obj.items():
+                if str(k).lower() in ("secret", "device_secret", "password", "pwd", "token"):
+                    masked[k] = "***"
+                else:
+                    masked[k] = _mask(v)
+            return masked
+        if isinstance(obj, list):
+            return [_mask(x) for x in obj]
+        return obj
+
+    try:
+        data = json.loads(str(raw))
+        text = json.dumps(_mask(data), ensure_ascii=False)
+    except Exception:
+        text = str(raw)
+    return text if len(text) <= 500 else text[:500] + "..."
+
+def _cloud_target_matches(data: dict) -> bool:
+    local_imei = _cloud_runtime_imei()
+    target = (
+        data.get("target_imei")
+        or data.get("imei")
+        or data.get("device_imei")
+        or data.get("target")
+        or data.get("device")
+    )
+
+    if target is None or target == "":
+        _cloud_log("已拒绝云端指令：缺少目标IMEI")
+        return False
+
+    raw_targets = list(target) if isinstance(target, (list, tuple, set)) else [target]
+    targets = [_normalize_imei(x) for x in raw_targets]
+
+    if not local_imei:
+        _cloud_log(f"已拒绝云端指令：本机IMEI未知，目标={target}")
+        return False
+
+    matched = local_imei in targets
+    if not matched:
+        _cloud_log(f"已忽略非本机指令：本机IMEI={local_imei}，目标={target}")
+    return matched
+
+def _cloud_auth_matches(data: dict) -> bool:
+    return _cloud_target_matches(data) and _cloud_secret_matches(data)
+
+def request_cloud_device_imei():
+    global cloud_imei_query_deadline
+
+    try:
+        with serial_lock:
+            if serial_obj is None or not serial_obj.is_open:
+                return False, "串口未连接，无法读取IMEI"
+            cloud_imei_query_deadline = time.monotonic() + 6.0
+            serial_obj.write(b"AT+CGSN\r\n")
+            serial_obj.flush()
+
+        try:
+            if "_push_serial_debug" in globals():
+                _push_serial_debug(">>> 云端控制读取IMEI: AT+CGSN\\r\\n")
+        except Exception:
+            pass
+        _cloud_log("已发送读取IMEI指令：AT+CGSN")
+        return True, "已发送读取IMEI指令"
+    except Exception as e:
+        return False, f"读取IMEI失败：{e}"
+
+def _maybe_capture_cloud_device_imei(line: str):
+    global cloud_imei_query_deadline
+
+    if cloud_imei_query_deadline <= 0:
+        return
+    if time.monotonic() > cloud_imei_query_deadline:
+        cloud_imei_query_deadline = 0.0
+        return
+
+    text = str(line or "").strip()
+    if not text or text.upper() in ("OK", "ERROR") or "AT+CGSN" in text.upper():
+        return
+
+    m = re.search(r"\b(\d{14,17})\b", text)
+    if not m:
+        return
+
+    imei = m.group(1)
+    if _set_cloud_device_imei(imei, source="AT+CGSN"):
+        cloud_imei_query_deadline = 0.0
+
+def _cloud_send_status_payload():
+    serial_connected = False
+    try:
+        with serial_lock:
+            serial_connected = bool(serial_obj is not None and serial_obj.is_open)
+    except Exception:
+        serial_connected = False
+
+    return {
+        "type": "status",
+        "ok": True,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **_cloud_identity_payload(),
+        "cloud_connected": bool(cloud_connected),
+        "serial_connected": serial_connected,
+        "serial_port": PORT,
+        "serial_baud": BAUD,
+        "serial_mode": MODE,
+    }
+
+def _cloud_send_serial_command(command: str):
+    cmd = str(command or "").strip()
+    if not cmd:
+        return False, "AT 指令不能为空"
+
+    try:
+        with serial_lock:
+            if serial_obj is None or not serial_obj.is_open:
+                return False, "串口未连接"
+            serial_obj.write((cmd + "\r\n").encode("utf-8", "ignore"))
+            serial_obj.flush()
+
+        try:
+            if "_push_serial_debug" in globals():
+                _push_serial_debug(f">>> 云端发送: {cmd}\\r\\n")
+        except Exception:
+            pass
+
+        _cloud_log(f"已向串口发送：{cmd}")
+        return True, f"已发送：{cmd}"
+    except Exception as e:
+        return False, f"发送失败：{e}"
+
+async def _cloud_reply(ws, payload):
+    try:
+        if isinstance(payload, dict):
+            payload = {**_cloud_identity_payload(), **payload}
+        await ws.send(json.dumps(payload, ensure_ascii=False))
+    except Exception as e:
+        _cloud_log(f"回复云端失败：{e}")
+
+async def _handle_cloud_message(ws, message):
+    if isinstance(message, bytes):
+        raw = message.decode("utf-8", "ignore")
+    else:
+        raw = str(message)
+
+    _cloud_log(f"收到：{_cloud_safe_preview(raw)}")
+
+    data = None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        await _cloud_reply(ws, {
+            "type": "error",
+            "ok": False,
+            "message": "仅支持 JSON 消息，且必须携带 target_imei 和 secret/password",
+        })
+        return
+
+    action = str(data.get("type") or data.get("action") or "").strip().lower()
+    if not action and data.get("cmd"):
+        action = "cmd"
+
+    if not _cloud_auth_matches(data):
+        await _cloud_reply(ws, {
+            "type": "auth_failed",
+            "ok": False,
+            "message": "IMEI 或密码校验失败",
+        })
+        return
+
+    if action in ("ping", "heartbeat"):
+        await _cloud_reply(ws, {
+            "type": "pong",
+            "ok": True,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        return
+
+    if action in ("status", "get_status"):
+        await _cloud_reply(ws, _cloud_send_status_payload())
+        return
+
+    if action in ("send_at", "at", "cmd", "command"):
+        command = data.get("command") or data.get("data") or data.get("cmd") or ""
+        _cloud_log(f"云端下发指令：{command}")
+        loop = asyncio.get_running_loop()
+        ok, info = await loop.run_in_executor(None, _cloud_send_serial_command, command)
+        await _cloud_reply(ws, {"type": "send_at_result", "ok": ok, "message": info})
+        return
+
+    if action == "show_window":
+        show_window()
+        await _cloud_reply(ws, {"type": "show_window_result", "ok": True})
+        return
+
+    if action == "hide_window":
+        hide_window()
+        await _cloud_reply(ws, {"type": "hide_window_result", "ok": True})
+        return
+
+    await _cloud_reply(ws, {
+        "type": "error",
+        "ok": False,
+        "message": f"未知云端指令：{action or '(empty)'}",
+    })
+
+async def _cloud_ws_main(url: str, reconnect_interval: int):
+    global cloud_ws_conn, cloud_connected
+
+    last_imei_request = 0.0
+    while not cloud_stop_event.is_set():
+        try:
+            while not cloud_stop_event.is_set() and not _cloud_runtime_imei():
+                set_cloud_status("🌐 等待读取IMEI", "#b26a00")
+                now = time.monotonic()
+                if now - last_imei_request >= 5.0:
+                    request_cloud_device_imei()
+                    last_imei_request = now
+                await asyncio.sleep(0.5)
+
+            if cloud_stop_event.is_set():
+                break
+
+            set_cloud_status("🌐 连接中", "#b26a00")
+            _cloud_log(f"正在连接：{url}")
+
+            async with websockets.connect(
+                url,
+                ping_interval=20,
+                ping_timeout=20,
+            ) as ws:
+                cloud_ws_conn = ws
+                cloud_connected = True
+                set_cloud_status("🌐 已连接", "#008000")
+                _cloud_log(f"已连接：{url}", show_main=True)
+                await _cloud_send_register(ws)
+
+                while not cloud_stop_event.is_set():
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                    await _handle_cloud_message(ws, msg)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if cloud_stop_event.is_set():
+                break
+            cloud_ws_conn = None
+            cloud_connected = False
+            _reset_cloud_serial_log_state()
+            err = str(e).strip() or e.__class__.__name__
+            set_cloud_status("🌐 重连中", "#b26a00")
+            _cloud_log(f"连接异常：{err}")
+
+            for _ in range(max(1, int(reconnect_interval)) * 10):
+                if cloud_stop_event.is_set():
+                    break
+                await asyncio.sleep(0.1)
+
+    cloud_ws_conn = None
+    cloud_connected = False
+    _reset_cloud_serial_log_state()
+    set_cloud_status("🌐 已关闭" if not CLOUD_CONTROL_ENABLED else "🌐 已断开", "#666666")
+    _cloud_log("连接已停止")
+
+def _cloud_thread_main(url: str, reconnect_interval: int):
+    global cloud_ws_loop
+
+    loop = asyncio.new_event_loop()
+    with cloud_ws_lock:
+        cloud_ws_loop = loop
+
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_cloud_ws_main(url, reconnect_interval))
+    except Exception as e:
+        _cloud_log(f"云端控制线程异常：{e}")
+    finally:
+        with cloud_ws_lock:
+            cloud_ws_loop = None
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+def start_cloud_control(show_errors=False):
+    global cloud_ws_thread
+
+    if websockets is None:
+        set_cloud_status("🌐 缺少依赖", "#cc0000")
+        _cloud_log("缺少 websockets 库，无法启动云端控制", show_main=True)
+        if show_errors:
+            messagebox.showwarning(
+                "云端控制",
+                "当前 Python 环境缺少 websockets 库，无法启动云端控制。"
+            )
+        return False
+
+    url = CLOUD_WS_URL.strip()
+    if not url:
+        set_cloud_status("🌐 未配置", "#cc0000")
+        if show_errors:
+            messagebox.showwarning("云端控制", "请先填写 WebSocket 地址。")
+        return False
+
+    if not (url.startswith("ws://") or url.startswith("wss://")):
+        set_cloud_status("🌐 地址错误", "#cc0000")
+        if show_errors:
+            messagebox.showwarning("云端控制", "WebSocket 地址必须以 ws:// 或 wss:// 开头。")
+        return False
+
+    if not str(CLOUD_DEVICE_SECRET or "").strip():
+        set_cloud_status("🌐 密码未配置", "#cc0000")
+        if show_errors:
+            messagebox.showwarning("云端控制", "请先设置云端控制密码。")
+        return False
+
+    if not _cloud_runtime_imei():
+        request_cloud_device_imei()
+
+    with cloud_ws_lock:
+        if cloud_ws_thread is not None and cloud_ws_thread.is_alive():
+            if cloud_stop_event.is_set():
+                set_cloud_status("🌐 正在重启", "#b26a00")
+                return False
+            return True
+
+        cloud_stop_event.clear()
+        cloud_ws_thread = threading.Thread(
+            target=_cloud_thread_main,
+            args=(url, CLOUD_WS_RECONNECT_INTERVAL),
+            daemon=True
+        )
+        cloud_ws_thread.start()
+
+    return True
+
+def stop_cloud_control(update_status=True):
+    global cloud_ws_conn, cloud_connected
+
+    cloud_stop_event.set()
+    cloud_connected = False
+    _reset_cloud_serial_log_state()
+
+    try:
+        loop = cloud_ws_loop
+        ws = cloud_ws_conn
+        if loop is not None and loop.is_running() and ws is not None:
+            asyncio.run_coroutine_threadsafe(ws.close(), loop)
+    except Exception:
+        pass
+
+    cloud_ws_conn = None
+
+    if update_status:
+        set_cloud_status("🌐 已关闭" if not CLOUD_CONTROL_ENABLED else "🌐 已断开", "#666666")
+
+def restart_cloud_control(show_errors=False):
+    old_thread = cloud_ws_thread
+    stop_cloud_control(update_status=False)
+
+    def _wait_and_start():
+        try:
+            if old_thread is not None and old_thread.is_alive():
+                old_thread.join(timeout=2.0)
+        except Exception:
+            pass
+
+        def _try_start():
+            ok = start_cloud_control(show_errors=show_errors)
+            try:
+                if (
+                    not ok
+                    and cloud_ws_thread is not None
+                    and cloud_ws_thread.is_alive()
+                    and cloud_stop_event.is_set()
+                    and tk_alive()
+                ):
+                    root.after(500, _try_start)
+            except Exception:
+                pass
+
+        ui_post(_try_start)
+
+    threading.Thread(target=_wait_and_start, daemon=True).start()
+
+def open_cloud_control_window():
+    global cloud_control_win
+
+    if cloud_control_win is not None and cloud_control_win.winfo_exists():
+        cloud_control_win.deiconify()
+        cloud_control_win.lift()
+        cloud_control_win.focus_force()
+        return
+
+    cloud_control_win = tk.Toplevel(root)
+    cloud_control_win.withdraw()
+    cloud_control_win.title("云端控制")
+    cloud_control_win.geometry("480x250")
+    cloud_control_win.resizable(False, False)
+    cloud_control_win.transient(root)
+
+    frame = ttk.Frame(cloud_control_win, padding=12)
+    frame.pack(fill="both", expand=True)
+    frame.grid_columnconfigure(1, weight=1)
+
+    enabled_var = tk.BooleanVar(value=CLOUD_CONTROL_ENABLED)
+    url_var = tk.StringVar(value=CLOUD_WS_URL)
+    secret_var = tk.StringVar(value=CLOUD_DEVICE_SECRET)
+    reconnect_var = tk.StringVar(value=str(CLOUD_WS_RECONNECT_INTERVAL))
+
+    ttk.Checkbutton(frame, text="启用云端控制", variable=enabled_var).grid(
+        row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+    )
+
+    url_placeholder = "wss://example.com/ws"
+    url_placeholder_active = {"value": False}
+
+    def _get_url_value():
+        value = url_var.get().strip()
+        if url_placeholder_active["value"] and value == url_placeholder:
+            return ""
+        return value
+
+    def _set_url_placeholder():
+        if url_var.get().strip():
+            return
+        url_placeholder_active["value"] = True
+        url_var.set(url_placeholder)
+        try:
+            url_entry.config(style="CloudUrlPlaceholder.TEntry")
+        except Exception:
+            pass
+
+    def _clear_url_placeholder(_event=None):
+        if not url_placeholder_active["value"]:
+            return
+        url_placeholder_active["value"] = False
+        url_var.set("")
+        try:
+            url_entry.config(style="TEntry")
+        except Exception:
+            pass
+
+    def _restore_url_placeholder(_event=None):
+        if url_var.get().strip():
+            try:
+                url_entry.config(style="TEntry")
+            except Exception:
+                pass
+            return
+        _set_url_placeholder()
+
+    def _show_url_reference():
+        messagebox.showinfo(
+            "WebSocket 地址参考",
+            "参考格式：\n"
+            "wss://example.com/ws\n"
+            "ws://192.168.1.100:8080/ws\n\n"
+            "地址必须以 ws:// 或 wss:// 开头。",
+            parent=cloud_control_win
+        )
+
+    try:
+        style = ttk.Style(cloud_control_win)
+        style.configure("CloudUrlPlaceholder.TEntry", foreground="#777777")
+    except Exception:
+        pass
+
+    ttk.Label(frame, text="WebSocket 地址：").grid(row=1, column=0, sticky="w", pady=(0, 8))
+    url_entry = ttk.Entry(frame, textvariable=url_var)
+    url_entry.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+    url_entry.bind("<FocusIn>", _clear_url_placeholder)
+    url_entry.bind("<FocusOut>", _restore_url_placeholder)
+    ttk.Button(frame, text="?", width=3, command=_show_url_reference).grid(
+        row=1, column=2, sticky="e", padx=(8, 0), pady=(0, 8)
+    )
+    _set_url_placeholder()
+
+    ttk.Label(frame, text="重连间隔(秒)：").grid(row=2, column=0, sticky="w", pady=(0, 8))
+    tk.Spinbox(frame, textvariable=reconnect_var, from_=1, to=3600, width=8).grid(
+        row=2, column=1, sticky="w", pady=(0, 8)
+    )
+
+    secret_placeholder = "自定义"
+    secret_placeholder_active = {"value": False}
+    secret_visible_var = tk.BooleanVar(value=False)
+
+    def _get_secret_value():
+        value = secret_var.get().strip()
+        if secret_placeholder_active["value"] and value == secret_placeholder:
+            return ""
+        return value
+
+    def _set_secret_placeholder():
+        if secret_var.get().strip():
+            return
+        secret_placeholder_active["value"] = True
+        secret_var.set(secret_placeholder)
+        try:
+            secret_entry.config(style="CloudUrlPlaceholder.TEntry", show="")
+        except Exception:
+            pass
+
+    def _clear_secret_placeholder(_event=None):
+        if not secret_placeholder_active["value"]:
+            return
+        secret_placeholder_active["value"] = False
+        secret_var.set("")
+        try:
+            secret_entry.config(
+                style="TEntry",
+                show="" if secret_visible_var.get() else "*"
+            )
+        except Exception:
+            pass
+
+    def _restore_secret_placeholder(_event=None):
+        if secret_var.get().strip():
+            try:
+                secret_entry.config(style="TEntry")
+            except Exception:
+                pass
+            return
+        _set_secret_placeholder()
+
+    ttk.Label(frame, text="控制密码：").grid(row=3, column=0, sticky="w", pady=(0, 8))
+    secret_entry = ttk.Entry(frame, textvariable=secret_var, show="*")
+    secret_entry.grid(row=3, column=1, sticky="ew", pady=(0, 8))
+    secret_entry.bind("<FocusIn>", _clear_secret_placeholder)
+    secret_entry.bind("<FocusOut>", _restore_secret_placeholder)
+
+    def _toggle_secret_visible():
+        visible = not secret_visible_var.get()
+        secret_visible_var.set(visible)
+        try:
+            secret_entry.config(show="" if visible or secret_placeholder_active["value"] else "*")
+            btn_secret_eye.config(text="🙈" if visible else "👁")
+        except Exception:
+            pass
+
+    btn_secret_eye = ttk.Button(frame, text="👁", width=3, command=_toggle_secret_visible)
+    btn_secret_eye.grid(row=3, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
+    _set_secret_placeholder()
+
+    ttk.Label(frame, text="当前状态：").grid(row=4, column=0, sticky="w", pady=(0, 10))
+    ttk.Label(frame, textvariable=cloud_var).grid(row=4, column=1, sticky="w", pady=(0, 10))
+
+    btn_frame = ttk.Frame(frame)
+    btn_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+    for col in range(4):
+        btn_frame.grid_columnconfigure(col, weight=1, uniform="cloud_actions")
+
+    def _read_form():
+        url = _get_url_value()
+        try:
+            interval = int(reconnect_var.get().strip())
+            if interval < 1:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("错误", "重连间隔必须是大于 0 的整数。", parent=cloud_control_win)
+            return None
+
+        secret = _get_secret_value()
+        if bool(enabled_var.get()) and not secret:
+            messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=cloud_control_win)
+            return None
+
+        return bool(enabled_var.get()), url, interval, secret
+
+    def _save_only():
+        values = _read_form()
+        if values is None:
+            return
+        enabled, url, interval, secret = values
+        save_cloud_control_setting(
+            enabled=enabled,
+            url=url,
+            reconnect_interval=interval,
+            device_secret=secret
+        )
+        if enabled:
+            restart_cloud_control(show_errors=True)
+        else:
+            stop_cloud_control()
+        _cloud_log("配置已保存")
+
+    def _connect():
+        values = _read_form()
+        if values is None:
+            return
+        _enabled, url, interval, secret = values
+        enabled_var.set(True)
+        save_cloud_control_setting(
+            enabled=True,
+            url=url,
+            reconnect_interval=interval,
+            device_secret=secret
+        )
+        restart_cloud_control(show_errors=True)
+
+    def _disconnect():
+        enabled_var.set(False)
+        save_cloud_control_setting(
+            enabled=False,
+            url=_get_url_value(),
+            reconnect_interval=reconnect_var.get(),
+            device_secret=_get_secret_value()
+        )
+        stop_cloud_control()
+        _cloud_log("已手动断开")
+
+    def _on_close():
+        global cloud_control_win
+        try:
+            cloud_control_win.destroy()
+        except Exception:
+            pass
+        cloud_control_win = None
+
+    action_buttons = (
+        ("保存", _save_only),
+        ("连接", _connect),
+        ("断开", _disconnect),
+        ("关闭", _on_close),
+    )
+    for col, (text, command) in enumerate(action_buttons):
+        ttk.Button(btn_frame, text=text, width=10, command=command).grid(
+            row=0, column=col, padx=4, sticky="ew"
+        )
+
+    cloud_control_win.protocol("WM_DELETE_WINDOW", _on_close)
+    cloud_control_win.bind("<Escape>", lambda _e: _on_close())
+
+    cloud_control_win.update_idletasks()
+    center_window(cloud_control_win, root)
+    cloud_control_win.deiconify()
+    cloud_control_win.lift()
+    cloud_control_win.focus_force()
 
 # ================= 打开日志目录 =================
 def open_log_dir():
@@ -3903,7 +4891,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count, ring_timeout_target, current_dial_num
+    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count, ring_timeout_target, current_dial_num, cloud_imei_query_deadline
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -4028,6 +5016,12 @@ def read_serial():
                 # 自动发指令：尝试与模组进行真实通信
                 serial_obj.write(b"AT+CLIP=1\r\n")
                 serial_obj.flush() # 强行等待写入完成，测试端口是否真的是活的
+                try:
+                    cloud_imei_query_deadline = time.monotonic() + 6.0
+                    serial_obj.write(b"AT+CGSN\r\n")
+                    serial_obj.flush()
+                except Exception:
+                    pass
 
                 if MODE == "Auto":
                     PORT = target_port
@@ -4113,6 +5107,8 @@ def read_serial():
                         flush_pending()
                     continue
                 _push_serial_debug(line)
+                _cloud_send_serial_log(line)
+                _maybe_capture_cloud_device_imei(line)
 
                 # ================= 解析温度数据 =================
                 if "+RFTEMPERATURE:" in line:
@@ -5020,7 +6016,10 @@ def restart_software():
             
         # 移除自启标识，避免重启后变最小化
         launch_args.extend(arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG)
-        args_str = " ".join([f'"{arg}"' for arg in launch_args])
+        command_line = subprocess.list2cmdline([exe_path] + launch_args)
+
+        def _vbs_string(s: str) -> str:
+            return '"' + str(s).replace('"', '""') + '"'
         
         # PyInstaller 6.9+ 会把 sys.executable 启动的同一个 exe 默认当作子进程，
         # 让它复用当前 onefile 的 _MEI 解压目录；重启场景必须显式重置环境。
@@ -5057,7 +6056,7 @@ End If
 On Error GoTo 0
 WScript.Sleep 300
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run """{exe_path}"" {args_str}", 1, False
+WshShell.Run {_vbs_string(command_line)}, 1, False
 Set fso = CreateObject("Scripting.FileSystemObject")
 fso.DeleteFile WScript.ScriptFullName
 '''
@@ -5083,9 +6082,15 @@ fso.DeleteFile WScript.ScriptFullName
 
     is_exiting = True
     system_ui("🔄 正在重启软件...", "normal")
+    # 先移除旧托盘图标，再做可能耗时的串口/云端清理。
+    stop_tray_icon(wait_after=0.45)
     
     # 1. 停止串口并释放互斥锁
     serial_running = False
+    try:
+        stop_cloud_control(update_status=False)
+    except Exception:
+        pass
     safe_close_serial()
 
     try:
@@ -5096,12 +6101,7 @@ fso.DeleteFile WScript.ScriptFullName
     except Exception:
         pass
 
-    # 2. 销毁托盘
-    try:
-        if tray_icon:
-            tray_icon.stop()
-    except Exception:
-        pass
+    # 2. 托盘图标已提前移除
 
     # 3. 强行刷新剩余日志
     try:
@@ -5192,6 +6192,11 @@ settings_menu.add_command(
 )
 
 settings_menu.add_command(
+    label="云端控制",
+    command=open_cloud_control_window
+)
+
+settings_menu.add_command(
     label="串口调试", 
     command=open_serial_debug_window
 )
@@ -5214,6 +6219,9 @@ if MODE == "Auto":
     set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
 else:
     set_status(f"✍️ 手动模式：{PORT or '未指定'} @ {BAUD}", "orange")
+
+if CLOUD_CONTROL_ENABLED:
+    start_cloud_control()
 
 threading.Thread(target=read_serial, daemon=True).start()
 # 启动后自动清理定时器（默认60秒后首次运行）

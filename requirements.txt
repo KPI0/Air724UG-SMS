@@ -5,3 +5,4 @@ pillow==12.2.0
 pywin32==311
 setuptools==82.0.1
 pyinstaller==6.20.0
+websockets==16.0

@@ -34,10 +34,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify build inputs
+        shell: pwsh
+        run: |
+          python -m pip check
+          python -m py_compile sms.pyw
+          python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api"
+
       - name: Build EXE with PyInstaller
         shell: pwsh
         run: |
-          pyinstaller `
+          python -m PyInstaller `
             --noconfirm `
             --onefile `
             --windowed `
@@ -45,6 +52,7 @@ jobs:
             --icon "icon.ico" `
             --add-data "icon.ico;." `
             --hidden-import "pyttsx3.drivers.sapi5" `
+            --collect-submodules "websockets" `
             --clean `
             sms.pyw
 
