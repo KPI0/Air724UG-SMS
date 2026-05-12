@@ -17,7 +17,7 @@
 #  9. 支持开机自启与桌面快捷方式创建
 # 10. 支持在线检测更新（支持代理）
 #
-#  作者：ChatGPT、Gemini、KPI0
+#  作者：ChatGPT、Gemini、Codex、KPI0
 #  GitHub：https://github.com/KPI0/Air724UG-SMS
 # ================================================================
 
@@ -40,6 +40,7 @@ import urllib.request
 import winsound
 import webbrowser
 import queue
+import random
 from datetime import datetime, timedelta
 
 # ---- 第三方库 ----
@@ -65,7 +66,7 @@ LOG_DIR = "sms_logs" # 短信日志文件夹
 TTS_DIR = "tts" # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.7"  # 软件版本号
+APP_VERSION = "3.5.8"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -209,10 +210,19 @@ if not os.path.exists(CONFIG_FILE):
         "reconnect_interval": "5",
     }
 
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        config.write(f)
+    safe_save_config()
 
 config.read(CONFIG_FILE, encoding="utf-8")
+
+def safe_save_config():
+    """原子级保存配置：防突然断电导致 config.ini 清零损坏"""
+    tmp_file = CONFIG_FILE + ".tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            config.write(f)
+        os.replace(tmp_file, CONFIG_FILE)  # 原子替换，绝对安全
+    except Exception as e:
+        log_file_only(f"配置保存失败: {e}")
 
 # ===== 语音播报内容（从配置读取）=====
 DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
@@ -297,8 +307,7 @@ except Exception:
 if not config.has_section("ui"):
     config["ui"] = {"voice_enabled": "1"}
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -640,6 +649,7 @@ def set_autostart(enable: bool):
 
 # ================= TTS语音播报 =================
 def _tts_worker():
+    global TTS_FILE
     while not TTS_STOP.is_set():
         try:
             task = TTS_REQ_Q.get(timeout=0.5)
@@ -681,7 +691,13 @@ def _tts_worker():
                 
                 # 原子替换，只有成功生成了才覆盖原文件
                 if os.path.exists(tmp_path):
-                    os.replace(tmp_path, TTS_FILE)
+                    try:
+                        os.replace(tmp_path, TTS_FILE)
+                    except PermissionError:
+                        # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
+                        # 此时不需要再写 global TTS_FILE 了，直接赋值
+                        TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{int(time.time())}.wav")
+                        os.replace(tmp_path, TTS_FILE)
                     
         except Exception as e:
             # 清理可能损坏的 tmp 文件
@@ -804,8 +820,7 @@ def save_voice_text_setting():
         if "ui" not in config:
             config["ui"] = {}
         config.set("ui", "voice_text", VOICE_TEXT)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -815,8 +830,7 @@ def save_sms_font_setting():
             config["ui"] = {}
         config.set("ui", "sms_font_size", str(SMS_FONT_SIZE))
         config.set("ui", "sms_font_color", SMS_FONT_COLOR)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -2416,8 +2430,7 @@ def save_desktop_shortcut_name(name: str):
     if not config.has_section("ui"):
         config["ui"] = {}
     config.set("ui", "desktop_shortcut_name", name)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        config.write(f)
+    safe_save_config()
 
 # ================= 多开并发：物理端口保护锁 =================
 current_port_mutex = None
@@ -2472,8 +2485,8 @@ def check_single_instance():
         )
         sys.exit(1)
     
-    # 183 (ERROR_ALREADY_EXISTS) 表示互斥量已被另一个实例创建
-    if last_error == 183:
+    # 183 已存在，5 拒绝访问（通常是被高权限的管理员实例锁定了）
+    if last_error in (183, 5):
         try:
             ctypes.windll.kernel32.CloseHandle(app_mutex)
         except Exception:
@@ -3202,8 +3215,7 @@ def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, 
             config.remove_option("cloud_control", "device_imei")
         config["cloud_control"]["device_secret"] = CLOUD_DEVICE_SECRET
         config["cloud_control"]["reconnect_interval"] = str(CLOUD_WS_RECONNECT_INTERVAL)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception as e:
         system_ui(f"❌ 云端控制配置保存失败：{e}", "normal")
 
@@ -3587,8 +3599,8 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
 
             async with websockets.connect(
                 url,
-                ping_interval=20,
-                ping_timeout=20,
+                ping_interval=30,
+                ping_timeout=30,
             ) as ws:
                 cloud_ws_conn = ws
                 cloud_connected = True
@@ -3615,10 +3627,11 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             set_cloud_status("🌐 重连中", "#b26a00")
             _cloud_log(f"连接异常：{err}")
 
+            # 加入 0 ~ 50 毫秒的随机抖动，打散海量设备并发重连的风暴
             for _ in range(max(1, int(reconnect_interval)) * 10):
                 if cloud_stop_event.is_set():
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1 + random.uniform(0, 0.05))
 
     cloud_ws_conn = None
     cloud_connected = False
@@ -3759,7 +3772,7 @@ def open_cloud_control_window():
     cloud_control_win = tk.Toplevel(root)
     cloud_control_win.withdraw()
     cloud_control_win.title("云端控制")
-    cloud_control_win.geometry("480x250")
+    cloud_control_win.minsize(480, 260)
     cloud_control_win.resizable(False, False)
     cloud_control_win.transient(root)
 
@@ -4116,8 +4129,7 @@ def open_log_cleanup_dialog():
                 config["ui"] = {}
             config.set("ui", "auto_log_cleanup", "1")
             config.set("ui", "log_retention_days", str(LOG_RETENTION_DAYS))
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                config.write(f)
+            safe_save_config()
         except Exception:
             pass
 
@@ -4190,8 +4202,7 @@ def open_update_proxy_dialog():
     def save():
         config.set("update", "proxy_base", _normalize(proxy_var.get()))
         config.set("update", "api_proxy_base", _normalize(api_var.get()))
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
         messagebox.showinfo("完成", "代理设置已保存")
 
     def test_connection():
@@ -4708,8 +4719,7 @@ def try_rebind_manual_port(reason: str = "") -> bool:
         config.set("serial", "mode", "Manual")
         config.set("serial", "port", PORT)
         config.set("serial", "baud", str(BAUD))
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -5469,8 +5479,7 @@ def open_serial_setting():
         config.set("serial", "mode", MODE)
         config.set("serial", "port", PORT)
         config.set("serial", "baud", str(BAUD))
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
 
         set_status("🟡 应用中，重连…", "orange")
 
@@ -5630,8 +5639,7 @@ def open_keywords_setting():
                 config["ui"] = {}
             # 使用 json 序列化保存，完美支持包含 "|"、引号等任何特殊字符
             config.set("ui", "keywords", json.dumps(KEYWORDS, ensure_ascii=False))
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                config.write(f)
+            safe_save_config()
         except Exception:
             pass
 
@@ -5781,8 +5789,7 @@ def open_call_filter_setting():
         if "ui" not in config: config["ui"] = {}
         config.set("ui", "call_filter_mode", CALL_FILTER_MODE)
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                config.write(f)
+            safe_save_config()
         except Exception:
             pass
         
@@ -5835,8 +5842,7 @@ def open_call_filter_setting():
             if "ui" not in config: config["ui"] = {}
             config.set("ui", config_key, json.dumps(target_list, ensure_ascii=False))
             try:
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    config.write(f)
+                safe_save_config()
             except Exception:
                 pass
 
@@ -5929,8 +5935,7 @@ def save_voice_setting():
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "voice_enabled", "1" if VOICE_ENABLED else "0")
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -5959,8 +5964,7 @@ def toggle_multi_instance():
             "allow_multi_instance",
             "1" if ALLOW_MULTI_INSTANCE else "0"
         )
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
@@ -5982,8 +5986,7 @@ def toggle_popup():
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "popup_enabled", "1" if POPUP_ENABLED else "0")
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            config.write(f)
+        safe_save_config()
     except Exception:
         pass
 
