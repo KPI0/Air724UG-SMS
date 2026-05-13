@@ -18,7 +18,7 @@
 ## 📦 依赖安装
 
 ```bash
-pip install pyserial pystray pillow pyttsx3
+pip install pyserial pystray pillow pyttsx3 websockets
 ```
 
 ## 🚀 源码运行
@@ -40,6 +40,9 @@ pyinstaller ^
   --name "sms" ^
   --icon=icon.ico ^
   --add-data "icon.ico;." ^
+  --hidden-import "pyttsx3.drivers.sapi5" ^
+  --collect-submodules "websockets" ^
+  --clean ^
   sms.pyw
 ```
 生成的 exe 文件位于：
