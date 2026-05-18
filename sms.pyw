@@ -61,12 +61,22 @@ from tkinter import messagebox, ttk, colorchooser
 from tkinter.scrolledtext import ScrolledText
 
 # ================= 配置 =================
-CONFIG_FILE = "config.ini"  # 软件配置文件
-LOG_DIR = "sms_logs" # 短信日志文件夹
-TTS_DIR = "tts" # 语音播报文件夹
+def get_app_dir():
+    """返回程序所在目录，避免从不同启动入口运行时读写到不同的 config.ini。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return os.path.dirname(os.path.abspath(sys.argv[0] or "."))
+
+APP_DIR = get_app_dir()
+CONFIG_FILE = os.path.join(APP_DIR, "config.ini")  # 软件配置文件
+LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
+TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.8"  # 软件版本号
+APP_VERSION = "3.5.9"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -199,6 +209,7 @@ if not os.path.exists(CONFIG_FILE):
         "voice_text": "注意！四川安播中心预警短信，请及时查看。",   # 默认语音播报内容
         "allow_multi_instance": "0",  # 0=禁止程序多开（默认），1=允许程序多开
         "auto_log_cleanup": "1",      # 0=关闭日志清理，1=打开日志清理（默认）
+        "log_unmatched_sms": "1",     # 0=不记录未匹配短信，1=将未匹配短信写入COM日志（默认）
         "log_retention_days": "30",   # 日志保留时间，单位：天
         "desktop_shortcut_name": "短信监听系统",  # 默认桌面快捷方式名称
         "keywords": '["【四川安播中心】"]',  # 默认关键词
@@ -222,6 +233,7 @@ if not os.path.exists(CONFIG_FILE):
         "url": "",
         "device_secret": "",
         "reconnect_interval": "5",
+        "auto_upload": "0",
     }
 
     safe_save_config()
@@ -261,6 +273,12 @@ try:
 except Exception:
     ALLOW_MULTI_INSTANCE = False
 
+# ===== 未匹配短信日志记录开关 =====
+try:
+    LOG_UNMATCHED_SMS = config.getboolean("ui", "log_unmatched_sms", fallback=False)
+except Exception:
+    LOG_UNMATCHED_SMS = False
+
 PORT = config.get("serial", "port", fallback="").strip()
 BAUD = config.getint("serial", "baud", fallback=115200)
 MODE = config.get("serial", "mode", fallback="Auto").strip().lower()
@@ -294,6 +312,50 @@ try:
     )
 except Exception:
     CLOUD_WS_RECONNECT_INTERVAL = 5
+
+# ===== 自动上传设备与日志开关 =====
+try:
+    CLOUD_AUTO_UPLOAD = config.getboolean("cloud_control", "auto_upload", fallback=False)
+except Exception:
+    CLOUD_AUTO_UPLOAD = False
+
+def refresh_cloud_control_settings_from_config():
+    """重新从 config.ini 读取云端控制配置，避免窗口复用时显示旧状态。"""
+    global CLOUD_CONTROL_ENABLED, CLOUD_WS_URL, CLOUD_DEVICE_SECRET
+    global CLOUD_WS_RECONNECT_INTERVAL, CLOUD_AUTO_UPLOAD
+
+    try:
+        config.read(CONFIG_FILE, encoding="utf-8")
+    except Exception:
+        pass
+
+    try:
+        CLOUD_CONTROL_ENABLED = config.getboolean("cloud_control", "enabled", fallback=False)
+    except Exception:
+        CLOUD_CONTROL_ENABLED = False
+
+    try:
+        CLOUD_WS_URL = config.get("cloud_control", "url", fallback="").strip()
+    except Exception:
+        CLOUD_WS_URL = ""
+
+    try:
+        CLOUD_DEVICE_SECRET = config.get("cloud_control", "device_secret", fallback="").strip()
+    except Exception:
+        CLOUD_DEVICE_SECRET = ""
+
+    try:
+        CLOUD_WS_RECONNECT_INTERVAL = max(
+            1,
+            config.getint("cloud_control", "reconnect_interval", fallback=5)
+        )
+    except Exception:
+        CLOUD_WS_RECONNECT_INTERVAL = 5
+
+    try:
+        CLOUD_AUTO_UPLOAD = config.getboolean("cloud_control", "auto_upload", fallback=False)
+    except Exception:
+        CLOUD_AUTO_UPLOAD = False
 
 # ===== 短信字体（从配置读取）=====
 try:
@@ -440,6 +502,7 @@ cloud_ws_lock = threading.Lock()
 cloud_stop_event = threading.Event()
 CLOUD_SERIAL_LOG_Q = queue.Queue(maxsize=1000)
 CLOUD_SERIAL_LOG_DRAIN_BATCH = 100
+CLOUD_REPLAY_WINDOW_SECONDS = 60
 cloud_serial_log_lock = threading.Lock()
 cloud_serial_log_drain_scheduled = False
 cloud_connected = False
@@ -685,13 +748,13 @@ def _tts_worker():
                 os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
                 tmp_path = TTS_FILE + ".tmp.wav"
                 
-                # 核心修复 1：每次重新 init，避开 pyttsx3 长驻缓存的 Bug
+                # 1：每次重新 init，避开 pyttsx3 长驻缓存的 Bug
                 engine = pyttsx3.init()
                 engine.setProperty("rate", 150)
                 engine.save_to_file(text, tmp_path)
                 engine.runAndWait()
                 engine.stop()
-                del engine  # 核心修复 2：强制释放 COM 内存，防止内存泄漏
+                del engine  # 2：强制释放 COM 内存，防止内存泄漏
                 
                 # 原子替换，只有成功生成了才覆盖原文件
                 if os.path.exists(tmp_path):
@@ -717,7 +780,7 @@ def _tts_worker():
             except Exception:
                 pass
         
-        # 核心修复 3：文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
+        # 3：文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
         if play_after:
             play_alert(force=True)
 
@@ -2459,7 +2522,7 @@ def unlock_port_mutex():
 def is_port_locked_by_other(port_name):
     if not port_name: return False
     mutex_name = f"Air724UG_PORT_{port_name}"
-    # 终极修复：使用 CreateMutexW 并检查错误码 183，这比 OpenMutex 更加稳定，无视权限组差异
+    # 使用 CreateMutexW 并检查错误码 183，这比 OpenMutex 更加稳定，无视权限组差异
     handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     err = ctypes.windll.kernel32.GetLastError()
     if handle:
@@ -3149,10 +3212,16 @@ def _cloud_identity_payload():
     }
 
 async def _cloud_send_register(ws):
+    # ===== 如果关闭了主动上传，则保持隐身 =====
+    if not CLOUD_AUTO_UPLOAD:
+        _cloud_log("隐身模式：已跳过发送上线注册包")
+        return
+    # ===============================================
     payload = {
         "type": "device_login",
         "event": "register",
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _cloud_now_ts(),
         **_cloud_identity_payload(),
         "secret": CLOUD_DEVICE_SECRET,
         "serial_port": PORT,
@@ -3164,6 +3233,50 @@ async def _cloud_send_register(ws):
         _cloud_log(f"已上报设备IMEI：{_cloud_runtime_imei()}")
     except Exception as e:
         _cloud_log(f"上报设备身份失败：{e}")
+
+async def _cloud_send_unregister(ws, reason="hidden"):
+    payload = {
+        "type": "device_login",
+        "event": "offline",
+        "action": "offline",
+        "status": "offline",
+        "online": False,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _cloud_now_ts(),
+        **_cloud_identity_payload(),
+        "secret": CLOUD_DEVICE_SECRET,
+        "serial_port": PORT,
+        "serial_baud": BAUD,
+        "serial_mode": MODE,
+        "reason": reason,
+    }
+    try:
+        await ws.send(json.dumps(payload, ensure_ascii=False))
+        _cloud_log(f"已通知云端设备离线：{_cloud_runtime_imei()}")
+    except Exception as e:
+        _cloud_log(f"通知云端设备离线失败：{e}")
+
+def _cloud_schedule_unregister(reason="hidden"):
+    try:
+        loop = cloud_ws_loop
+        ws = cloud_ws_conn
+        if loop is not None and loop.is_running() and ws is not None and cloud_connected:
+            asyncio.run_coroutine_threadsafe(_cloud_send_unregister(ws, reason), loop)
+            return True
+    except Exception:
+        pass
+    return False
+
+async def _cloud_unregister_then_close(ws, reason="disconnect"):
+    try:
+        if CLOUD_AUTO_UPLOAD:
+            await _cloud_send_unregister(ws, reason)
+    except Exception:
+        pass
+    try:
+        await ws.close()
+    except Exception:
+        pass
 
 def _notify_cloud_identity_changed():
     try:
@@ -3195,8 +3308,8 @@ def _set_cloud_device_imei(imei: str, source=""):
 
     return True
 
-def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, device_secret=None):
-    global CLOUD_CONTROL_ENABLED, CLOUD_WS_URL, CLOUD_WS_RECONNECT_INTERVAL, CLOUD_DEVICE_SECRET
+def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, device_secret=None, auto_upload=None):
+    global CLOUD_CONTROL_ENABLED, CLOUD_WS_URL, CLOUD_WS_RECONNECT_INTERVAL, CLOUD_DEVICE_SECRET, CLOUD_AUTO_UPLOAD
 
     if enabled is not None:
         CLOUD_CONTROL_ENABLED = bool(enabled)
@@ -3209,6 +3322,8 @@ def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, 
             CLOUD_WS_RECONNECT_INTERVAL = max(1, int(reconnect_interval))
         except Exception:
             CLOUD_WS_RECONNECT_INTERVAL = 5
+    if auto_upload is not None:
+        CLOUD_AUTO_UPLOAD = bool(auto_upload)
 
     try:
         if "cloud_control" not in config:
@@ -3219,6 +3334,7 @@ def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, 
             config.remove_option("cloud_control", "device_imei")
         config["cloud_control"]["device_secret"] = CLOUD_DEVICE_SECRET
         config["cloud_control"]["reconnect_interval"] = str(CLOUD_WS_RECONNECT_INTERVAL)
+        config["cloud_control"]["auto_upload"] = "1" if CLOUD_AUTO_UPLOAD else "0"
         safe_save_config()
     except Exception as e:
         system_ui(f"❌ 云端控制配置保存失败：{e}", "normal")
@@ -3307,6 +3423,10 @@ def _schedule_cloud_serial_log_drain(loop, ws):
             cloud_serial_log_drain_scheduled = False
 
 def _cloud_send_serial_log(line: str):
+    # ===== 如果关闭了主动上传，则停止上传实时日志 =====
+    if not CLOUD_AUTO_UPLOAD:
+        return
+    # ==============================================
     text = str(line or "").strip()
     if not text:
         return
@@ -3325,6 +3445,7 @@ def _cloud_send_serial_log(line: str):
             "type": "log",
             "tag": "debug",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _cloud_now_ts(),
             **_cloud_identity_payload(),
             "serial_port": PORT,
             "serial_baud": BAUD,
@@ -3475,6 +3596,7 @@ def _cloud_send_status_payload():
         "type": "status",
         "ok": True,
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": _cloud_now_ts(),
         **_cloud_identity_payload(),
         "cloud_connected": bool(cloud_connected),
         "serial_connected": serial_connected,
@@ -3482,6 +3604,52 @@ def _cloud_send_status_payload():
         "serial_baud": BAUD,
         "serial_mode": MODE,
     }
+
+def _cloud_now_ts() -> int:
+    return int(time.time())
+
+def _cloud_read_unix_timestamp(data: dict):
+    raw_ts = (
+        data.get("timestamp")
+        or data.get("ts")
+        or data.get("unix_time")
+        or data.get("time")
+    )
+    if raw_ts is None or raw_ts == "":
+        return None, None
+
+    try:
+        ts = int(float(str(raw_ts).strip()))
+    except Exception:
+        return None, raw_ts
+
+    # 兼容误发的毫秒级时间戳，但安全比较统一使用秒。
+    if ts > 10_000_000_000:
+        ts = ts // 1000
+    return ts, raw_ts
+
+async def _cloud_check_replay_window(ws, data: dict) -> bool:
+    ts, raw_ts = _cloud_read_unix_timestamp(data)
+    if ts is None:
+        _cloud_log("已拒绝云端指令：缺少 Unix 时间戳字段 timestamp/ts")
+        await _cloud_reply(ws, {
+            "type": "error",
+            "ok": False,
+            "message": "安全拦截：缺少 Unix 时间戳，请使用 timestamp 或 ts 秒级时间戳",
+        })
+        return False
+
+    delta = abs(_cloud_now_ts() - ts)
+    if delta > CLOUD_REPLAY_WINDOW_SECONDS:
+        _cloud_log(f"已拒绝云端指令：时间戳超时或疑似重放攻击 (timestamp={raw_ts}, delta={delta}s)")
+        await _cloud_reply(ws, {
+            "type": "error",
+            "ok": False,
+            "message": "安全拦截：指令已过期，请检查服务器和本机时钟是否同步",
+        })
+        return False
+
+    return True
 
 def _cloud_send_serial_command(command: str):
     cmd = str(command or "").strip()
@@ -3533,6 +3701,11 @@ async def _handle_cloud_message(ws, message):
         })
         return
 
+    # ===== Unix 时间戳防重放攻击校验（秒级，无时区歧义）=====
+    if not await _cloud_check_replay_window(ws, data):
+        return
+    # ====================================
+
     action = str(data.get("type") or data.get("action") or "").strip().lower()
     if not action and data.get("cmd"):
         action = "cmd"
@@ -3550,6 +3723,7 @@ async def _handle_cloud_message(ws, message):
             "type": "pong",
             "ok": True,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _cloud_now_ts(),
         })
         return
 
@@ -3726,7 +3900,7 @@ def stop_cloud_control(update_status=True):
         loop = cloud_ws_loop
         ws = cloud_ws_conn
         if loop is not None and loop.is_running() and ws is not None:
-            asyncio.run_coroutine_threadsafe(ws.close(), loop)
+            asyncio.run_coroutine_threadsafe(_cloud_unregister_then_close(ws), loop)
     except Exception:
         pass
 
@@ -3767,7 +3941,17 @@ def restart_cloud_control(show_errors=False):
 def open_cloud_control_window():
     global cloud_control_win
 
+    refresh_cloud_control_settings_from_config()
+
     if cloud_control_win is not None and cloud_control_win.winfo_exists():
+        try:
+            cloud_control_win._enabled_var.set(CLOUD_CONTROL_ENABLED)
+            cloud_control_win._auto_upload_var.set(CLOUD_AUTO_UPLOAD)
+            cloud_control_win._url_var.set(CLOUD_WS_URL)
+            cloud_control_win._secret_var.set(CLOUD_DEVICE_SECRET)
+            cloud_control_win._reconnect_var.set(str(CLOUD_WS_RECONNECT_INTERVAL))
+        except Exception:
+            pass
         cloud_control_win.deiconify()
         cloud_control_win.lift()
         cloud_control_win.focus_force()
@@ -3784,17 +3968,63 @@ def open_cloud_control_window():
     frame.pack(fill="both", expand=True)
     frame.grid_columnconfigure(1, weight=1)
 
-    enabled_var = tk.BooleanVar(value=CLOUD_CONTROL_ENABLED)
-    url_var = tk.StringVar(value=CLOUD_WS_URL)
-    secret_var = tk.StringVar(value=CLOUD_DEVICE_SECRET)
-    reconnect_var = tk.StringVar(value=str(CLOUD_WS_RECONNECT_INTERVAL))
+    # 改回最标准的 BooleanVar，并加入 command 触发实时同步
+    enabled_var = tk.BooleanVar(cloud_control_win, value=CLOUD_CONTROL_ENABLED)
+    auto_upload_var = tk.BooleanVar(cloud_control_win, value=CLOUD_AUTO_UPLOAD)
+    
+    url_var = tk.StringVar(cloud_control_win, value=CLOUD_WS_URL)
+    secret_var = tk.StringVar(cloud_control_win, value=CLOUD_DEVICE_SECRET)
+    reconnect_var = tk.StringVar(cloud_control_win, value=str(CLOUD_WS_RECONNECT_INTERVAL))
+    cloud_control_win._enabled_var = enabled_var
+    cloud_control_win._auto_upload_var = auto_upload_var
+    cloud_control_win._url_var = url_var
+    cloud_control_win._secret_var = secret_var
+    cloud_control_win._reconnect_var = reconnect_var
 
-    ttk.Checkbutton(frame, text="启用云端控制", variable=enabled_var).grid(
-        row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
-    )
+    # ===== 实时同步复选框状态到 config.ini =====
+    def _on_enabled_toggle():
+        save_cloud_control_setting(enabled=enabled_var.get())
+
+    def _on_upload_toggle():
+        was_public = CLOUD_AUTO_UPLOAD
+        save_cloud_control_setting(auto_upload=auto_upload_var.get())
+        try:
+            if auto_upload_var.get():
+                if cloud_connected and cloud_ws_loop is not None and cloud_ws_conn is not None:
+                    asyncio.run_coroutine_threadsafe(_cloud_send_register(cloud_ws_conn), cloud_ws_loop)
+            elif was_public:
+                _reset_cloud_serial_log_state()
+                _cloud_schedule_unregister("auto_upload_disabled")
+        except Exception:
+            pass
+    # ===============================================
+
+    top_opts_frame = ttk.Frame(frame)
+    top_opts_frame.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    # 绑定 command，实现点击即刻保存，同时去掉多余的 onvalue/offvalue
+    ttk.Checkbutton(
+        top_opts_frame, text="启用云端控制", variable=enabled_var, command=_on_enabled_toggle
+    ).pack(side="left", padx=(0, 20))
+    
+    ttk.Checkbutton(
+        top_opts_frame, text="主动公开设备与日志", variable=auto_upload_var, command=_on_upload_toggle
+    ).pack(side="left")
 
     url_placeholder = "wss://example.com/ws"
     url_placeholder_active = {"value": False}
+    # ===== WebSocket 地址显隐控制变量与函数 =====
+    url_visible_var = tk.BooleanVar(value=True)  # 默认明文可见
+
+    def _toggle_url_visible():
+        visible = not url_visible_var.get()
+        url_visible_var.set(visible)
+        try:
+            # 如果当前是占位符，强制保持明文显示；如果是用户输入的地址，则根据开关切换
+            url_entry.config(show="" if visible or url_placeholder_active["value"] else "*")
+            btn_url_eye.config(text="🙈" if visible else "👁")
+        except Exception:
+            pass
 
     def _get_url_value():
         value = url_var.get().strip()
@@ -3808,7 +4038,8 @@ def open_cloud_control_window():
         url_placeholder_active["value"] = True
         url_var.set(url_placeholder)
         try:
-            url_entry.config(style="CloudUrlPlaceholder.TEntry")
+            # 占位符提示语状态下，强制不设置掩码
+            url_entry.config(style="CloudUrlPlaceholder.TEntry", show="")
         except Exception:
             pass
 
@@ -3818,14 +4049,14 @@ def open_cloud_control_window():
         url_placeholder_active["value"] = False
         url_var.set("")
         try:
-            url_entry.config(style="TEntry")
+            url_entry.config(style="TEntry", show="" if url_visible_var.get() else "*")
         except Exception:
             pass
 
     def _restore_url_placeholder(_event=None):
         if url_var.get().strip():
             try:
-                url_entry.config(style="TEntry")
+                url_entry.config(style="TEntry", show="" if url_visible_var.get() else "*")
             except Exception:
                 pass
             return
@@ -3852,9 +4083,16 @@ def open_cloud_control_window():
     url_entry.grid(row=1, column=1, sticky="ew", pady=(0, 8))
     url_entry.bind("<FocusIn>", _clear_url_placeholder)
     url_entry.bind("<FocusOut>", _restore_url_placeholder)
-    ttk.Button(frame, text="?", width=3, command=_show_url_reference).grid(
-        row=1, column=2, sticky="e", padx=(8, 0), pady=(0, 8)
-    )
+    # ===== 将问号按钮替换为双图标打包组件，实现上下对齐 =====
+    url_btn_frame = ttk.Frame(frame)
+    url_btn_frame.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
+
+    btn_help = ttk.Button(url_btn_frame, text="?", width=3, command=_show_url_reference)
+    btn_help.pack(side="left", padx=(0, 4))
+
+    btn_url_eye = ttk.Button(url_btn_frame, text="🙈", width=3, command=_toggle_url_visible)
+    btn_url_eye.pack(side="left")
+    # ============================================================
     _set_url_placeholder()
 
     ttk.Label(frame, text="重连间隔(秒)：").grid(row=2, column=0, sticky="w", pady=(0, 8))
@@ -3919,8 +4157,35 @@ def open_cloud_control_window():
         except Exception:
             pass
 
-    btn_secret_eye = ttk.Button(frame, text="👁", width=3, command=_toggle_secret_visible)
-    btn_secret_eye.grid(row=3, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
+    # ===== 随机生成密码功能 =====
+    def _generate_random_secret():
+        # 生成 16 位包含大小写字母和数字的随机密码
+        chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        new_pwd = "".join(random.choice(chars) for _ in range(16))
+        
+        # 清除占位符状态并赋值
+        secret_placeholder_active["value"] = False
+        secret_var.set(new_pwd)
+        
+        # 自动切换为明文显示，方便用户查看和复制
+        secret_visible_var.set(True)
+        try:
+            secret_entry.config(style="TEntry", show="")
+            btn_secret_eye.config(text="🙈")
+        except Exception:
+            pass
+
+    # 使用一个 Frame 将随机按钮和明文按钮包起来放在同一列
+    pwd_btn_frame = ttk.Frame(frame)
+    pwd_btn_frame.grid(row=3, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
+
+    btn_random = ttk.Button(pwd_btn_frame, text="🎲", width=3, command=_generate_random_secret)
+    btn_random.pack(side="left", padx=(0, 4))
+
+    btn_secret_eye = ttk.Button(pwd_btn_frame, text="👁", width=3, command=_toggle_secret_visible)
+    btn_secret_eye.pack(side="left")
+    # ==================================
+
     _set_secret_placeholder()
 
     ttk.Label(frame, text="当前状态：").grid(row=4, column=0, sticky="w", pady=(0, 10))
@@ -3946,18 +4211,15 @@ def open_cloud_control_window():
             messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=cloud_control_win)
             return None
 
-        return bool(enabled_var.get()), url, interval, secret
+        return bool(enabled_var.get()), url, interval, secret, bool(auto_upload_var.get())
 
     def _save_only():
         values = _read_form()
         if values is None:
             return
-        enabled, url, interval, secret = values
+        enabled, url, interval, secret, auto_upload = values
         save_cloud_control_setting(
-            enabled=enabled,
-            url=url,
-            reconnect_interval=interval,
-            device_secret=secret
+            enabled=enabled, url=url, reconnect_interval=interval, device_secret=secret, auto_upload=auto_upload
         )
         if enabled:
             restart_cloud_control(show_errors=True)
@@ -3969,23 +4231,18 @@ def open_cloud_control_window():
         values = _read_form()
         if values is None:
             return
-        _enabled, url, interval, secret = values
+        _enabled, url, interval, secret, auto_upload = values
         enabled_var.set(True)
         save_cloud_control_setting(
-            enabled=True,
-            url=url,
-            reconnect_interval=interval,
-            device_secret=secret
+            enabled=True, url=url, reconnect_interval=interval, device_secret=secret, auto_upload=auto_upload
         )
         restart_cloud_control(show_errors=True)
 
     def _disconnect():
         enabled_var.set(False)
         save_cloud_control_setting(
-            enabled=False,
-            url=_get_url_value(),
-            reconnect_interval=reconnect_var.get(),
-            device_secret=_get_secret_value()
+            enabled=False, url=_get_url_value(), reconnect_interval=reconnect_var.get(),
+            device_secret=_get_secret_value(), auto_upload=auto_upload_var.get()
         )
         stop_cloud_control()
         _cloud_log("已手动断开")
@@ -4639,7 +4896,7 @@ def find_luat_best_port():
         if " AT" in desc_u or desc_u.endswith("AT"):
             continue
             
-        # 终极修复：必须严格包含 MODEM 字样。Device 7 等无用诊断口全部屏蔽！
+        # 必须严格包含 MODEM 字样。Device 7 等无用诊断口全部屏蔽！
         if "MODEM" not in desc_u:
             if dev != PORT:  # 除非它是我们记忆里真正连过的老相好
                 continue
@@ -4952,6 +5209,20 @@ def read_serial():
             play_alert()               
             show_sms_popup(full_msg)   
         else:
+            # ===== 未匹配关键词但也写入文件 =====
+            if LOG_UNMATCHED_SMS and full_msg:
+                try:
+                    prefix_snapshot = LOG_PREFIX
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    path = os.path.join(LOG_DIR, f"sms_{prefix_snapshot}_{today}.txt")
+                    time_prefix = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # 绕过主界面，仅写入文本文件
+                    FILE_LOG_Q.put_nowait((path, f"{time_prefix} 🚫 [未匹配拦截] 📩 收到短信：\n"))
+                    FILE_LOG_Q.put_nowait((path, f"{time_prefix} {full_msg}\n"))
+                except Exception:
+                    pass
+            # =======================================
             try:
                 global _last_sms_ignore_msg, _last_sms_ignore_count
                 msg_text = "🚫 短信未命中关键词，已忽略"
@@ -5750,9 +6021,31 @@ def open_keywords_setting():
         anchor="w"
     )
     tip.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 6))
+    # ===== 未匹配短信写入日志开关 =====
+    log_unmatched_var = tk.BooleanVar(value=LOG_UNMATCHED_SMS)
+    
+    def toggle_log_unmatched():
+        global LOG_UNMATCHED_SMS
+        LOG_UNMATCHED_SMS = log_unmatched_var.get()
+        try:
+            if not config.has_section("ui"):
+                config["ui"] = {}
+            config.set("ui", "log_unmatched_sms", "1" if LOG_UNMATCHED_SMS else "0")
+            safe_save_config()
+        except Exception:
+            pass
+        system_ui(f"⚙️ 未匹配短信写入COM日志：{'已开启' if LOG_UNMATCHED_SMS else '已关闭'}", "normal")
 
+    chk_unmatched = ttk.Checkbutton(
+        frame,
+        text="将未匹配关键词的短信也写入到 sms_COM 日志文件中",
+        variable=log_unmatched_var,
+        command=toggle_log_unmatched
+    )
+
+    chk_unmatched.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 6))
     bottom = tk.Frame(frame)
-    bottom.grid(row=6, column=0, columnspan=2, sticky="e", pady=(0, 10))
+    bottom.grid(row=7, column=0, columnspan=2, sticky="e", pady=(0, 10))
     tk.Button(bottom, text="关闭", width=10, command=win.destroy).pack()
 
     frame.grid_columnconfigure(0, weight=1)
