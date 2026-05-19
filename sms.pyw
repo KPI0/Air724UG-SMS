@@ -1,4 +1,4 @@
-# ================================================================
+﻿# ================================================================
 #  短信监听系统
 #
 #  功能简介：
@@ -41,6 +41,7 @@ import winsound
 import webbrowser
 import queue
 import random
+import secrets
 from datetime import datetime, timedelta
 
 # ---- 第三方库 ----
@@ -76,7 +77,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.5.9"  # 软件版本号
+APP_VERSION = "3.6.0"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -150,16 +151,27 @@ def create_startup_shortcut():
 
     vbs += 'Shortcut.Save\n'
 
-    vbs_path = os.path.join(tempfile.gettempdir(), "sms_autostart_create.vbs")
-    with open(vbs_path, "w", encoding="mbcs") as f:
-        f.write(vbs)
-
-    # 用 wscript.exe 执行（无控制台窗口）
-    r = subprocess.run(
-        ["wscript.exe", "//Nologo", vbs_path],
-        capture_output=True,
-        text=True
+    vbs_path = os.path.join(
+        tempfile.gettempdir(),
+        f"sms_autostart_create_{os.getpid()}_{threading.get_ident()}.vbs"
     )
+    try:
+        with open(vbs_path, "w", encoding="mbcs") as f:
+            f.write(vbs)
+
+        # 用 wscript.exe 执行（无控制台窗口）
+        r = subprocess.run(
+            ["wscript.exe", "//Nologo", vbs_path],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+    finally:
+        try:
+            if os.path.exists(vbs_path):
+                os.remove(vbs_path)
+        except Exception:
+            pass
 
     # 校验是否真的创建成功
     if not os.path.exists(lnk_path):
@@ -182,15 +194,22 @@ os.makedirs(TTS_DIR, exist_ok=True)
 
 # ================= 读取配置 =================
 config = configparser.ConfigParser(interpolation=None)
+CONFIG_LOCK = threading.RLock()
 
 def safe_save_config():
     """原子级保存配置：防突然断电导致 config.ini 清零损坏"""
-    tmp_file = CONFIG_FILE + ".tmp"
+    tmp_file = f"{CONFIG_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            config.write(f)
-        os.replace(tmp_file, CONFIG_FILE)  # 原子替换，绝对安全
+        with CONFIG_LOCK:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                config.write(f)
+            os.replace(tmp_file, CONFIG_FILE)  # 原子替换，绝对安全
     except Exception as e:
+        try:
+            if os.path.exists(tmp_file):
+                os.remove(tmp_file)
+        except Exception:
+            pass
         try:
             log_file_only(f"配置保存失败: {e}")
         except Exception:
@@ -801,10 +820,12 @@ def generate_alert_voice(force: bool = False, text: str = None, play_after: bool
 
     try:
         # 核心防御：清空积压队列（防抖）。如果用户狂点“试听”，直接丢弃旧任务，只执行最后一次
-        while not TTS_REQ_Q.empty():
+        while True:
             try:
                 TTS_REQ_Q.get_nowait()
                 TTS_REQ_Q.task_done()
+            except queue.Empty:
+                break
             except Exception:
                 break
 
@@ -862,17 +883,28 @@ Shortcut.WindowStyle = 1
 
     vbs += 'Shortcut.Save\n'
 
-    vbs_path = os.path.join(tempfile.gettempdir(), "sms_desktop_shortcut.vbs")
-    with open(vbs_path, "w", encoding="mbcs") as f:
-        f.write(vbs)
-
-    # 只执行一次
-    r = subprocess.run(
-        ["cscript.exe", "//Nologo", vbs_path],
-        capture_output=True,
-        text=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    vbs_path = os.path.join(
+        tempfile.gettempdir(),
+        f"sms_desktop_shortcut_{os.getpid()}_{threading.get_ident()}.vbs"
     )
+    try:
+        with open(vbs_path, "w", encoding="mbcs") as f:
+            f.write(vbs)
+
+        # 只执行一次
+        r = subprocess.run(
+            ["cscript.exe", "//Nologo", vbs_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    finally:
+        try:
+            if os.path.exists(vbs_path):
+                os.remove(vbs_path)
+        except Exception:
+            pass
 
     # 校验必须在函数内部
     if not os.path.exists(lnk_path):
@@ -4161,7 +4193,7 @@ def open_cloud_control_window():
     def _generate_random_secret():
         # 生成 16 位包含大小写字母和数字的随机密码
         chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        new_pwd = "".join(random.choice(chars) for _ in range(16))
+        new_pwd = "".join(secrets.choice(chars) for _ in range(16))
         
         # 清除占位符状态并赋值
         secret_placeholder_active["value"] = False
@@ -4279,7 +4311,10 @@ def open_cloud_control_window():
 def open_log_dir():
     log_path = os.path.abspath(LOG_DIR)
     if os.path.exists(log_path):
-        os.startfile(log_path)   # Windows 下直接打开文件夹
+        try:
+            os.startfile(log_path)   # Windows 下直接打开文件夹
+        except Exception as e:
+            ui_messagebox("error", "打开日志失败", f"无法打开日志目录：\n{e}")
     else:
         ui_messagebox("warning", "提示", "日志目录不存在")
 
@@ -5096,13 +5131,19 @@ def show_call_popup(caller_num):
 
         def _answer():
             global serial_obj, serial_lock, ring_timeout_target
+            sent = False
+            err_msg = "串口未连接"
             with serial_lock:
                 if serial_obj is not None and serial_obj.is_open:
                     try:
                         serial_obj.write(b"ATA\r\n")
                         serial_obj.flush()
-                    except Exception:
-                        pass
+                        sent = True
+                    except Exception as e:
+                        err_msg = str(e) or e.__class__.__name__
+            if not sent:
+                port_ui(f"📞 接听失败：{err_msg}", "warning")
+                return
             port_ui("📞 已发送接听指令 (ATA)", "normal")
             
             # 将状态切换为“通话中”，并设为 -1.0 激活免疫状态
@@ -5120,13 +5161,19 @@ def show_call_popup(caller_num):
 
         def _hangup():
             global serial_obj, serial_lock
+            sent = False
+            err_msg = "串口未连接"
             with serial_lock:
                 if serial_obj is not None and serial_obj.is_open:
                     try:
                         serial_obj.write(b"ATH\r\n")
                         serial_obj.flush()
-                    except Exception:
-                        pass
+                        sent = True
+                    except Exception as e:
+                        err_msg = str(e) or e.__class__.__name__
+            if not sent:
+                port_ui(f"📞 挂断失败：{err_msg}", "warning")
+                return
             port_ui("📞 已发送挂机指令 (ATH)", "normal")
             close_call_popup()
 
@@ -5495,8 +5542,20 @@ def read_serial():
                     if ring_timeout_target != -1.0:
                         ring_timeout_target = time.monotonic() + 12.0
 
-                # ================= 解析真实挂断 (NO CARRIER / BUSY / NO ANSWER) =================
-                if "NO CARRIER" in line or "BUSY" in line or "NO ANSWER" in line:
+                # ================= 解析真实挂断 (NO CARRIER / BUSY / NO ANSWER / 兼容 VoLTE) =================
+                cie_line = re.sub(r"\s+", "", line).upper()
+                is_hangup_event = (
+                    "NO CARRIER" in line
+                    or "BUSY" in line
+                    or "NO ANSWER" in line
+                    or ("+CIEV:" in cie_line and '"CALL",0' in cie_line)
+                )
+                call_was_active = (
+                    ring_timeout_target != 0.0
+                    or bool(current_dial_num)
+                    or (current_call_popup is not None)
+                )
+                if is_hangup_event and call_was_active:
                     ring_timeout_target = 0.0  
                     current_dial_num = ""      # 电话挂断时，清空主动呼出记录
                     
