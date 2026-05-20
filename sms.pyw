@@ -23,7 +23,9 @@
 
 # ---- 标准库 ----
 import asyncio
+import base64
 import configparser
+import hashlib
 import hmac
 import json
 import os
@@ -36,6 +38,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import winsound
 import webbrowser
@@ -77,7 +80,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.0"  # 软件版本号
+APP_VERSION = "3.6.1"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -196,6 +199,47 @@ os.makedirs(TTS_DIR, exist_ok=True)
 config = configparser.ConfigParser(interpolation=None)
 CONFIG_LOCK = threading.RLock()
 
+# 三方推送默认配置
+THIRD_PUSH_SMS_TEMPLATE = "收到短信：\n{msg}"
+THIRD_PUSH_CALL_TEMPLATE = "{msg}"
+THIRD_PUSH_DEFAULTS = {
+    "enabled": "0",
+    "sms_enabled": "1",
+    "call_enabled": "1",
+    "notify_type": "[]",
+    "custom_post_url": "",
+    "custom_post_content_type": "application/json",
+    "custom_post_body": '{"title":"短信提醒","desp":"{msg}"}',
+    "telegram_api": "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage",
+    "telegram_chat_id": "",
+    "pushdeer_api": "https://api2.pushdeer.com/message/push",
+    "pushdeer_key": "",
+    "bark_api": "https://api.day.app",
+    "bark_key": "",
+    "dingtalk_webhook": "",
+    "dingtalk_secret": "",
+    "dingtalk_keyword": "",
+    "feishu_webhook": "",
+    "wecom_webhook": "",
+    "pushover_api_token": "",
+    "pushover_user_key": "",
+    "inotify_api": "",
+    "next_smtp_proxy_api": "",
+    "next_smtp_proxy_user": "",
+    "next_smtp_proxy_password": "",
+    "next_smtp_proxy_host": "smtp-mail.outlook.com",
+    "next_smtp_proxy_port": "587",
+    "next_smtp_proxy_form_name": "Air724UG",
+    "next_smtp_proxy_to_email": "",
+    "next_smtp_proxy_subject": "来自 Air724UG 的通知",
+    "gotify_api": "",
+    "gotify_title": "Air724UG",
+    "gotify_priority": "8",
+    "gotify_token": "",
+    "serverchan_title": "来自 Air724UG 的通知",
+    "serverchan_api": "",
+}
+
 def safe_save_config():
     """原子级保存配置：防突然断电导致 config.ini 清零损坏"""
     tmp_file = f"{CONFIG_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -254,6 +298,9 @@ if not os.path.exists(CONFIG_FILE):
         "reconnect_interval": "5",
         "auto_upload": "0",
     }
+
+    # 三方推送
+    config["third_push"] = THIRD_PUSH_DEFAULTS.copy()
 
     safe_save_config()
 
@@ -376,6 +423,185 @@ def refresh_cloud_control_settings_from_config():
     except Exception:
         CLOUD_AUTO_UPLOAD = False
 
+# ===== 三方推送配置 =====
+THIRD_PUSH_CHANNELS = [
+    ("dingtalk", "钉钉"),
+    ("wecom", "企业微信"),
+    ("feishu", "飞书"),
+    ("custom_post", "自定义POST"),
+    ("telegram", "Telegram"),
+    ("pushdeer", "PushDeer"),
+    ("bark", "Bark"),
+    ("pushover", "Pushover"),
+    ("inotify", "Inotify"),
+    ("next-smtp-proxy", "next-smtp-proxy"),
+    ("gotify", "Gotify"),
+    ("serverchan", "Server酱"),
+]
+THIRD_PUSH_CHANNEL_LABELS = dict(THIRD_PUSH_CHANNELS)
+THIRD_PUSH_SETTINGS_KEYS = [
+    k for k in THIRD_PUSH_DEFAULTS
+    if k not in ("enabled", "sms_enabled", "call_enabled", "notify_type")
+]
+THIRD_PUSH_REQUIRED_FIELDS = {
+    "dingtalk": (("dingtalk_webhook", "DINGTALK_WEBHOOK"),),
+    "wecom": (("wecom_webhook", "WECOM_WEBHOOK"),),
+    "feishu": (("feishu_webhook", "FEISHU_WEBHOOK"),),
+    "custom_post": (("custom_post_url", "CUSTOM_POST_URL"),),
+    "telegram": (("telegram_api", "TELEGRAM_API"), ("telegram_chat_id", "TELEGRAM_CHAT_ID")),
+    "pushdeer": (("pushdeer_api", "PUSHDEER_API"), ("pushdeer_key", "PUSHDEER_KEY")),
+    "bark": (("bark_api", "BARK_API"), ("bark_key", "BARK_KEY")),
+    "pushover": (("pushover_api_token", "PUSHOVER_API_TOKEN"), ("pushover_user_key", "PUSHOVER_USER_KEY")),
+    "inotify": (("inotify_api", "INOTIFY_API"),),
+    "next-smtp-proxy": (
+        ("next_smtp_proxy_api", "NEXT_SMTP_PROXY_API"),
+        ("next_smtp_proxy_user", "NEXT_SMTP_PROXY_USER"),
+        ("next_smtp_proxy_password", "NEXT_SMTP_PROXY_PASSWORD"),
+        ("next_smtp_proxy_host", "NEXT_SMTP_PROXY_HOST"),
+        ("next_smtp_proxy_port", "NEXT_SMTP_PROXY_PORT"),
+        ("next_smtp_proxy_to_email", "NEXT_SMTP_PROXY_TO_EMAIL"),
+    ),
+    "gotify": (("gotify_api", "GOTIFY_API"), ("gotify_token", "GOTIFY_TOKEN")),
+    "serverchan": (("serverchan_api", "SERVERCHAN_API"), ("serverchan_title", "SERVERCHAN_TITLE")),
+}
+
+def ensure_third_push_config(save=False):
+    changed = False
+    if not config.has_section("third_push"):
+        config["third_push"] = {}
+        changed = True
+    if config.has_option("third_push", "message_template"):
+        config.remove_option("third_push", "message_template")
+        changed = True
+    for key, value in THIRD_PUSH_DEFAULTS.items():
+        if not config.has_option("third_push", key):
+            config.set("third_push", key, value)
+            changed = True
+    if changed and save:
+        try:
+            safe_save_config()
+        except Exception:
+            pass
+
+def _parse_third_push_channels(raw: str):
+    channels = []
+    raw = (raw or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, str):
+                parsed = [parsed]
+        except Exception:
+            parsed = [x.strip() for x in re.split(r"[|,，\s]+", raw) if x.strip()]
+        if isinstance(parsed, (list, tuple)):
+            for item in parsed:
+                ch = str(item).strip()
+                if ch in THIRD_PUSH_CHANNEL_LABELS and ch not in channels:
+                    channels.append(ch)
+    return channels
+
+def _coerce_text_list(value):
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    result = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            result.append(text)
+    return result
+
+def refresh_third_push_settings_from_config():
+    global THIRD_PUSH_ENABLED, THIRD_PUSH_SMS_ENABLED, THIRD_PUSH_CALL_ENABLED
+    global THIRD_PUSH_TYPES, THIRD_PUSH_SETTINGS
+
+    try:
+        config.read(CONFIG_FILE, encoding="utf-8")
+    except Exception:
+        pass
+
+    ensure_third_push_config(save=True)
+
+    try:
+        THIRD_PUSH_ENABLED = config.getboolean(
+            "third_push",
+            "enabled",
+            fallback=THIRD_PUSH_DEFAULTS["enabled"] == "1"
+        )
+    except Exception:
+        THIRD_PUSH_ENABLED = THIRD_PUSH_DEFAULTS["enabled"] == "1"
+
+    try:
+        THIRD_PUSH_SMS_ENABLED = config.getboolean(
+            "third_push",
+            "sms_enabled",
+            fallback=THIRD_PUSH_DEFAULTS["sms_enabled"] == "1"
+        )
+    except Exception:
+        THIRD_PUSH_SMS_ENABLED = THIRD_PUSH_DEFAULTS["sms_enabled"] == "1"
+
+    try:
+        THIRD_PUSH_CALL_ENABLED = config.getboolean(
+            "third_push",
+            "call_enabled",
+            fallback=THIRD_PUSH_DEFAULTS["call_enabled"] == "1"
+        )
+    except Exception:
+        THIRD_PUSH_CALL_ENABLED = THIRD_PUSH_DEFAULTS["call_enabled"] == "1"
+
+    THIRD_PUSH_TYPES = _parse_third_push_channels(
+        config.get("third_push", "notify_type", fallback="[]")
+    )
+
+    THIRD_PUSH_SETTINGS = {}
+    for key in THIRD_PUSH_SETTINGS_KEYS:
+        THIRD_PUSH_SETTINGS[key] = config.get("third_push", key, fallback=THIRD_PUSH_DEFAULTS.get(key, ""))
+
+def save_third_push_setting(enabled=None, sms_enabled=None, call_enabled=None, notify_type=None, settings=None):
+    global THIRD_PUSH_ENABLED, THIRD_PUSH_SMS_ENABLED, THIRD_PUSH_CALL_ENABLED
+    global THIRD_PUSH_TYPES, THIRD_PUSH_SETTINGS
+
+    ensure_third_push_config(save=False)
+
+    if enabled is not None:
+        THIRD_PUSH_ENABLED = bool(enabled)
+    if sms_enabled is not None:
+        THIRD_PUSH_SMS_ENABLED = bool(sms_enabled)
+    if call_enabled is not None:
+        THIRD_PUSH_CALL_ENABLED = bool(call_enabled)
+    if notify_type is not None:
+        THIRD_PUSH_TYPES = [ch for ch in notify_type if ch in THIRD_PUSH_CHANNEL_LABELS]
+    if settings is not None:
+        THIRD_PUSH_SETTINGS = {key: str(settings.get(key, "")) for key in THIRD_PUSH_SETTINGS_KEYS}
+
+    try:
+        config.set("third_push", "enabled", "1" if THIRD_PUSH_ENABLED else "0")
+        config.set("third_push", "sms_enabled", "1" if THIRD_PUSH_SMS_ENABLED else "0")
+        config.set("third_push", "call_enabled", "1" if THIRD_PUSH_CALL_ENABLED else "0")
+        config.set("third_push", "notify_type", json.dumps(THIRD_PUSH_TYPES, ensure_ascii=False))
+        for key in THIRD_PUSH_SETTINGS_KEYS:
+            config.set("third_push", key, THIRD_PUSH_SETTINGS.get(key, ""))
+        safe_save_config()
+    except Exception:
+        pass
+
+def validate_third_push_settings(channels, settings):
+    missing = []
+    for channel in channels:
+        for key, label in THIRD_PUSH_REQUIRED_FIELDS.get(channel, ()):
+            if not str(settings.get(key, "")).strip():
+                missing.append(f"{_third_push_label(channel)}: {label}")
+    return missing
+
+ensure_third_push_config(save=True)
+THIRD_PUSH_ENABLED = False
+THIRD_PUSH_SMS_ENABLED = True
+THIRD_PUSH_CALL_ENABLED = False
+THIRD_PUSH_TYPES = []
+THIRD_PUSH_SETTINGS = {}
+refresh_third_push_settings_from_config()
+
 # ===== 短信字体（从配置读取）=====
 try:
     SMS_FONT_SIZE = config.getint("ui", "sms_font_size", fallback=30)
@@ -409,27 +635,32 @@ try:
         # 如果是 JSON 数组格式（新版存储），则用 json 解析
         if raw.startswith("[") and raw.endswith("]"):
             try:
-                KEYWORDS = json.loads(raw)
+                KEYWORDS = _coerce_text_list(json.loads(raw))
             except Exception:
                 # 解析失败兜底
-                KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+                KEYWORDS = _coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
         else:
             # 兼容老版本的 "|" 分隔格式
-            KEYWORDS = [x.strip() for x in raw.split("|") if x.strip()]
+            KEYWORDS = _coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
 except Exception:
     pass
 
 # ================= 防骚扰黑白名单（配置记忆） =================
 try:
-    CALL_FILTER_MODE = config.get("ui", "call_filter_mode", fallback="Disabled").strip()
+    _call_filter_mode_raw = config.get("ui", "call_filter_mode", fallback="Disabled").strip()
 except Exception:
-    CALL_FILTER_MODE = "Disabled"
+    _call_filter_mode_raw = "Disabled"
+CALL_FILTER_MODE = {
+    "disabled": "Disabled",
+    "whitelist": "Whitelist",
+    "blacklist": "Blacklist",
+}.get(_call_filter_mode_raw.lower(), "Disabled")
 
 CALL_WHITELIST = []
 try:
     raw = config.get("ui", "call_whitelist", fallback="").strip()
     if raw:
-        CALL_WHITELIST = json.loads(raw)
+        CALL_WHITELIST = _coerce_text_list(json.loads(raw))
 except Exception:
     pass
 
@@ -437,7 +668,7 @@ CALL_BLACKLIST = []
 try:
     raw = config.get("ui", "call_blacklist", fallback="").strip()
     if raw:
-        CALL_BLACKLIST = json.loads(raw)
+        CALL_BLACKLIST = _coerce_text_list(json.loads(raw))
 except Exception:
     pass
 
@@ -514,6 +745,7 @@ serial_debug_win = None
 serial_debug_text = None
 serial_debug_drop_count = 0
 cloud_control_win = None
+third_push_win = None
 cloud_ws_loop = None
 cloud_ws_conn = None
 cloud_ws_thread = None
@@ -532,6 +764,8 @@ serial_wakeup_event = threading.Event()
 TTS_LOCK = threading.Lock()
 TTS_REQ_Q = queue.Queue(maxsize=50)
 TTS_STOP = threading.Event()
+THIRD_PUSH_Q = queue.Queue(maxsize=200)
+third_push_stop = threading.Event()
 
 # ================= Tk 线程安全：UI 任务队列（所有 Tk 操作只能在主线程） =================
 UI_TASK_QUEUE = queue.Queue(maxsize=10000)
@@ -1018,13 +1252,13 @@ def open_sms_font_dialog():
         win.lift()
         win.after(0, lambda: win.lift())
 
-        # 关键：临时释放 grab，避免系统颜色对话框闪烁/抢焦点异常
+        # 临时释放 grab，避免系统颜色对话框闪烁/抢焦点异常
         try:
             win.grab_release()
         except Exception:
             pass
 
-        # 关键：指定 parent，避免额外的“左上角小框/幽灵窗口”
+        # 指定 parent，避免额外的“左上角小框/幽灵窗口”
         chosen = colorchooser.askcolor(parent=win, initialcolor=c, title="选择短信颜色")
 
         # 选完后把模态抓取恢复
@@ -1947,7 +2181,7 @@ def open_serial_debug_window():
                             serial_obj.flush()
                             _push_serial_debug(f">>> 发送: {cmd2}\\r\\n")
                             
-                            # 【极其关键】：发送完 CMGS 后，必须强行等 1 秒，让模组吐出 "> "
+                            # 发送完 CMGS 后，必须强行等 1 秒，让模组吐出 "> "
                             time.sleep(1.0)
                             
                             # 3. 发送 PDU 字符串，并追加 \x1a (Ctrl+Z) 结束符
@@ -2785,6 +3019,11 @@ def cleanup_and_exit():
             pass
 
         try:
+            third_push_stop.set()
+        except Exception:
+            pass
+
+        try:
             serial_stop_event.set()
             serial_wakeup_event.set()
         except Exception:
@@ -3186,6 +3425,771 @@ def show_sms_popup(msg: str):
         _do()
     else:
         ui_post(_do)
+
+# ================= 三方推送 =================
+def _third_push_label(channel: str) -> str:
+    return THIRD_PUSH_CHANNEL_LABELS.get(channel, channel)
+
+def _third_push_template_vars(raw_msg: str):
+    return {
+        "{msg}": raw_msg,
+        "{raw_msg}": raw_msg,
+        "{time}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "{port}": LOG_PREFIX,
+    }
+
+def _third_push_apply_vars(value, variables):
+    if isinstance(value, dict):
+        return {k: _third_push_apply_vars(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_third_push_apply_vars(v, variables) for v in value]
+    if isinstance(value, str):
+        return re.sub(
+            r"\{(?:msg|raw_msg|time|port)\}",
+            lambda m: variables.get(m.group(0), m.group(0)),
+            value
+        )
+    return value
+
+def _third_push_format_message(raw_msg: str, template: str = None) -> str:
+    text = template if template is not None else THIRD_PUSH_SMS_TEMPLATE
+    if not str(text or "").strip():
+        text = "{msg}"
+    return str(_third_push_apply_vars(str(text), _third_push_template_vars(raw_msg))).strip()
+
+def _third_push_http_request(url, method="POST", headers=None, data=None, timeout=15):
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", f"Air724UG-SMS/{APP_VERSION}")
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(4096).decode("utf-8", "replace")
+            return True, resp.getcode(), body
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(4096).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return False, e.code, body
+    except Exception as e:
+        return False, None, str(e)
+
+def _third_push_api_ok(channel: str, http_ok: bool, code, body: str):
+    if not http_ok or code is None or not (200 <= int(code) < 300):
+        return False, f"HTTP {code or '-'} {body}".strip()
+
+    text = (body or "").strip()
+    if not text:
+        return True, f"HTTP {code}"
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        return True, f"HTTP {code}"
+
+    if channel in ("dingtalk", "wecom"):
+        errcode = data.get("errcode", 0)
+        if str(errcode) not in ("0", ""):
+            return False, data.get("errmsg") or text
+    elif channel == "feishu":
+        errcode = data.get("code", data.get("StatusCode", 0))
+        if str(errcode) not in ("0", ""):
+            return False, data.get("msg") or data.get("StatusMessage") or text
+    elif channel in ("pushdeer", "serverchan"):
+        errcode = data.get("code", 0)
+        if str(errcode) not in ("0", ""):
+            return False, data.get("message") or data.get("msg") or text
+
+    return True, f"HTTP {code}"
+
+def _third_push_required(settings, key, label):
+    value = str(settings.get(key, "")).strip()
+    if not value:
+        return None, f"未配置 {label}"
+    return value, None
+
+def _third_push_send_channel(channel: str, message: str, settings: dict):
+    if channel == "custom_post":
+        url, err = _third_push_required(settings, "custom_post_url", "CUSTOM_POST_URL")
+        if err:
+            return False, err
+        content_type = str(settings.get("custom_post_content_type") or "application/json").strip()
+        body_raw = str(settings.get("custom_post_body") or "").strip()
+        variables = _third_push_template_vars(message)
+
+        headers = {"Content-Type": content_type or "application/json"}
+        try:
+            body_obj = json.loads(body_raw) if body_raw else {}
+            body_obj = _third_push_apply_vars(body_obj, variables)
+            if "json" in content_type.lower():
+                data = json.dumps(body_obj, ensure_ascii=False)
+            elif isinstance(body_obj, dict):
+                data = urllib.parse.urlencode(body_obj)
+            else:
+                data = urllib.parse.urlencode({"msg": message})
+        except Exception:
+            data = _third_push_apply_vars(body_raw or "{msg}", variables)
+
+        http_ok, code, body = _third_push_http_request(url, "POST", headers, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "telegram":
+        url, err = _third_push_required(settings, "telegram_api", "TELEGRAM_API")
+        if err:
+            return False, err
+        chat_id, err = _third_push_required(settings, "telegram_chat_id", "TELEGRAM_CHAT_ID")
+        if err:
+            return False, err
+        data = json.dumps({
+            "chat_id": chat_id,
+            "disable_web_page_preview": True,
+            "text": message,
+        }, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/json"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "pushdeer":
+        url, err = _third_push_required(settings, "pushdeer_api", "PUSHDEER_API")
+        if err:
+            return False, err
+        push_key, err = _third_push_required(settings, "pushdeer_key", "PUSHDEER_KEY")
+        if err:
+            return False, err
+        data = urllib.parse.urlencode({"pushkey": push_key, "type": "text", "text": message})
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/x-www-form-urlencoded"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "bark":
+        api, err = _third_push_required(settings, "bark_api", "BARK_API")
+        if err:
+            return False, err
+        key, err = _third_push_required(settings, "bark_key", "BARK_KEY")
+        if err:
+            return False, err
+        url = api.rstrip("/") + "/" + key.strip("/")
+        data = urllib.parse.urlencode({"body": message})
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/x-www-form-urlencoded"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "dingtalk":
+        url, err = _third_push_required(settings, "dingtalk_webhook", "DINGTALK_WEBHOOK")
+        if err:
+            return False, err
+        keyword = str(settings.get("dingtalk_keyword", "")).strip()
+        if keyword and keyword not in message:
+            message = f"{keyword}\n{message}"
+        secret = str(settings.get("dingtalk_secret", "")).strip()
+        if secret:
+            timestamp = str(int(time.time() * 1000))
+            sign_raw = f"{timestamp}\n{secret}".encode("utf-8")
+            digest = hmac.new(secret.encode("utf-8"), sign_raw, hashlib.sha256).digest()
+            sign = urllib.parse.quote_plus(base64.b64encode(digest).decode("utf-8"))
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}timestamp={timestamp}&sign={sign}"
+        data = json.dumps({"msgtype": "text", "text": {"content": message}}, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/json; charset=utf-8"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "feishu":
+        url, err = _third_push_required(settings, "feishu_webhook", "FEISHU_WEBHOOK")
+        if err:
+            return False, err
+        data = json.dumps({"msg_type": "text", "content": {"text": message}}, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/json; charset=utf-8"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "wecom":
+        url, err = _third_push_required(settings, "wecom_webhook", "WECOM_WEBHOOK")
+        if err:
+            return False, err
+        data = json.dumps({"msgtype": "text", "text": {"content": message}}, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/json; charset=utf-8"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "pushover":
+        token, err = _third_push_required(settings, "pushover_api_token", "PUSHOVER_API_TOKEN")
+        if err:
+            return False, err
+        user_key, err = _third_push_required(settings, "pushover_user_key", "PUSHOVER_USER_KEY")
+        if err:
+            return False, err
+        data = json.dumps({"token": token, "user": user_key, "message": message}, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(
+            "https://api.pushover.net/1/messages.json",
+            "POST",
+            {"Content-Type": "application/json; charset=utf-8"},
+            data
+        )
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "inotify":
+        api, err = _third_push_required(settings, "inotify_api", "INOTIFY_API")
+        if err:
+            return False, err
+        url = api.rstrip("/") + "/" + urllib.parse.quote(message, safe="")
+        http_ok, code, body = _third_push_http_request(url, "GET")
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "next-smtp-proxy":
+        url, err = _third_push_required(settings, "next_smtp_proxy_api", "NEXT_SMTP_PROXY_API")
+        if err:
+            return False, err
+        required = (
+            ("next_smtp_proxy_user", "NEXT_SMTP_PROXY_USER"),
+            ("next_smtp_proxy_password", "NEXT_SMTP_PROXY_PASSWORD"),
+            ("next_smtp_proxy_host", "NEXT_SMTP_PROXY_HOST"),
+            ("next_smtp_proxy_port", "NEXT_SMTP_PROXY_PORT"),
+            ("next_smtp_proxy_to_email", "NEXT_SMTP_PROXY_TO_EMAIL"),
+        )
+        values = {}
+        for key, label in required:
+            values[key], err = _third_push_required(settings, key, label)
+            if err:
+                return False, err
+        data = urllib.parse.urlencode({
+            "user": values["next_smtp_proxy_user"],
+            "password": values["next_smtp_proxy_password"],
+            "host": values["next_smtp_proxy_host"],
+            "port": values["next_smtp_proxy_port"],
+            "form_name": settings.get("next_smtp_proxy_form_name", ""),
+            "to_email": values["next_smtp_proxy_to_email"],
+            "subject": settings.get("next_smtp_proxy_subject", ""),
+            "text": message,
+        })
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/x-www-form-urlencoded"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "gotify":
+        api, err = _third_push_required(settings, "gotify_api", "GOTIFY_API")
+        if err:
+            return False, err
+        token, err = _third_push_required(settings, "gotify_token", "GOTIFY_TOKEN")
+        if err:
+            return False, err
+        try:
+            priority = int(str(settings.get("gotify_priority", "8")).strip() or "8")
+        except Exception:
+            priority = 8
+        url = api.rstrip("/") + "/message?token=" + urllib.parse.quote(token, safe="")
+        data = json.dumps({
+            "title": settings.get("gotify_title", "Air724UG"),
+            "message": message,
+            "priority": priority,
+        }, ensure_ascii=False)
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/json; charset=utf-8"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    if channel == "serverchan":
+        url, err = _third_push_required(settings, "serverchan_api", "SERVERCHAN_API")
+        if err:
+            return False, err
+        title, err = _third_push_required(settings, "serverchan_title", "SERVERCHAN_TITLE")
+        if err:
+            return False, err
+        data = urllib.parse.urlencode({"title": title, "desp": message})
+        http_ok, code, body = _third_push_http_request(url, "POST", {"Content-Type": "application/x-www-form-urlencoded"}, data)
+        return _third_push_api_ok(channel, http_ok, code, body)
+
+    return False, "未知通知通道"
+
+def _third_push_worker():
+    while not third_push_stop.is_set():
+        try:
+            item = THIRD_PUSH_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+
+        try:
+            raw_msg = item.get("message", "")
+            channels = item.get("channels") or []
+            settings = item.get("settings") or {}
+            template = item.get("template")
+            show_success = bool(item.get("show_success"))
+            show_result = bool(item.get("show_result"))
+            message = _third_push_format_message(raw_msg, template)
+
+            ok_channels = []
+            fail_infos = []
+            for channel in channels:
+                try:
+                    ok, info = _third_push_send_channel(channel, message, settings)
+                except Exception as e:
+                    ok, info = False, str(e)
+                label = _third_push_label(channel)
+                if ok:
+                    ok_channels.append(label)
+                else:
+                    fail_infos.append(f"{label}: {info}")
+
+            if fail_infos:
+                system_ui("📡 三方推送失败：" + "；".join(fail_infos), "normal")
+            elif show_success and ok_channels:
+                system_ui("📡 三方推送测试成功：" + "、".join(ok_channels), "normal")
+            if show_result:
+                show_third_push_test_result(ok_channels, fail_infos)
+        finally:
+            try:
+                THIRD_PUSH_Q.task_done()
+            except Exception:
+                pass
+
+def show_third_push_test_result(ok_channels, fail_infos):
+    def _do():
+        try:
+            parent = root
+            if third_push_win is not None and third_push_win.winfo_exists():
+                parent = third_push_win
+            if fail_infos:
+                messagebox.showerror(
+                    "测试推送失败",
+                    "三方推送测试失败：\n" + "\n".join(fail_infos),
+                    parent=parent
+                )
+            elif ok_channels:
+                messagebox.showinfo(
+                    "测试推送成功",
+                    "三方推送测试成功：\n" + "、".join(ok_channels),
+                    parent=parent
+                )
+            else:
+                messagebox.showwarning("测试推送失败", "没有可用的通知通道。", parent=parent)
+        except Exception:
+            pass
+    ui_post(_do)
+
+def enqueue_third_push(raw_msg: str, show_success=False, show_result=False, channels=None, settings=None, template=None, event_type="sms"):
+    if channels is None:
+        if not THIRD_PUSH_ENABLED:
+            return False
+        if event_type == "sms" and not THIRD_PUSH_SMS_ENABLED:
+            return False
+        if event_type == "call" and not THIRD_PUSH_CALL_ENABLED:
+            return False
+        channels = list(THIRD_PUSH_TYPES)
+    else:
+        channels = [ch for ch in channels if ch in THIRD_PUSH_CHANNEL_LABELS]
+
+    if not channels:
+        return False
+
+    if event_type == "call" and template is None:
+        template = THIRD_PUSH_CALL_TEMPLATE
+
+    payload = {
+        "message": str(raw_msg or ""),
+        "channels": channels,
+        "settings": dict(settings if settings is not None else THIRD_PUSH_SETTINGS),
+        "template": THIRD_PUSH_SMS_TEMPLATE if template is None else template,
+        "show_success": show_success,
+        "show_result": show_result,
+    }
+
+    try:
+        THIRD_PUSH_Q.put_nowait(payload)
+        return True
+    except queue.Full:
+        system_ui("📡 三方推送队列已满，本条通知未推送", "normal")
+        return False
+
+def open_third_push_window():
+    global third_push_win
+
+    refresh_third_push_settings_from_config()
+
+    if third_push_win is not None and third_push_win.winfo_exists():
+        third_push_win.deiconify()
+        third_push_win.lift()
+        third_push_win.focus_force()
+        return
+
+    third_push_win = tk.Toplevel(root)
+    third_push_win.withdraw()
+    third_push_win.title("三方推送")
+    third_push_win.geometry("780x640")
+    third_push_win.minsize(720, 560)
+
+    frame = ttk.Frame(third_push_win, padding=12)
+    frame.pack(fill="both", expand=True)
+    frame.grid_columnconfigure(0, weight=1)
+
+    enabled_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_ENABLED else 0)
+    sms_push_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_SMS_ENABLED else 0)
+    call_push_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_CALL_ENABLED else 0)
+    channel_vars = {}
+    channel_checks = {}
+    entry_vars = {}
+
+    def _make_check(parent, text, variable, command=None):
+        return ttk.Checkbutton(
+            parent,
+            text=text,
+            variable=variable,
+            command=command
+        )
+    push_opts = ttk.Frame(frame)
+    push_opts.grid(row=0, column=0, sticky="w", pady=(0, 8))
+    _make_check(push_opts, "启用三方推送", enabled_var).pack(side="left", padx=(0, 18))
+    _make_check(push_opts, "短信事件推送", sms_push_var).pack(side="left", padx=(0, 18))
+    _make_check(push_opts, "电话事件推送", call_push_var).pack(side="left")
+
+    channel_box = ttk.LabelFrame(frame, text="通知通道", padding=8)
+    channel_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+    for col in range(3):
+        channel_box.grid_columnconfigure(col, weight=1)
+
+    for idx, (channel, label) in enumerate(THIRD_PUSH_CHANNELS):
+        var = tk.BooleanVar(third_push_win, value=channel in THIRD_PUSH_TYPES)
+        channel_vars[channel] = var
+        chk = _make_check(
+            channel_box,
+            f"{label} ({channel})",
+            var
+        )
+        chk.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(4, 4))
+        channel_checks[channel] = chk
+
+    notebook = ttk.Notebook(frame)
+    notebook.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+    frame.grid_rowconfigure(2, weight=1)
+    tab_scroll_canvases = {}
+    tab_scrollbars = {}
+
+    def _tab(title):
+        outer = ttk.Frame(notebook)
+        notebook.add(outer, text=title)
+        outer.grid_rowconfigure(0, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        tab = ttk.Frame(canvas, padding=10)
+        canvas_window = canvas.create_window((0, 0), window=tab, anchor="nw")
+        tab_scroll_canvases[str(outer)] = canvas
+        tab_scrollbars[str(outer)] = scrollbar
+        tab._scroll_canvas = canvas
+        tab._outer_tab = outer
+
+        def _sync_scroll_region(_event=None):
+            try:
+                bbox = canvas.bbox("all")
+                canvas.configure(scrollregion=bbox)
+                if not bbox:
+                    return
+                content_h = bbox[3] - bbox[1]
+                view_h = canvas.winfo_height()
+                if view_h > 1 and content_h <= view_h + 1:
+                    canvas.yview_moveto(0)
+                    scrollbar.grid_remove()
+                else:
+                    scrollbar.grid(row=0, column=1, sticky="ns")
+            except Exception:
+                pass
+
+        def _sync_tab_width(event):
+            try:
+                canvas.itemconfigure(canvas_window, width=event.width)
+                canvas.after_idle(_sync_scroll_region)
+            except Exception:
+                pass
+
+        tab.bind("<Configure>", _sync_scroll_region)
+        canvas.bind("<Configure>", _sync_tab_width)
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_columnconfigure(1, weight=1)
+        return tab
+
+    def _point_in_widget(widget, event):
+        try:
+            x1 = widget.winfo_rootx()
+            y1 = widget.winfo_rooty()
+            x2 = x1 + widget.winfo_width()
+            y2 = y1 + widget.winfo_height()
+            return x1 <= event.x_root <= x2 and y1 <= event.y_root <= y2
+        except Exception:
+            return False
+
+    def _scroll_current_tab(event):
+        if not _point_in_widget(notebook, event):
+            return None
+        try:
+            selected = notebook.select()
+            canvas = tab_scroll_canvases.get(str(notebook.nametowidget(selected)))
+            if canvas is None:
+                return None
+            bbox = canvas.bbox("all")
+            if not bbox:
+                return None
+            content_h = bbox[3] - bbox[1]
+            if content_h <= canvas.winfo_height() + 1:
+                canvas.yview_moveto(0)
+                return "break"
+            if getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            else:
+                delta = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(delta * 3, "units")
+            return "break"
+        except Exception:
+            return None
+
+    third_push_win.bind("<MouseWheel>", _scroll_current_tab)
+    third_push_win.bind("<Button-4>", _scroll_current_tab)
+    third_push_win.bind("<Button-5>", _scroll_current_tab)
+
+    def _entry(parent, row, label, key, width=64, show=None):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        var = tk.StringVar(parent, value=THIRD_PUSH_SETTINGS.get(key, ""))
+        entry_vars[key] = var
+        ent = ttk.Entry(parent, textvariable=var, width=width, show=show)
+        ent.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
+        return ent
+
+    def _group(parent, row, title, tip=""):
+        box = ttk.LabelFrame(parent, text=title, padding=8)
+        box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        box.grid_columnconfigure(1, weight=1)
+        if tip:
+            ttk.Label(box, text=tip, foreground="#666666").grid(
+                row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
+            )
+            box._next_row = 1
+        else:
+            box._next_row = 0
+        return box
+
+    tab_common = _tab("常用")
+    g_dingtalk = _group(tab_common, 0, "钉钉 (dingtalk) 需要填写", "如果机器人用了关键词安全设置，请把关键词填到 DINGTALK_KEYWORD；加签才需要 Secret。")
+    _entry(g_dingtalk, g_dingtalk._next_row, "DINGTALK_WEBHOOK：", "dingtalk_webhook")
+    _entry(g_dingtalk, g_dingtalk._next_row + 1, "DINGTALK_SECRET：", "dingtalk_secret")
+    _entry(g_dingtalk, g_dingtalk._next_row + 2, "DINGTALK_KEYWORD：", "dingtalk_keyword")
+
+    g_wecom = _group(tab_common, 1, "企业微信 (wecom) 需要填写")
+    _entry(g_wecom, g_wecom._next_row, "WECOM_WEBHOOK：", "wecom_webhook")
+
+    g_feishu = _group(tab_common, 2, "飞书 (feishu) 需要填写")
+    _entry(g_feishu, g_feishu._next_row, "FEISHU_WEBHOOK：", "feishu_webhook")
+
+    tab_http = _tab("HTTP")
+    g_custom = _group(tab_http, 0, "自定义 POST (custom_post) 需要填写", "Body 里的 {msg} 会替换成推送内容。")
+    _entry(g_custom, g_custom._next_row, "CUSTOM_POST_URL：", "custom_post_url")
+    _entry(g_custom, g_custom._next_row + 1, "CUSTOM_POST_CONTENT_TYPE：", "custom_post_content_type")
+    ttk.Label(g_custom, text="CUSTOM_POST_BODY：").grid(row=g_custom._next_row + 2, column=0, sticky="nw", pady=4)
+    custom_body_text = tk.Text(g_custom, height=4, width=64, wrap="word")
+    custom_body_text.grid(row=g_custom._next_row + 2, column=1, sticky="ew", pady=4, padx=(8, 0))
+    custom_body_text.insert("1.0", THIRD_PUSH_SETTINGS.get("custom_post_body", ""))
+
+    g_telegram = _group(tab_http, 1, "Telegram (telegram) 需要填写", "TELEGRAM_API 必须填写完整 URL，例如 https://api.telegram.org/bot真实TOKEN/sendMessage。")
+    _entry(g_telegram, g_telegram._next_row, "TELEGRAM_API：", "telegram_api")
+    _entry(g_telegram, g_telegram._next_row + 1, "TELEGRAM_CHAT_ID：", "telegram_chat_id")
+
+    g_pushdeer = _group(tab_http, 2, "PushDeer (pushdeer) 需要填写")
+    _entry(g_pushdeer, g_pushdeer._next_row, "PUSHDEER_API：", "pushdeer_api")
+    _entry(g_pushdeer, g_pushdeer._next_row + 1, "PUSHDEER_KEY：", "pushdeer_key")
+
+    g_bark = _group(tab_http, 3, "Bark (bark) 需要填写")
+    _entry(g_bark, g_bark._next_row, "BARK_API：", "bark_api")
+    _entry(g_bark, g_bark._next_row + 1, "BARK_KEY：", "bark_key")
+
+    g_inotify = _group(tab_http, 4, "Inotify (inotify) 需要填写")
+    _entry(g_inotify, g_inotify._next_row, "INOTIFY_API：", "inotify_api")
+
+    tab_more = _tab("更多")
+    g_pushover = _group(tab_more, 0, "Pushover (pushover) 需要填写")
+    _entry(g_pushover, g_pushover._next_row, "PUSHOVER_API_TOKEN：", "pushover_api_token")
+    _entry(g_pushover, g_pushover._next_row + 1, "PUSHOVER_USER_KEY：", "pushover_user_key")
+
+    g_gotify = _group(tab_more, 1, "Gotify (gotify) 需要填写")
+    _entry(g_gotify, g_gotify._next_row, "GOTIFY_API：", "gotify_api")
+    _entry(g_gotify, g_gotify._next_row + 1, "GOTIFY_TOKEN：", "gotify_token")
+    _entry(g_gotify, g_gotify._next_row + 2, "GOTIFY_TITLE：", "gotify_title")
+    _entry(g_gotify, g_gotify._next_row + 3, "GOTIFY_PRIORITY：", "gotify_priority")
+
+    g_serverchan = _group(tab_more, 2, "Server酱 (serverchan) 需要填写")
+    _entry(g_serverchan, g_serverchan._next_row, "SERVERCHAN_API：", "serverchan_api")
+    _entry(g_serverchan, g_serverchan._next_row + 1, "SERVERCHAN_TITLE：", "serverchan_title")
+
+    tab_smtp = _tab("SMTP代理")
+    g_smtp = _group(tab_smtp, 0, "next-smtp-proxy (next-smtp-proxy) 需要填写")
+    _entry(g_smtp, g_smtp._next_row, "NEXT_SMTP_PROXY_API：", "next_smtp_proxy_api")
+    _entry(g_smtp, g_smtp._next_row + 1, "NEXT_SMTP_PROXY_USER：", "next_smtp_proxy_user")
+    _entry(g_smtp, g_smtp._next_row + 2, "NEXT_SMTP_PROXY_PASSWORD：", "next_smtp_proxy_password", show="*")
+    _entry(g_smtp, g_smtp._next_row + 3, "NEXT_SMTP_PROXY_HOST：", "next_smtp_proxy_host")
+    _entry(g_smtp, g_smtp._next_row + 4, "NEXT_SMTP_PROXY_PORT：", "next_smtp_proxy_port")
+    _entry(g_smtp, g_smtp._next_row + 5, "NEXT_SMTP_PROXY_FORM_NAME：", "next_smtp_proxy_form_name")
+    _entry(g_smtp, g_smtp._next_row + 6, "NEXT_SMTP_PROXY_TO_EMAIL：", "next_smtp_proxy_to_email")
+    _entry(g_smtp, g_smtp._next_row + 7, "NEXT_SMTP_PROXY_SUBJECT：", "next_smtp_proxy_subject")
+
+    channel_param_groups = {
+        "dingtalk": g_dingtalk,
+        "wecom": g_wecom,
+        "feishu": g_feishu,
+        "custom_post": g_custom,
+        "telegram": g_telegram,
+        "pushdeer": g_pushdeer,
+        "bark": g_bark,
+        "inotify": g_inotify,
+        "pushover": g_pushover,
+        "gotify": g_gotify,
+        "serverchan": g_serverchan,
+        "next-smtp-proxy": g_smtp,
+    }
+
+    def _focus_channel_params(channel):
+        group = channel_param_groups.get(channel)
+        if group is None:
+            return
+        tab = group.master
+        try:
+            notebook.select(tab._outer_tab)
+            canvas = tab._scroll_canvas
+            third_push_win.update_idletasks()
+            bbox = canvas.bbox("all")
+            if bbox:
+                total_h = max(1, bbox[3] - bbox[1])
+                target_y = max(0, group.winfo_y() - 8)
+                canvas.yview_moveto(min(1.0, target_y / total_h))
+        except Exception:
+            pass
+
+    for channel, chk in channel_checks.items():
+        chk.configure(command=lambda ch=channel: _focus_channel_params(ch))
+
+    def _bind_tab_mousewheel(widget):
+        try:
+            widget.bind("<MouseWheel>", _scroll_current_tab, add="+")
+            widget.bind("<Button-4>", _scroll_current_tab, add="+")
+            widget.bind("<Button-5>", _scroll_current_tab, add="+")
+        except Exception:
+            pass
+        try:
+            for child in widget.winfo_children():
+                _bind_tab_mousewheel(child)
+        except Exception:
+            pass
+
+    _bind_tab_mousewheel(notebook)
+
+    def _collect_form(validate=True):
+        selected = [channel for channel, var in channel_vars.items() if var.get()]
+        if validate and bool(enabled_var.get()) and not selected:
+            messagebox.showerror("错误", "启用三方推送时，请至少选择一个通知通道。", parent=third_push_win)
+            return None
+
+        settings = {key: var.get().strip() for key, var in entry_vars.items()}
+        settings["custom_post_body"] = custom_body_text.get("1.0", "end-1c").strip()
+
+        if validate and "custom_post" in selected:
+            content_type = settings.get("custom_post_content_type", "")
+            if "json" in content_type.lower() and settings.get("custom_post_body"):
+                try:
+                    json.loads(settings["custom_post_body"])
+                except Exception as e:
+                    messagebox.showerror("错误", f"自定义 POST Body 不是有效 JSON：\n{e}", parent=third_push_win)
+                    return None
+
+        if validate:
+            missing = validate_third_push_settings(selected, settings)
+            if missing:
+                messagebox.showerror(
+                    "缺少参数",
+                    "请先填写所选通道的必填参数：\n\n" + "\n".join(missing),
+                    parent=third_push_win
+                )
+                first_channel = None
+                for item in missing:
+                    label = item.split(":", 1)[0]
+                    for channel in selected:
+                        if _third_push_label(channel) == label:
+                            first_channel = channel
+                            break
+                    if first_channel:
+                        break
+                if first_channel:
+                    _focus_channel_params(first_channel)
+                return None
+
+        return (
+            bool(enabled_var.get()),
+            bool(sms_push_var.get()),
+            bool(call_push_var.get()),
+            selected,
+            settings
+        )
+
+    def _save_only():
+        values = _collect_form(validate=True)
+        if values is None:
+            return
+        enabled, sms_enabled, call_enabled, selected, settings = values
+        save_third_push_setting(
+            enabled=enabled,
+            sms_enabled=sms_enabled,
+            call_enabled=call_enabled,
+            notify_type=selected,
+            settings=settings
+        )
+        messagebox.showinfo("配置已保存", "三方推送配置已成功保存！", parent=third_push_win)
+        system_ui(f"📡 三方推送：{'已开启' if enabled else '已关闭'}，通道：{', '.join(selected) or '未选择'}", "normal")
+
+    def _test_push():
+        values = _collect_form(validate=True)
+        if values is None:
+            return
+        _enabled, sms_enabled, call_enabled, selected, settings = values
+        if not selected:
+            messagebox.showwarning("提示", "请先选择至少一个通知通道。", parent=third_push_win)
+            return
+        save_third_push_setting(
+            enabled=_enabled,
+            sms_enabled=sms_enabled,
+            call_enabled=call_enabled,
+            notify_type=selected,
+            settings=settings
+        )
+        queued = enqueue_third_push(
+            "这是一条三方推送测试短信。",
+            show_success=True,
+            show_result=True,
+            channels=selected,
+            settings=settings
+        )
+        if queued:
+            system_ui("📡 三方推送配置已保存，测试已加入队列", "normal")
+        else:
+            messagebox.showerror("测试推送失败", "三方推送队列已满，测试未发送。", parent=third_push_win)
+
+    def _on_close():
+        global third_push_win
+        try:
+            third_push_win.destroy()
+        except Exception:
+            pass
+        third_push_win = None
+
+    btn_frame = ttk.Frame(frame)
+    btn_frame.grid(row=3, column=0, sticky="e")
+    ttk.Button(btn_frame, text="保存", width=10, command=_save_only).pack(side="left", padx=(0, 8))
+    ttk.Button(btn_frame, text="测试推送", width=10, command=_test_push).pack(side="left", padx=(0, 8))
+    ttk.Button(btn_frame, text="关闭", width=10, command=_on_close).pack(side="left")
+
+    third_push_win.protocol("WM_DELETE_WINDOW", _on_close)
+    third_push_win.bind("<Escape>", lambda _e: _on_close())
+
+    third_push_win.update_idletasks()
+    center_window(third_push_win, root)
+    third_push_win.deiconify()
+    third_push_win.lift()
+    third_push_win.focus_force()
+
+threading.Thread(target=_third_push_worker, daemon=True).start()
 
 # ================= 清空窗口 clear_window：永远线程安全 =================
 def clear_window():
@@ -4253,6 +5257,7 @@ def open_cloud_control_window():
         save_cloud_control_setting(
             enabled=enabled, url=url, reconnect_interval=interval, device_secret=secret, auto_upload=auto_upload
         )
+        messagebox.showinfo("配置已保存", "云端控制配置已成功保存！", parent=cloud_control_win)
         if enabled:
             restart_cloud_control(show_errors=True)
         else:
@@ -4679,7 +5684,7 @@ def schedule_auto_log_cleanup(restart: bool = True, first_delay_sec: int = 60):
         if not AUTO_LOG_CLEANUP:
             return
 
-        # 关键：root 不可用时不要 after
+        # root 不可用时不要 after
         if not tk_alive():
             AUTO_CLEANUP_AFTER_ID = None
             return
@@ -4715,7 +5720,7 @@ def _http_get_json(url: str, timeout=8, retries=3):
 
     # 禁用系统代理（避免 v2rayng/system proxy 影响 urllib TLS）
     opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),          # 关键：空代理=不走系统代理
+        urllib.request.ProxyHandler({}),          # 空代理=不走系统代理
         urllib.request.HTTPSHandler(context=ctx)  # 保持 TLS 上下文
     )
 
@@ -5255,6 +6260,7 @@ def read_serial():
 
             play_alert()               
             show_sms_popup(full_msg)   
+            enqueue_third_push(full_msg)
         else:
             # ===== 未匹配关键词但也写入文件 =====
             if LOG_UNMATCHED_SMS and full_msg:
@@ -5398,7 +6404,7 @@ def read_serial():
                         except Exception:
                             _update_status()
 
-                    ui_post(_schedule)   # 关键：回主线程安排 after
+                    ui_post(_schedule)   # 回主线程安排 after
                 except Exception:
                     pass
 
@@ -5526,6 +6532,7 @@ def read_serial():
                         # (被拦截后就不会执行到这里，正常来电才会继续触发弹窗)                        
                         if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
                             port_ui(f"📞 收到来电：来自 {caller_num}", "normal")
+                            enqueue_third_push(f"收到来电：来自 {caller_num}", event_type="call")
                             set_status(f"🔔 响铃中：{caller_num}", "blue")
                             last_clip_num = caller_num
                             last_clip_time = now
@@ -6447,6 +7454,10 @@ fso.DeleteFile WScript.ScriptFullName
     # 1. 停止串口并释放互斥锁
     serial_running = False
     try:
+        third_push_stop.set()
+    except Exception:
+        pass
+    try:
         stop_cloud_control(update_status=False)
     except Exception:
         pass
@@ -6553,6 +7564,11 @@ settings_menu.add_command(
 settings_menu.add_command(
     label="云端控制",
     command=open_cloud_control_window
+)
+
+settings_menu.add_command(
+    label="三方推送",
+    command=open_third_push_window
 )
 
 settings_menu.add_command(
