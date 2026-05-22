@@ -54,11 +54,6 @@ import pyttsx3
 from PIL import Image
 from serial.tools import list_ports
 
-try:
-    import websockets
-except Exception:
-    websockets = None
-
 # ---- tkinter ----
 import tkinter as tk
 from tkinter import messagebox, ttk, colorchooser
@@ -80,7 +75,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.1"  # 软件版本号
+APP_VERSION = "3.6.2"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -352,6 +347,12 @@ if MODE not in ("auto", "manual"):
     MODE = "auto"
 MODE = "Auto" if MODE == "auto" else "Manual"
 
+# ===== 云端控制（WebSocket）依赖 =====
+try:
+    import websockets
+except Exception:
+    websockets = None
+
 # ===== 云端控制（WebSocket）配置 =====
 try:
     CLOUD_CONTROL_ENABLED = config.getboolean("cloud_control", "enabled", fallback=False)
@@ -379,7 +380,7 @@ try:
 except Exception:
     CLOUD_WS_RECONNECT_INTERVAL = 5
 
-# ===== 自动上传设备与日志开关 =====
+# ===== 主动公开设备开关 =====
 try:
     CLOUD_AUTO_UPLOAD = config.getboolean("cloud_control", "auto_upload", fallback=False)
 except Exception:
@@ -968,6 +969,23 @@ def set_autostart(enable: bool):
         ui_messagebox("error", "错误", f"设置开机自启失败：\n{e}")
 
 # ================= TTS语音播报 =================
+def cleanup_tts_alt_files():
+    """清理历史备用语音文件，避免 alert_alt_*.wav 长期堆积。"""
+    try:
+        current = os.path.abspath(TTS_FILE)
+        for name in os.listdir(TTS_DIR):
+            if not (name.startswith("alert_alt_") and name.endswith(".wav")):
+                continue
+            path = os.path.abspath(os.path.join(TTS_DIR, name))
+            if path == current:
+                continue
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def _tts_worker():
     global TTS_FILE
     while not TTS_STOP.is_set():
@@ -999,6 +1017,7 @@ def _tts_worker():
         try:
             with TTS_LOCK:
                 os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
+                cleanup_tts_alt_files()
                 tmp_path = TTS_FILE + ".tmp.wav"
                 
                 # 1：每次重新 init，避开 pyttsx3 长驻缓存的 Bug
@@ -3723,7 +3742,15 @@ def _third_push_worker():
                 else:
                     fail_infos.append(f"{label}: {info}")
 
-            if fail_infos:
+            if ok_channels and fail_infos:
+                system_ui(
+                    "📡 三方推送部分成功：成功="
+                    + "、".join(ok_channels)
+                    + "；失败="
+                    + "；".join(fail_infos),
+                    "normal"
+                )
+            elif fail_infos:
                 system_ui("📡 三方推送失败：" + "；".join(fail_infos), "normal")
             elif show_success and ok_channels:
                 system_ui("📡 三方推送测试成功：" + "、".join(ok_channels), "normal")
@@ -3741,7 +3768,11 @@ def show_third_push_test_result(ok_channels, fail_infos):
             parent = root
             if third_push_win is not None and third_push_win.winfo_exists():
                 parent = third_push_win
-            if fail_infos:
+            if ok_channels and fail_infos:
+                msg = "部分通道推送成功：\n" + "、".join(ok_channels) + "\n\n"
+                msg += "以下通道推送失败：\n" + "\n".join(fail_infos)
+                messagebox.showwarning("测试部分成功", msg, parent=parent)
+            elif fail_infos:
                 messagebox.showerror(
                     "测试推送失败",
                     "三方推送测试失败：\n" + "\n".join(fail_infos),
@@ -4248,14 +4279,12 @@ def _cloud_identity_payload():
     }
 
 async def _cloud_send_register(ws):
-    # ===== 如果关闭了主动上传，则保持隐身 =====
-    if not CLOUD_AUTO_UPLOAD:
-        _cloud_log("隐身模式：已跳过发送上线注册包")
-        return
-    # ===============================================
     payload = {
         "type": "device_login",
-        "event": "register",
+        "event": "register" if CLOUD_AUTO_UPLOAD else "hidden",
+        "public": bool(CLOUD_AUTO_UPLOAD),
+        "auto_upload": bool(CLOUD_AUTO_UPLOAD),
+        "hidden": not bool(CLOUD_AUTO_UPLOAD),
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timestamp": _cloud_now_ts(),
         **_cloud_identity_payload(),
@@ -4266,7 +4295,10 @@ async def _cloud_send_register(ws):
     }
     try:
         await ws.send(json.dumps(payload, ensure_ascii=False))
-        _cloud_log(f"已上报设备IMEI：{_cloud_runtime_imei()}")
+        if CLOUD_AUTO_UPLOAD:
+            _cloud_log(f"已上报设备IMEI：{_cloud_runtime_imei()}")
+        else:
+            _cloud_log(f"隐身模式：已注册路由IMEI（不公开设备列表，日志继续上传）：{_cloud_runtime_imei()}")
     except Exception as e:
         _cloud_log(f"上报设备身份失败：{e}")
 
@@ -4459,10 +4491,6 @@ def _schedule_cloud_serial_log_drain(loop, ws):
             cloud_serial_log_drain_scheduled = False
 
 def _cloud_send_serial_log(line: str):
-    # ===== 如果关闭了主动上传，则停止上传实时日志 =====
-    if not CLOUD_AUTO_UPLOAD:
-        return
-    # ==============================================
     text = str(line or "").strip()
     if not text:
         return
@@ -4841,11 +4869,15 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             set_cloud_status("🌐 重连中", "#b26a00")
             _cloud_log(f"连接异常：{err}")
 
-            # 加入 0 ~ 50 毫秒的随机抖动，打散海量设备并发重连的风暴
+            # 先精确等待配置的重连间隔，避免循环内随机抖动造成时间漂移。
             for _ in range(max(1, int(reconnect_interval)) * 10):
                 if cloud_stop_event.is_set():
                     break
-                await asyncio.sleep(0.1 + random.uniform(0, 0.05))
+                await asyncio.sleep(0.1)
+
+            # 末尾只抖动一次，打散海量设备并发重连风暴。
+            if not cloud_stop_event.is_set():
+                await asyncio.sleep(random.uniform(0, 0.5))
 
     cloud_ws_conn = None
     cloud_connected = False
@@ -5004,7 +5036,7 @@ def open_cloud_control_window():
     frame.pack(fill="both", expand=True)
     frame.grid_columnconfigure(1, weight=1)
 
-    # 改回最标准的 BooleanVar，并加入 command 触发实时同步
+    # 勾选框只作为表单状态；保存/连接/断开时再同步配置和运行态。
     enabled_var = tk.BooleanVar(cloud_control_win, value=CLOUD_CONTROL_ENABLED)
     auto_upload_var = tk.BooleanVar(cloud_control_win, value=CLOUD_AUTO_UPLOAD)
     
@@ -5017,10 +5049,7 @@ def open_cloud_control_window():
     cloud_control_win._secret_var = secret_var
     cloud_control_win._reconnect_var = reconnect_var
 
-    # ===== 实时同步复选框状态到 config.ini =====
-    def _on_enabled_toggle():
-        save_cloud_control_setting(enabled=enabled_var.get())
-
+    # ===== 主动公开设备可即时同步到当前连接 =====
     def _on_upload_toggle():
         was_public = CLOUD_AUTO_UPLOAD
         save_cloud_control_setting(auto_upload=auto_upload_var.get())
@@ -5029,7 +5058,6 @@ def open_cloud_control_window():
                 if cloud_connected and cloud_ws_loop is not None and cloud_ws_conn is not None:
                     asyncio.run_coroutine_threadsafe(_cloud_send_register(cloud_ws_conn), cloud_ws_loop)
             elif was_public:
-                _reset_cloud_serial_log_state()
                 _cloud_schedule_unregister("auto_upload_disabled")
         except Exception:
             pass
@@ -5038,13 +5066,12 @@ def open_cloud_control_window():
     top_opts_frame = ttk.Frame(frame)
     top_opts_frame.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-    # 绑定 command，实现点击即刻保存，同时去掉多余的 onvalue/offvalue
     ttk.Checkbutton(
-        top_opts_frame, text="启用云端控制", variable=enabled_var, command=_on_enabled_toggle
+        top_opts_frame, text="启用云端控制", variable=enabled_var
     ).pack(side="left", padx=(0, 20))
     
     ttk.Checkbutton(
-        top_opts_frame, text="主动公开设备与日志", variable=auto_upload_var, command=_on_upload_toggle
+        top_opts_frame, text="主动公开设备", variable=auto_upload_var, command=_on_upload_toggle
     ).pack(side="left")
 
     url_placeholder = "wss://example.com/ws"
@@ -6245,6 +6272,9 @@ def read_serial():
 
         full_msg = "".join([p for p in pending_parts if p]).strip()
 
+        if full_msg:
+            enqueue_third_push(full_msg)
+
         if full_msg and keyword_hit(full_msg):
             if pending_display_lines:
                 first = True
@@ -6260,7 +6290,6 @@ def read_serial():
 
             play_alert()               
             show_sms_popup(full_msg)   
-            enqueue_third_push(full_msg)
         else:
             # ===== 未匹配关键词但也写入文件 =====
             if LOG_UNMATCHED_SMS and full_msg:
@@ -6512,9 +6541,19 @@ def read_serial():
                                     break
 
                         now = time.monotonic()
+                        is_new_clip = (caller_num != last_clip_num) or (now - last_clip_time > 4.0)
+
+                        if is_new_clip:
+                            if blocked:
+                                enqueue_third_push(
+                                    f"收到来电：来自 {caller_num}（已拦截：{block_reason}）",
+                                    event_type="call"
+                                )
+                            else:
+                                enqueue_third_push(f"收到来电：来自 {caller_num}", event_type="call")
 
                         if blocked:
-                            if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
+                            if is_new_clip:
                                 port_ui(f"🚫 防骚扰拦截：拒接 {caller_num} ({block_reason})", "warning")
                                 last_clip_num = caller_num
                                 last_clip_time = now
@@ -6530,9 +6569,8 @@ def read_serial():
                             continue  # ⛔ 强行中断！阻止后续的弹窗、响铃和看门狗刷新！
                         
                         # (被拦截后就不会执行到这里，正常来电才会继续触发弹窗)                        
-                        if (caller_num != last_clip_num) or (now - last_clip_time > 4.0):
+                        if is_new_clip:
                             port_ui(f"📞 收到来电：来自 {caller_num}", "normal")
-                            enqueue_third_push(f"收到来电：来自 {caller_num}", event_type="call")
                             set_status(f"🔔 响铃中：{caller_num}", "blue")
                             last_clip_num = caller_num
                             last_clip_time = now
@@ -7369,6 +7407,7 @@ def restart_software():
         return
 
     # 先启动外部重启助手；只有这一步成功，才退出当前软件。
+    vbs_path = None
     try:
         if getattr(sys, 'frozen', False):
             exe_path = sys.executable
@@ -7426,7 +7465,11 @@ WshShell.Run {_vbs_string(command_line)}, 1, False
 Set fso = CreateObject("Scripting.FileSystemObject")
 fso.DeleteFile WScript.ScriptFullName
 '''
-        vbs_path = os.path.join(tempfile.gettempdir(), "sms_restart_helper.vbs")
+        # 多开同时重启时，PID + 线程 ID 可避免多个实例抢写同一个临时 VBS。
+        vbs_path = os.path.join(
+            tempfile.gettempdir(),
+            f"sms_restart_helper_{os.getpid()}_{threading.get_ident()}.vbs"
+        )
         with open(vbs_path, "w", encoding="mbcs") as f:
             f.write(vbs_code)
             
@@ -7438,6 +7481,12 @@ fso.DeleteFile WScript.ScriptFullName
             creationflags=0x08000000
         )
     except Exception as e:
+        try:
+            if vbs_path and os.path.exists(vbs_path):
+                os.remove(vbs_path)
+        except Exception:
+            pass
+
         err = f"重启尝试失败：{e}"
         log_file_only(err)
         try:
@@ -7603,3 +7652,4 @@ threading.Thread(target=read_serial, daemon=True).start()
 schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
 
 root.mainloop()
+
