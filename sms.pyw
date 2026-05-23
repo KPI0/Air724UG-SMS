@@ -75,7 +75,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.2"  # 软件版本号
+APP_VERSION = "3.6.3"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -2828,6 +2828,19 @@ def check_single_instance():
     app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     last_error = ctypes.windll.kernel32.GetLastError()
 
+    # 1. 优先判断是否被其他实例占用（183 已存在，5 拒绝访问/被管理员实例锁定）
+    if last_error in (183, 5):
+        if app_mutex:
+            try:
+                ctypes.windll.kernel32.CloseHandle(app_mutex)
+            except Exception:
+                pass
+        app_mutex = None
+        # 发现已有实例运行，弹出友好的系统原生提示框并立刻退出
+        ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
+        sys.exit(0)
+
+    # 2. 如果不是被占用，而是真的句柄创建失败（如系统资源耗尽），再做致命报错兜底
     if not app_mutex:
         ctypes.windll.user32.MessageBoxW(
             0,
@@ -2836,17 +2849,6 @@ def check_single_instance():
             0x10
         )
         sys.exit(1)
-    
-    # 183 已存在，5 拒绝访问（通常是被高权限的管理员实例锁定了）
-    if last_error in (183, 5):
-        try:
-            ctypes.windll.kernel32.CloseHandle(app_mutex)
-        except Exception:
-            pass
-        app_mutex = None
-        # 发现已有实例运行，弹出系统原生提示框并立刻退出
-        ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
-        sys.exit(0)
 
 def center_on_screen(win, w=None, h=None):
     """将窗口居中到屏幕（主窗口建议传入 w/h，避免 withdraw 状态取到 minsize）。"""
@@ -3830,35 +3832,129 @@ def open_third_push_window():
     refresh_third_push_settings_from_config()
 
     if third_push_win is not None and third_push_win.winfo_exists():
+        try:
+            sync_form = getattr(third_push_win, "_sync_form_from_globals", None)
+            if sync_form:
+                sync_form()
+        except Exception:
+            pass
         third_push_win.deiconify()
         third_push_win.lift()
         third_push_win.focus_force()
         return
 
+    channel_param_defs = {
+        "dingtalk": {
+            "tip": "如果机器人用了关键词安全设置，请填写 DINGTALK_KEYWORD；加签才需要 Secret。",
+            "fields": [
+                ("DINGTALK_WEBHOOK：", "dingtalk_webhook", "entry", None),
+                ("DINGTALK_SECRET：", "dingtalk_secret", "entry", None),
+                ("DINGTALK_KEYWORD：", "dingtalk_keyword", "entry", None),
+            ],
+        },
+        "wecom": {
+            "fields": [("WECOM_WEBHOOK：", "wecom_webhook", "entry", None)],
+        },
+        "feishu": {
+            "fields": [("FEISHU_WEBHOOK：", "feishu_webhook", "entry", None)],
+        },
+        "custom_post": {
+            "tip": "Body 里的 {msg} 会替换成推送内容。",
+            "fields": [
+                ("CUSTOM_POST_URL：", "custom_post_url", "entry", None),
+                ("CUSTOM_POST_CONTENT_TYPE：", "custom_post_content_type", "entry", None),
+                ("CUSTOM_POST_BODY：", "custom_post_body", "text", None),
+            ],
+        },
+        "telegram": {
+            "tip": "TELEGRAM_API 必须填写完整 URL，例如 https://api.telegram.org/bot真实TOKEN/sendMessage。",
+            "fields": [
+                ("TELEGRAM_API：", "telegram_api", "entry", None),
+                ("TELEGRAM_CHAT_ID：", "telegram_chat_id", "entry", None),
+            ],
+        },
+        "pushdeer": {
+            "fields": [
+                ("PUSHDEER_API：", "pushdeer_api", "entry", None),
+                ("PUSHDEER_KEY：", "pushdeer_key", "entry", None),
+            ],
+        },
+        "bark": {
+            "fields": [
+                ("BARK_API：", "bark_api", "entry", None),
+                ("BARK_KEY：", "bark_key", "entry", None),
+            ],
+        },
+        "inotify": {
+            "fields": [("INOTIFY_API：", "inotify_api", "entry", None)],
+        },
+        "pushover": {
+            "fields": [
+                ("PUSHOVER_API_TOKEN：", "pushover_api_token", "entry", None),
+                ("PUSHOVER_USER_KEY：", "pushover_user_key", "entry", None),
+            ],
+        },
+        "gotify": {
+            "fields": [
+                ("GOTIFY_API：", "gotify_api", "entry", None),
+                ("GOTIFY_TOKEN：", "gotify_token", "entry", None),
+                ("GOTIFY_TITLE：", "gotify_title", "entry", None),
+                ("GOTIFY_PRIORITY：", "gotify_priority", "entry", None),
+            ],
+        },
+        "serverchan": {
+            "fields": [
+                ("SERVERCHAN_API：", "serverchan_api", "entry", None),
+                ("SERVERCHAN_TITLE：", "serverchan_title", "entry", None),
+            ],
+        },
+        "next-smtp-proxy": {
+            "fields": [
+                ("NEXT_SMTP_PROXY_API：", "next_smtp_proxy_api", "entry", None),
+                ("NEXT_SMTP_PROXY_USER：", "next_smtp_proxy_user", "entry", None),
+                ("NEXT_SMTP_PROXY_PASSWORD：", "next_smtp_proxy_password", "entry", "*"),
+                ("NEXT_SMTP_PROXY_HOST：", "next_smtp_proxy_host", "entry", None),
+                ("NEXT_SMTP_PROXY_PORT：", "next_smtp_proxy_port", "entry", None),
+                ("NEXT_SMTP_PROXY_FORM_NAME：", "next_smtp_proxy_form_name", "entry", None),
+                ("NEXT_SMTP_PROXY_TO_EMAIL：", "next_smtp_proxy_to_email", "entry", None),
+                ("NEXT_SMTP_PROXY_SUBJECT：", "next_smtp_proxy_subject", "entry", None),
+            ],
+        },
+    }
+
     third_push_win = tk.Toplevel(root)
     third_push_win.withdraw()
     third_push_win.title("三方推送")
     third_push_win.geometry("780x640")
-    third_push_win.minsize(720, 560)
+    third_push_win.resizable(False, False)
 
     frame = ttk.Frame(third_push_win, padding=12)
     frame.pack(fill="both", expand=True)
     frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(2, weight=1)
 
     enabled_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_ENABLED else 0)
     sms_push_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_SMS_ENABLED else 0)
     call_push_var = tk.IntVar(third_push_win, value=1 if THIRD_PUSH_CALL_ENABLED else 0)
     channel_vars = {}
-    channel_checks = {}
-    entry_vars = {}
+    entry_vars = {
+        key: tk.StringVar(third_push_win, value=THIRD_PUSH_SETTINGS.get(key, ""))
+        for key in THIRD_PUSH_SETTINGS_KEYS
+    }
+    current_channel = {
+        "value": THIRD_PUSH_TYPES[0] if THIRD_PUSH_TYPES else THIRD_PUSH_CHANNELS[0][0]
+    }
+
+    third_push_win._enabled_var = enabled_var
+    third_push_win._sms_push_var = sms_push_var
+    third_push_win._call_push_var = call_push_var
+    third_push_win._channel_vars = channel_vars
+    third_push_win._entry_vars = entry_vars
+    third_push_win._custom_body_text = None
 
     def _make_check(parent, text, variable, command=None):
-        return ttk.Checkbutton(
-            parent,
-            text=text,
-            variable=variable,
-            command=command
-        )
+        return ttk.Checkbutton(parent, text=text, variable=variable, command=command)
+
     push_opts = ttk.Frame(frame)
     push_opts.grid(row=0, column=0, sticky="w", pady=(0, 8))
     _make_check(push_opts, "启用三方推送", enabled_var).pack(side="left", padx=(0, 18))
@@ -3870,252 +3966,140 @@ def open_third_push_window():
     for col in range(3):
         channel_box.grid_columnconfigure(col, weight=1)
 
+    body_frame = ttk.Frame(frame)
+    body_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+    body_frame.grid_columnconfigure(1, weight=1)
+    body_frame.grid_rowconfigure(0, weight=1)
+
+    list_box = ttk.LabelFrame(body_frame, text="参数页", padding=8)
+    list_box.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+    list_box.grid_rowconfigure(0, weight=1)
+
+    channel_list = tk.Listbox(list_box, width=16, height=14, exportselection=False)
+    channel_list.grid(row=0, column=0, sticky="ns")
+
+    param_box = ttk.LabelFrame(body_frame, text="参数", padding=10)
+    param_box.grid(row=0, column=1, sticky="nsew")
+    param_box.grid_columnconfigure(1, weight=1)
+
+    channel_index = {}
     for idx, (channel, label) in enumerate(THIRD_PUSH_CHANNELS):
+        channel_index[channel] = idx
+        channel_list.insert("end", label)
         var = tk.BooleanVar(third_push_win, value=channel in THIRD_PUSH_TYPES)
         channel_vars[channel] = var
         chk = _make_check(
             channel_box,
-            f"{label} ({channel})",
-            var
+            label,
+            var,
+            command=lambda ch=channel: _select_channel(ch)
         )
         chk.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(4, 4))
-        channel_checks[channel] = chk
 
-    notebook = ttk.Notebook(frame)
-    notebook.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
-    frame.grid_rowconfigure(2, weight=1)
-    tab_scroll_canvases = {}
-    tab_scrollbars = {}
-
-    def _tab(title):
-        outer = ttk.Frame(notebook)
-        notebook.add(outer, text=title)
-        outer.grid_rowconfigure(0, weight=1)
-        outer.grid_columnconfigure(0, weight=1)
-
-        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        tab = ttk.Frame(canvas, padding=10)
-        canvas_window = canvas.create_window((0, 0), window=tab, anchor="nw")
-        tab_scroll_canvases[str(outer)] = canvas
-        tab_scrollbars[str(outer)] = scrollbar
-        tab._scroll_canvas = canvas
-        tab._outer_tab = outer
-
-        def _sync_scroll_region(_event=None):
-            try:
-                bbox = canvas.bbox("all")
-                canvas.configure(scrollregion=bbox)
-                if not bbox:
-                    return
-                content_h = bbox[3] - bbox[1]
-                view_h = canvas.winfo_height()
-                if view_h > 1 and content_h <= view_h + 1:
-                    canvas.yview_moveto(0)
-                    scrollbar.grid_remove()
-                else:
-                    scrollbar.grid(row=0, column=1, sticky="ns")
-            except Exception:
-                pass
-
-        def _sync_tab_width(event):
-            try:
-                canvas.itemconfigure(canvas_window, width=event.width)
-                canvas.after_idle(_sync_scroll_region)
-            except Exception:
-                pass
-
-        tab.bind("<Configure>", _sync_scroll_region)
-        canvas.bind("<Configure>", _sync_tab_width)
-        tab.grid_columnconfigure(0, weight=1)
-        tab.grid_columnconfigure(1, weight=1)
-        return tab
-
-    def _point_in_widget(widget, event):
+    def _store_custom_body_text():
+        text = getattr(third_push_win, "_custom_body_text", None)
+        if text is None:
+            return
         try:
-            x1 = widget.winfo_rootx()
-            y1 = widget.winfo_rooty()
-            x2 = x1 + widget.winfo_width()
-            y2 = y1 + widget.winfo_height()
-            return x1 <= event.x_root <= x2 and y1 <= event.y_root <= y2
+            if text.winfo_exists():
+                entry_vars["custom_post_body"].set(text.get("1.0", "end-1c"))
         except Exception:
-            return False
+            pass
 
-    def _scroll_current_tab(event):
-        if not _point_in_widget(notebook, event):
-            return None
+    def _set_custom_body_text(value):
+        text = getattr(third_push_win, "_custom_body_text", None)
+        if text is None:
+            return
         try:
-            selected = notebook.select()
-            canvas = tab_scroll_canvases.get(str(notebook.nametowidget(selected)))
-            if canvas is None:
-                return None
-            bbox = canvas.bbox("all")
-            if not bbox:
-                return None
-            content_h = bbox[3] - bbox[1]
-            if content_h <= canvas.winfo_height() + 1:
-                canvas.yview_moveto(0)
-                return "break"
-            if getattr(event, "num", None) == 4:
-                delta = -1
-            elif getattr(event, "num", None) == 5:
-                delta = 1
-            else:
-                delta = -1 if event.delta > 0 else 1
-            canvas.yview_scroll(delta * 3, "units")
-            return "break"
+            if text.winfo_exists():
+                text.delete("1.0", "end")
+                text.insert("1.0", value)
         except Exception:
-            return None
+            pass
 
-    third_push_win.bind("<MouseWheel>", _scroll_current_tab)
-    third_push_win.bind("<Button-4>", _scroll_current_tab)
-    third_push_win.bind("<Button-5>", _scroll_current_tab)
+    def _render_channel(channel):
+        _store_custom_body_text()
+        for child in param_box.winfo_children():
+            child.destroy()
+        third_push_win._custom_body_text = None
 
-    def _entry(parent, row, label, key, width=64, show=None):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
-        var = tk.StringVar(parent, value=THIRD_PUSH_SETTINGS.get(key, ""))
-        entry_vars[key] = var
-        ent = ttk.Entry(parent, textvariable=var, width=width, show=show)
-        ent.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 0))
-        return ent
+        label = _third_push_label(channel)
+        param_box.configure(text=f"{label} 参数")
+        spec = channel_param_defs.get(channel, {})
+        row = 0
 
-    def _group(parent, row, title, tip=""):
-        box = ttk.LabelFrame(parent, text=title, padding=8)
-        box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
-        box.grid_columnconfigure(1, weight=1)
+        tip = spec.get("tip")
         if tip:
-            ttk.Label(box, text=tip, foreground="#666666").grid(
-                row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
+            ttk.Label(param_box, text=tip, foreground="#666666", wraplength=460).grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
             )
-            box._next_row = 1
-        else:
-            box._next_row = 0
-        return box
+            row += 1
 
-    tab_common = _tab("常用")
-    g_dingtalk = _group(tab_common, 0, "钉钉 (dingtalk) 需要填写", "如果机器人用了关键词安全设置，请把关键词填到 DINGTALK_KEYWORD；加签才需要 Secret。")
-    _entry(g_dingtalk, g_dingtalk._next_row, "DINGTALK_WEBHOOK：", "dingtalk_webhook")
-    _entry(g_dingtalk, g_dingtalk._next_row + 1, "DINGTALK_SECRET：", "dingtalk_secret")
-    _entry(g_dingtalk, g_dingtalk._next_row + 2, "DINGTALK_KEYWORD：", "dingtalk_keyword")
+        for field_label, key, kind, show in spec.get("fields", ()):
+            ttk.Label(param_box, text=field_label).grid(row=row, column=0, sticky="w", pady=5)
+            if kind == "text":
+                text = tk.Text(param_box, height=5, width=56, wrap="word")
+                text.grid(row=row, column=1, sticky="ew", pady=5, padx=(8, 0))
+                text.insert("1.0", entry_vars[key].get())
+                text.bind("<KeyRelease>", lambda _e, k=key, w=text: entry_vars[k].set(w.get("1.0", "end-1c")))
+                text.bind("<FocusOut>", lambda _e, k=key, w=text: entry_vars[k].set(w.get("1.0", "end-1c")))
+                third_push_win._custom_body_text = text
+            else:
+                ttk.Entry(
+                    param_box,
+                    textvariable=entry_vars[key],
+                    width=56,
+                    show=show
+                ).grid(row=row, column=1, sticky="ew", pady=5, padx=(8, 0))
+            row += 1
 
-    g_wecom = _group(tab_common, 1, "企业微信 (wecom) 需要填写")
-    _entry(g_wecom, g_wecom._next_row, "WECOM_WEBHOOK：", "wecom_webhook")
+    def _select_channel(channel, update_list=True):
+        if channel not in channel_index:
+            return
+        current_channel["value"] = channel
+        if update_list:
+            try:
+                idx = channel_index[channel]
+                channel_list.selection_clear(0, "end")
+                channel_list.selection_set(idx)
+                channel_list.see(idx)
+            except Exception:
+                pass
+        _render_channel(channel)
 
-    g_feishu = _group(tab_common, 2, "飞书 (feishu) 需要填写")
-    _entry(g_feishu, g_feishu._next_row, "FEISHU_WEBHOOK：", "feishu_webhook")
+    def _on_channel_select(_event=None):
+        try:
+            sel = channel_list.curselection()
+            if sel:
+                _select_channel(THIRD_PUSH_CHANNELS[sel[0]][0], update_list=False)
+        except Exception:
+            pass
 
-    tab_http = _tab("HTTP")
-    g_custom = _group(tab_http, 0, "自定义 POST (custom_post) 需要填写", "Body 里的 {msg} 会替换成推送内容。")
-    _entry(g_custom, g_custom._next_row, "CUSTOM_POST_URL：", "custom_post_url")
-    _entry(g_custom, g_custom._next_row + 1, "CUSTOM_POST_CONTENT_TYPE：", "custom_post_content_type")
-    ttk.Label(g_custom, text="CUSTOM_POST_BODY：").grid(row=g_custom._next_row + 2, column=0, sticky="nw", pady=4)
-    custom_body_text = tk.Text(g_custom, height=4, width=64, wrap="word")
-    custom_body_text.grid(row=g_custom._next_row + 2, column=1, sticky="ew", pady=4, padx=(8, 0))
-    custom_body_text.insert("1.0", THIRD_PUSH_SETTINGS.get("custom_post_body", ""))
+    channel_list.bind("<<ListboxSelect>>", _on_channel_select)
 
-    g_telegram = _group(tab_http, 1, "Telegram (telegram) 需要填写", "TELEGRAM_API 必须填写完整 URL，例如 https://api.telegram.org/bot真实TOKEN/sendMessage。")
-    _entry(g_telegram, g_telegram._next_row, "TELEGRAM_API：", "telegram_api")
-    _entry(g_telegram, g_telegram._next_row + 1, "TELEGRAM_CHAT_ID：", "telegram_chat_id")
+    def _sync_form_from_globals():
+        enabled_var.set(1 if THIRD_PUSH_ENABLED else 0)
+        sms_push_var.set(1 if THIRD_PUSH_SMS_ENABLED else 0)
+        call_push_var.set(1 if THIRD_PUSH_CALL_ENABLED else 0)
+        for ch, var in channel_vars.items():
+            var.set(ch in THIRD_PUSH_TYPES)
+        for key, var in entry_vars.items():
+            var.set(THIRD_PUSH_SETTINGS.get(key, ""))
+        _set_custom_body_text(entry_vars["custom_post_body"].get())
 
-    g_pushdeer = _group(tab_http, 2, "PushDeer (pushdeer) 需要填写")
-    _entry(g_pushdeer, g_pushdeer._next_row, "PUSHDEER_API：", "pushdeer_api")
-    _entry(g_pushdeer, g_pushdeer._next_row + 1, "PUSHDEER_KEY：", "pushdeer_key")
-
-    g_bark = _group(tab_http, 3, "Bark (bark) 需要填写")
-    _entry(g_bark, g_bark._next_row, "BARK_API：", "bark_api")
-    _entry(g_bark, g_bark._next_row + 1, "BARK_KEY：", "bark_key")
-
-    g_inotify = _group(tab_http, 4, "Inotify (inotify) 需要填写")
-    _entry(g_inotify, g_inotify._next_row, "INOTIFY_API：", "inotify_api")
-
-    tab_more = _tab("更多")
-    g_pushover = _group(tab_more, 0, "Pushover (pushover) 需要填写")
-    _entry(g_pushover, g_pushover._next_row, "PUSHOVER_API_TOKEN：", "pushover_api_token")
-    _entry(g_pushover, g_pushover._next_row + 1, "PUSHOVER_USER_KEY：", "pushover_user_key")
-
-    g_gotify = _group(tab_more, 1, "Gotify (gotify) 需要填写")
-    _entry(g_gotify, g_gotify._next_row, "GOTIFY_API：", "gotify_api")
-    _entry(g_gotify, g_gotify._next_row + 1, "GOTIFY_TOKEN：", "gotify_token")
-    _entry(g_gotify, g_gotify._next_row + 2, "GOTIFY_TITLE：", "gotify_title")
-    _entry(g_gotify, g_gotify._next_row + 3, "GOTIFY_PRIORITY：", "gotify_priority")
-
-    g_serverchan = _group(tab_more, 2, "Server酱 (serverchan) 需要填写")
-    _entry(g_serverchan, g_serverchan._next_row, "SERVERCHAN_API：", "serverchan_api")
-    _entry(g_serverchan, g_serverchan._next_row + 1, "SERVERCHAN_TITLE：", "serverchan_title")
-
-    tab_smtp = _tab("SMTP代理")
-    g_smtp = _group(tab_smtp, 0, "next-smtp-proxy (next-smtp-proxy) 需要填写")
-    _entry(g_smtp, g_smtp._next_row, "NEXT_SMTP_PROXY_API：", "next_smtp_proxy_api")
-    _entry(g_smtp, g_smtp._next_row + 1, "NEXT_SMTP_PROXY_USER：", "next_smtp_proxy_user")
-    _entry(g_smtp, g_smtp._next_row + 2, "NEXT_SMTP_PROXY_PASSWORD：", "next_smtp_proxy_password", show="*")
-    _entry(g_smtp, g_smtp._next_row + 3, "NEXT_SMTP_PROXY_HOST：", "next_smtp_proxy_host")
-    _entry(g_smtp, g_smtp._next_row + 4, "NEXT_SMTP_PROXY_PORT：", "next_smtp_proxy_port")
-    _entry(g_smtp, g_smtp._next_row + 5, "NEXT_SMTP_PROXY_FORM_NAME：", "next_smtp_proxy_form_name")
-    _entry(g_smtp, g_smtp._next_row + 6, "NEXT_SMTP_PROXY_TO_EMAIL：", "next_smtp_proxy_to_email")
-    _entry(g_smtp, g_smtp._next_row + 7, "NEXT_SMTP_PROXY_SUBJECT：", "next_smtp_proxy_subject")
-
-    channel_param_groups = {
-        "dingtalk": g_dingtalk,
-        "wecom": g_wecom,
-        "feishu": g_feishu,
-        "custom_post": g_custom,
-        "telegram": g_telegram,
-        "pushdeer": g_pushdeer,
-        "bark": g_bark,
-        "inotify": g_inotify,
-        "pushover": g_pushover,
-        "gotify": g_gotify,
-        "serverchan": g_serverchan,
-        "next-smtp-proxy": g_smtp,
-    }
+    third_push_win._sync_form_from_globals = _sync_form_from_globals
 
     def _focus_channel_params(channel):
-        group = channel_param_groups.get(channel)
-        if group is None:
-            return
-        tab = group.master
-        try:
-            notebook.select(tab._outer_tab)
-            canvas = tab._scroll_canvas
-            third_push_win.update_idletasks()
-            bbox = canvas.bbox("all")
-            if bbox:
-                total_h = max(1, bbox[3] - bbox[1])
-                target_y = max(0, group.winfo_y() - 8)
-                canvas.yview_moveto(min(1.0, target_y / total_h))
-        except Exception:
-            pass
-
-    for channel, chk in channel_checks.items():
-        chk.configure(command=lambda ch=channel: _focus_channel_params(ch))
-
-    def _bind_tab_mousewheel(widget):
-        try:
-            widget.bind("<MouseWheel>", _scroll_current_tab, add="+")
-            widget.bind("<Button-4>", _scroll_current_tab, add="+")
-            widget.bind("<Button-5>", _scroll_current_tab, add="+")
-        except Exception:
-            pass
-        try:
-            for child in widget.winfo_children():
-                _bind_tab_mousewheel(child)
-        except Exception:
-            pass
-
-    _bind_tab_mousewheel(notebook)
+        _select_channel(channel)
 
     def _collect_form(validate=True):
+        _store_custom_body_text()
         selected = [channel for channel, var in channel_vars.items() if var.get()]
         if validate and bool(enabled_var.get()) and not selected:
             messagebox.showerror("错误", "启用三方推送时，请至少选择一个通知通道。", parent=third_push_win)
             return None
 
         settings = {key: var.get().strip() for key, var in entry_vars.items()}
-        settings["custom_post_body"] = custom_body_text.get("1.0", "end-1c").strip()
 
         if validate and "custom_post" in selected:
             content_type = settings.get("custom_post_content_type", "")
@@ -4123,6 +4107,7 @@ def open_third_push_window():
                 try:
                     json.loads(settings["custom_post_body"])
                 except Exception as e:
+                    _focus_channel_params("custom_post")
                     messagebox.showerror("错误", f"自定义 POST Body 不是有效 JSON：\n{e}", parent=third_push_win)
                     return None
 
@@ -4199,6 +4184,7 @@ def open_third_push_window():
 
     def _on_close():
         global third_push_win
+        _store_custom_body_text()
         try:
             third_push_win.destroy()
         except Exception:
@@ -4214,6 +4200,7 @@ def open_third_push_window():
     third_push_win.protocol("WM_DELETE_WINDOW", _on_close)
     third_push_win.bind("<Escape>", lambda _e: _on_close())
 
+    _select_channel(current_channel["value"])
     third_push_win.update_idletasks()
     center_window(third_push_win, root)
     third_push_win.deiconify()
@@ -7652,4 +7639,5 @@ threading.Thread(target=read_serial, daemon=True).start()
 schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
 
 root.mainloop()
+
 
