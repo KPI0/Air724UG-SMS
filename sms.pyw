@@ -40,6 +40,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import winsound
 import webbrowser
 import queue
@@ -59,6 +60,10 @@ import tkinter as tk
 from tkinter import messagebox, ttk, colorchooser
 from tkinter.scrolledtext import ScrolledText
 
+# ---- 预编译正则 ----
+CLIP_REGEX = re.compile(r'\+CLIP:\s*"?(\+?\d+)"?')
+IMEI_REGEX = re.compile(r"\b(\d{14,17})\b")
+
 # ================= 配置 =================
 def get_app_dir():
     """返回程序所在目录，避免从不同启动入口运行时读写到不同的 config.ini。"""
@@ -75,7 +80,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.3"  # 软件版本号
+APP_VERSION = "3.6.4"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -1035,7 +1040,7 @@ def _tts_worker():
                     except PermissionError:
                         # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
                         # 此时不需要再写 global TTS_FILE 了，直接赋值
-                        TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{int(time.time())}.wav")
+                        TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{uuid.uuid4().hex[:8]}.wav")
                         os.replace(tmp_path, TTS_FILE)
                     
         except Exception as e:
@@ -3060,10 +3065,15 @@ def cleanup_and_exit():
         stop_tray_icon(wait_after=0.25)
 
         try:
+            batch = {}
             while not FILE_LOG_Q.empty():
                 p, l = FILE_LOG_Q.get_nowait()
+                if p not in batch:
+                    batch[p] = []
+                batch[p].append(l)
+            for p, lines in batch.items():
                 with open(p, "a", encoding="utf-8") as f:
-                    f.write(l)
+                    f.writelines(lines)
         except Exception:
             pass
 
@@ -4627,7 +4637,7 @@ def _maybe_capture_cloud_device_imei(line: str):
     if not text or text.upper() in ("OK", "ERROR") or "AT+CGSN" in text.upper():
         return
 
-    m = re.search(r"\b(\d{14,17})\b", text)
+    m = IMEI_REGEX.search(text)
     if not m:
         return
 
@@ -4810,6 +4820,7 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
     global cloud_ws_conn, cloud_connected
 
     last_imei_request = 0.0
+    current_backoff = max(1.0, float(reconnect_interval))
     while not cloud_stop_event.is_set():
         try:
             while not cloud_stop_event.is_set() and not _cloud_runtime_imei():
@@ -4833,6 +4844,7 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             ) as ws:
                 cloud_ws_conn = ws
                 cloud_connected = True
+                current_backoff = max(1.0, float(reconnect_interval))
                 set_cloud_status("🌐 已连接", "#008000")
                 _cloud_log(f"已连接：{url}", show_main=True)
                 await _cloud_send_register(ws)
@@ -4856,8 +4868,8 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             set_cloud_status("🌐 重连中", "#b26a00")
             _cloud_log(f"连接异常：{err}")
 
-            # 先精确等待配置的重连间隔，避免循环内随机抖动造成时间漂移。
-            for _ in range(max(1, int(reconnect_interval)) * 10):
+            # 连续失败时指数退避，避免服务器长时间不可用时高频撞击。
+            for _ in range(max(1, int(current_backoff)) * 10):
                 if cloud_stop_event.is_set():
                     break
                 await asyncio.sleep(0.1)
@@ -4865,6 +4877,7 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             # 末尾只抖动一次，打散海量设备并发重连风暴。
             if not cloud_stop_event.is_set():
                 await asyncio.sleep(random.uniform(0, 0.5))
+                current_backoff = min(60.0, current_backoff * 1.5)
 
     cloud_ws_conn = None
     cloud_connected = False
@@ -6489,7 +6502,7 @@ def read_serial():
                 # ================= 解析来电提醒 (RING & CLIP) =================
                 if "+CLIP:" in line:
                     try:
-                        m = re.search(r'\+CLIP:\s*"?(\+?\d+)"?', line)
+                        m = CLIP_REGEX.search(line)
                         if m:
                             caller_num = m.group(1)
                         else:
@@ -7511,10 +7524,15 @@ fso.DeleteFile WScript.ScriptFullName
 
     # 3. 强行刷新剩余日志
     try:
+        batch = {}
         while not FILE_LOG_Q.empty():
             p, l = FILE_LOG_Q.get_nowait()
+            if p not in batch:
+                batch[p] = []
+            batch[p].append(l)
+        for p, lines in batch.items():
             with open(p, "a", encoding="utf-8") as f:
-                f.write(l)
+                f.writelines(lines)
     except Exception:
         pass
 
