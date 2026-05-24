@@ -737,6 +737,15 @@ _last_serial_error_count = 0
 _last_sms_ignore_msg = None
 _last_sms_ignore_count = 0
 
+# ================= 云端主窗口日志重复抑制 =================
+# 用于抑制重复显示/写入相同的云端连接/授权提示（避免重连时刷屏）
+_last_cloud_main_msg = None
+_last_cloud_main_count = 0
+CLOUD_LOG_REPEAT_LIMIT = 4  # 1~3 次输出详细日志；第 4 次输出“后续忽略”
+CLOUD_MAIN_REPEAT_RESET_SECONDS = 60.0
+_cloud_main_repeat_state = {}
+_cloud_file_repeat_state = {}
+
 # ================= Manual 重绑提示重复抑制 =================
 _last_rebind_hint_msg = None
 _last_rebind_hint_count = 0
@@ -775,6 +784,7 @@ serial_wakeup_event = threading.Event()
 TTS_LOCK = threading.Lock()
 TTS_REQ_Q = queue.Queue(maxsize=50)
 TTS_STOP = threading.Event()
+TTS_THREAD = None
 THIRD_PUSH_Q = queue.Queue(maxsize=200)
 third_push_stop = threading.Event()
 
@@ -879,6 +889,20 @@ def log_file_only(msg: str):
         FILE_LOG_Q.put_nowait((system_log, line))
     except Exception:
         pass
+
+def _cloud_repeat_filter(state: dict, msg: str):
+    now = time.monotonic()
+    last_seen, count = state.get(msg, (0.0, 0))
+    if now - last_seen > CLOUD_MAIN_REPEAT_RESET_SECONDS:
+        count = 0
+    count += 1
+    state[msg] = (now, count)
+
+    if count < CLOUD_LOG_REPEAT_LIMIT:
+        return msg
+    if count == CLOUD_LOG_REPEAT_LIMIT:
+        return f"{msg}（后续同类消息已忽略）"
+    return None
 
 # ================= ui_only：永远线程安全（只 UI 不写文件） =================
 def ui_only(msg: str, tag="normal"):
@@ -998,94 +1022,93 @@ def cleanup_tts_alt_files():
 
 def _tts_worker():
     global TTS_FILE
-    engine = None
+    while not TTS_STOP.is_set():
+        try:
+            task = TTS_REQ_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
 
-    def get_engine():
-        nonlocal engine
-        if engine is None:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 150)
-        return engine
+        # 兼容旧参数和新参数解包
+        if len(task) == 3:
+            text, force, play_after = task
+        else:
+            text, force = task
+            play_after = False
 
-    def reset_engine():
-        nonlocal engine
-        if engine is not None:
+        if not text:
+            text = DEFAULT_VOICE_TEXT
+
+        # 如果不强制生成，且文件已存在，直接跳过
+        if (not force) and os.path.exists(TTS_FILE):
             try:
-                engine.stop()
+                TTS_REQ_Q.task_done()
             except Exception:
                 pass
-            engine = None
-
-    try:
-        while not TTS_STOP.is_set():
-            try:
-                task = TTS_REQ_Q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-
-            # 兼容旧参数和新参数解包
-            if len(task) == 3:
-                text, force, play_after = task
-            else:
-                text, force = task
-                play_after = False
-
-            if not text:
-                text = DEFAULT_VOICE_TEXT
-
-            # 如果不强制生成，且文件已存在，直接跳过
-            if (not force) and os.path.exists(TTS_FILE):
-                try:
-                    TTS_REQ_Q.task_done()
-                except Exception:
-                    pass
-                if play_after:
-                    play_alert(force=True)
-                continue
-
-            try:
-                with TTS_LOCK:
-                    os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
-                    cleanup_tts_alt_files()
-                    tmp_path = TTS_FILE + ".tmp.wav"
-
-                    # SAPI5/COM 引擎绑定当前工作线程，避免高频 init/del 积累不稳定状态。
-                    tts_engine = get_engine()
-                    tts_engine.save_to_file(text, tmp_path)
-                    tts_engine.runAndWait()
-
-                    # 原子替换，只有成功生成了才覆盖原文件
-                    if os.path.exists(tmp_path):
-                        try:
-                            os.replace(tmp_path, TTS_FILE)
-                        except PermissionError:
-                            # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
-                            # 此时不需要再写 global TTS_FILE 了，直接赋值
-                            TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{uuid.uuid4().hex[:8]}.wav")
-                            os.replace(tmp_path, TTS_FILE)
-
-            except Exception as e:
-                reset_engine()
-                # 清理可能损坏的 tmp 文件
-                try:
-                    if os.path.exists(TTS_FILE + ".tmp.wav"):
-                        os.remove(TTS_FILE + ".tmp.wav")
-                except Exception:
-                    pass
-                log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
-            finally:
-                try:
-                    TTS_REQ_Q.task_done()
-                except Exception:
-                    pass
-
-            # 文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
             if play_after:
                 play_alert(force=True)
-    finally:
-        reset_engine()
+            continue
 
-threading.Thread(target=_tts_worker, daemon=True).start()
+        try:
+            with TTS_LOCK:
+                os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
+                cleanup_tts_alt_files()
+                tmp_path = TTS_FILE + ".tmp.wav"
+
+                # 每次重新 init，用完释放，避开长驻引擎卡死。
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 150)
+                engine.save_to_file(text, tmp_path)
+                engine.runAndWait()
+                engine.stop()
+                del engine
+
+                # 原子替换，只有成功生成了才覆盖原文件
+                if os.path.exists(tmp_path):
+                    try:
+                        os.replace(tmp_path, TTS_FILE)
+                    except PermissionError:
+                        # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
+                        # 此时不需要再写 global TTS_FILE 了，直接赋值
+                        TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{uuid.uuid4().hex[:8]}.wav")
+                        os.replace(tmp_path, TTS_FILE)
+
+        except Exception as e:
+            # 清理可能损坏的 tmp 文件
+            try:
+                if os.path.exists(TTS_FILE + ".tmp.wav"):
+                    os.remove(TTS_FILE + ".tmp.wav")
+            except Exception:
+                pass
+            log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+            if play_after:
+                try:
+                    winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                except Exception:
+                    pass
+                play_after = False
+        finally:
+            try:
+                TTS_REQ_Q.task_done()
+            except Exception:
+                pass
+
+        # 文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
+        if play_after:
+            play_alert(force=True)
+
+def ensure_tts_worker():
+    global TTS_THREAD
+    try:
+        if TTS_THREAD is not None and TTS_THREAD.is_alive():
+            return
+        if TTS_STOP.is_set():
+            return
+        TTS_THREAD = threading.Thread(target=_tts_worker, daemon=True)
+        TTS_THREAD.start()
+    except Exception as e:
+        log_file_only(f"TTS 线程启动失败：{e}")
+
+ensure_tts_worker()
 
 def generate_alert_voice(force: bool = False, text: str = None, play_after: bool = False):
     """
@@ -1101,6 +1124,7 @@ def generate_alert_voice(force: bool = False, text: str = None, play_after: bool
         text_snapshot = DEFAULT_VOICE_TEXT
 
     try:
+        ensure_tts_worker()
         # 核心防御：清空积压队列（防抖）。如果用户狂点“试听”，直接丢弃旧任务，只执行最后一次
         while True:
             try:
@@ -4458,13 +4482,25 @@ def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, 
         system_ui(f"❌ 云端控制配置保存失败：{e}", "normal")
 
 def _cloud_log(message: str, show_main=False):
+    file_msg = None
     try:
-        log_file_only(f"🌐 {message}")
+        file_msg = _cloud_repeat_filter(_cloud_file_repeat_state, f"🌐 {message}")
+        if file_msg is not None:
+            log_file_only(file_msg)
     except Exception:
-        pass
+        log_file_only(f"🌐 {message}")
 
     if show_main:
-        system_ui(f"🌐 {message}", "normal")
+        try:
+            global _last_cloud_main_msg, _last_cloud_main_count
+            base_msg = f"🌐 {message}"
+            ui_msg = _cloud_repeat_filter(_cloud_main_repeat_state, base_msg)
+            _last_cloud_main_msg = base_msg
+            _last_cloud_main_count = _cloud_main_repeat_state.get(base_msg, (0.0, 0))[1]
+            if ui_msg is not None:
+                ui_only(ui_msg, "normal")
+        except Exception:
+            ui_only(f"🌐 {message}", "normal")
 
 async def _cloud_send_payload(ws, payload):
     try:
@@ -4699,22 +4735,34 @@ def _cloud_auth_matches(data: dict) -> bool:
 def request_cloud_device_imei():
     global cloud_imei_query_deadline
 
-    try:
-        with serial_lock:
-            if serial_obj is None or not serial_obj.is_open:
-                return False, "串口未连接，无法读取IMEI"
-            cloud_imei_query_deadline = time.monotonic() + 6.0
-            serial_obj.write(b"AT+CGSN\r\n")
-            serial_obj.flush()
-
+    def _task():
+        global cloud_imei_query_deadline
         try:
-            if "_push_serial_debug" in globals():
-                _push_serial_debug(">>> 云端控制读取IMEI: AT+CGSN\\r\\n")
+            with serial_lock:
+                if serial_obj is None or not serial_obj.is_open:
+                    _cloud_log("读取IMEI失败：串口未连接")
+                    return
+                cloud_imei_query_deadline = time.monotonic() + 6.0
+                serial_obj.write(b"AT+CGSN\r\n")
+                serial_obj.flush()
+
+            try:
+                if "_push_serial_debug" in globals():
+                    _push_serial_debug(">>> 云端控制读取IMEI: AT+CGSN\\r\\n")
+            except Exception:
+                pass
+            _cloud_log("已发送读取IMEI指令：AT+CGSN")
+        except Exception as e:
+            _cloud_log(f"读取IMEI失败：{e}")
+
+    try:
+        threading.Thread(target=_task, daemon=True).start()
+        return True, "已尝试发送读取IMEI指令"
+    except Exception as e:
+        try:
+            _cloud_log(f"读取IMEI线程启动失败：{e}")
         except Exception:
             pass
-        _cloud_log("已发送读取IMEI指令：AT+CGSN")
-        return True, "已发送读取IMEI指令"
-    except Exception as e:
         return False, f"读取IMEI失败：{e}"
 
 def _maybe_capture_cloud_device_imei(line: str):
@@ -6356,52 +6404,75 @@ def show_call_popup(caller_num):
         btn_frm.pack(anchor="center")
 
         def _answer():
-            global serial_obj, serial_lock, ring_timeout_target
-            sent = False
-            err_msg = "串口未连接"
-            with serial_lock:
-                if serial_obj is not None and serial_obj.is_open:
+            try:
+                btn_answer.config(state="disabled")
+            except Exception:
+                pass
+
+            def _task():
+                global serial_obj, ring_timeout_target
+                sent = False
+                err_msg = "串口未连接"
+                with serial_lock:
+                    if serial_obj is not None and serial_obj.is_open:
+                        try:
+                            serial_obj.write(b"ATA\r\n")
+                            serial_obj.flush()
+                            sent = True
+                        except Exception as e:
+                            err_msg = str(e) or e.__class__.__name__
+                if not sent:
+                    port_ui(f"📞 接听失败：{err_msg}", "warning")
+                    ui_post(lambda: btn_answer.config(state="normal") if btn_answer.winfo_exists() else None)
+                    return
+
+                port_ui("📞 已发送接听指令 (ATA)", "normal")
+                set_status(f"📞 通话中：{caller_num}", "blue")
+                ring_timeout_target = -1.0
+
+                def _update_call_ui():
                     try:
-                        serial_obj.write(b"ATA\r\n")
-                        serial_obj.flush()
-                        sent = True
-                    except Exception as e:
-                        err_msg = str(e) or e.__class__.__name__
-            if not sent:
-                port_ui(f"📞 接听失败：{err_msg}", "warning")
-                return
-            port_ui("📞 已发送接听指令 (ATA)", "normal")
-            
-            # 将状态切换为“通话中”，并设为 -1.0 激活免疫状态
-            set_status(f"📞 通话中：{caller_num}", "blue")
-            ring_timeout_target = -1.0
-            
-            # 🛑 核心变形魔法：不关闭弹窗，变成“通话中控制面板” 🛑
-            lbl_title.config(text="📞 正在通话中...", fg="#2ecc71") # 标题变成原谅绿
-            btn_answer.pack_forget() # 隐藏接听按钮
-            btn_ignore.pack_forget() # 隐藏忽略按钮
-            # 此时界面上就只剩下一个“挂断”按钮了！
-            
-            # 终极防呆：接通后，如果用户点右上角的 X 关闭窗口，也等同于挂机
-            win.protocol("WM_DELETE_WINDOW", _hangup)
+                        if not win.winfo_exists():
+                            return
+                        lbl_title.config(text="📞 正在通话中...", fg="#2ecc71")
+                        btn_answer.pack_forget()
+                        btn_ignore.pack_forget()
+                        btn_hangup.config(state="normal")
+                        win.protocol("WM_DELETE_WINDOW", _hangup)
+                    except Exception:
+                        pass
+
+                ui_post(_update_call_ui)
+
+            threading.Thread(target=_task, daemon=True).start()
 
         def _hangup():
-            global serial_obj, serial_lock
-            sent = False
-            err_msg = "串口未连接"
-            with serial_lock:
-                if serial_obj is not None and serial_obj.is_open:
-                    try:
-                        serial_obj.write(b"ATH\r\n")
-                        serial_obj.flush()
-                        sent = True
-                    except Exception as e:
-                        err_msg = str(e) or e.__class__.__name__
-            if not sent:
-                port_ui(f"📞 挂断失败：{err_msg}", "warning")
-                return
-            port_ui("📞 已发送挂机指令 (ATH)", "normal")
-            close_call_popup()
+            try:
+                btn_hangup.config(state="disabled")
+            except Exception:
+                pass
+
+            def _task():
+                global serial_obj
+                sent = False
+                err_msg = "串口未连接"
+                with serial_lock:
+                    if serial_obj is not None and serial_obj.is_open:
+                        try:
+                            serial_obj.write(b"ATH\r\n")
+                            serial_obj.flush()
+                            sent = True
+                        except Exception as e:
+                            err_msg = str(e) or e.__class__.__name__
+                if not sent:
+                    port_ui(f"📞 挂断失败：{err_msg}", "warning")
+                    ui_post(lambda: btn_hangup.config(state="normal") if btn_hangup.winfo_exists() else None)
+                    return
+
+                port_ui("📞 已发送挂机指令 (ATH)", "normal")
+                close_call_popup()
+
+            threading.Thread(target=_task, daemon=True).start()
 
         def _ignore():
             # 仅仅关掉弹窗，不发任何指令，让模组继续响铃
