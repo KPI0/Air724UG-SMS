@@ -63,6 +63,7 @@ from tkinter.scrolledtext import ScrolledText
 # ---- 预编译正则 ----
 CLIP_REGEX = re.compile(r'\+CLIP:\s*"?(\+?\d+)"?')
 IMEI_REGEX = re.compile(r"\b(\d{14,17})\b")
+SMS_CALLBACK_HEAD_REGEX = re.compile(r"^\s*(\+?\d+)\s+\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*(.*)$", re.DOTALL)
 
 # ================= 配置 =================
 def get_app_dir():
@@ -80,7 +81,7 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.4"  # 软件版本号
+APP_VERSION = "3.6.5"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
@@ -757,12 +758,16 @@ cloud_ws_conn = None
 cloud_ws_thread = None
 cloud_ws_lock = threading.Lock()
 cloud_stop_event = threading.Event()
+cloud_restart_seq = 0
 CLOUD_SERIAL_LOG_Q = queue.Queue(maxsize=1000)
 CLOUD_SERIAL_LOG_DRAIN_BATCH = 100
 CLOUD_REPLAY_WINDOW_SECONDS = 60
+CLOUD_REPLAY_CACHE_MAX = 512
+cloud_replay_seen = {}
 cloud_serial_log_lock = threading.Lock()
 cloud_serial_log_drain_scheduled = False
 cloud_connected = False
+cloud_device_authorized = False
 cloud_imei_verified = False
 cloud_imei_query_deadline = 0.0
 serial_stop_event = threading.Event()
@@ -993,73 +998,92 @@ def cleanup_tts_alt_files():
 
 def _tts_worker():
     global TTS_FILE
-    while not TTS_STOP.is_set():
-        try:
-            task = TTS_REQ_Q.get(timeout=0.5)
-        except queue.Empty:
-            continue
+    engine = None
 
-        # 兼容旧参数和新参数解包
-        if len(task) == 3:
-            text, force, play_after = task
-        else:
-            text, force = task
-            play_after = False
+    def get_engine():
+        nonlocal engine
+        if engine is None:
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 150)
+        return engine
 
-        if not text:
-            text = DEFAULT_VOICE_TEXT
-
-        # 如果不强制生成，且文件已存在，直接跳过
-        if (not force) and os.path.exists(TTS_FILE):
+    def reset_engine():
+        nonlocal engine
+        if engine is not None:
             try:
-                TTS_REQ_Q.task_done()
+                engine.stop()
             except Exception:
                 pass
+            engine = None
+
+    try:
+        while not TTS_STOP.is_set():
+            try:
+                task = TTS_REQ_Q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            # 兼容旧参数和新参数解包
+            if len(task) == 3:
+                text, force, play_after = task
+            else:
+                text, force = task
+                play_after = False
+
+            if not text:
+                text = DEFAULT_VOICE_TEXT
+
+            # 如果不强制生成，且文件已存在，直接跳过
+            if (not force) and os.path.exists(TTS_FILE):
+                try:
+                    TTS_REQ_Q.task_done()
+                except Exception:
+                    pass
+                if play_after:
+                    play_alert(force=True)
+                continue
+
+            try:
+                with TTS_LOCK:
+                    os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
+                    cleanup_tts_alt_files()
+                    tmp_path = TTS_FILE + ".tmp.wav"
+
+                    # SAPI5/COM 引擎绑定当前工作线程，避免高频 init/del 积累不稳定状态。
+                    tts_engine = get_engine()
+                    tts_engine.save_to_file(text, tmp_path)
+                    tts_engine.runAndWait()
+
+                    # 原子替换，只有成功生成了才覆盖原文件
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.replace(tmp_path, TTS_FILE)
+                        except PermissionError:
+                            # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
+                            # 此时不需要再写 global TTS_FILE 了，直接赋值
+                            TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{uuid.uuid4().hex[:8]}.wav")
+                            os.replace(tmp_path, TTS_FILE)
+
+            except Exception as e:
+                reset_engine()
+                # 清理可能损坏的 tmp 文件
+                try:
+                    if os.path.exists(TTS_FILE + ".tmp.wav"):
+                        os.remove(TTS_FILE + ".tmp.wav")
+                except Exception:
+                    pass
+                log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
+            finally:
+                try:
+                    TTS_REQ_Q.task_done()
+                except Exception:
+                    pass
+
+            # 文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
             if play_after:
                 play_alert(force=True)
-            continue
-
-        try:
-            with TTS_LOCK:
-                os.makedirs(os.path.dirname(TTS_FILE), exist_ok=True)
-                cleanup_tts_alt_files()
-                tmp_path = TTS_FILE + ".tmp.wav"
-                
-                # 1：每次重新 init，避开 pyttsx3 长驻缓存的 Bug
-                engine = pyttsx3.init()
-                engine.setProperty("rate", 150)
-                engine.save_to_file(text, tmp_path)
-                engine.runAndWait()
-                engine.stop()
-                del engine  # 2：强制释放 COM 内存，防止内存泄漏
-                
-                # 原子替换，只有成功生成了才覆盖原文件
-                if os.path.exists(tmp_path):
-                    try:
-                        os.replace(tmp_path, TTS_FILE)
-                    except PermissionError:
-                        # 极端并发保护：如果上个语音还没播完（文件被系统锁定）
-                        # 此时不需要再写 global TTS_FILE 了，直接赋值
-                        TTS_FILE = os.path.join(TTS_DIR, f"alert_alt_{uuid.uuid4().hex[:8]}.wav")
-                        os.replace(tmp_path, TTS_FILE)
-                    
-        except Exception as e:
-            # 清理可能损坏的 tmp 文件
-            try:
-                if os.path.exists(TTS_FILE + ".tmp.wav"):
-                    os.remove(TTS_FILE + ".tmp.wav")
-            except Exception:
-                pass
-            log_file_only(f"TTS 生成失败，使用系统声音兜底：{e}")
-        finally:
-            try:
-                TTS_REQ_Q.task_done()
-            except Exception:
-                pass
-        
-        # 3：文件安全替换完成后，再进行回调播放（彻底解决并发文件锁问题）
-        if play_after:
-            play_alert(force=True)
+    finally:
+        reset_engine()
 
 threading.Thread(target=_tts_worker, daemon=True).start()
 
@@ -2810,14 +2834,9 @@ def unlock_port_mutex():
         current_port_mutex = None
 
 def is_port_locked_by_other(port_name):
-    if not port_name: return False
-    mutex_name = f"Air724UG_PORT_{port_name}"
-    # 使用 CreateMutexW 并检查错误码 183，这比 OpenMutex 更加稳定，无视权限组差异
-    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-    err = ctypes.windll.kernel32.GetLastError()
-    if handle:
-        ctypes.windll.kernel32.CloseHandle(handle)
-    return err == 183  # 183 = ERROR_ALREADY_EXISTS (说明绝对被其他多开实例占用了)
+    # 端口是否可用以 serial.Serial() 的独占打开结果为准。
+    # 旧版这里用 CreateMutexW 做“先检查再打开”，存在检查与使用之间的竞态窗口。
+    return False
 
 # ================= 单实例：Windows Mutex 锁 =================
 import ctypes
@@ -4241,21 +4260,19 @@ def send_reset_cmd():
     if not messagebox.askyesno("重启硬件", "确定要重启底层通信模组吗？\n\n(设备重启期间将会短暂断开连接，随后自动重连)", parent=root):
         return
     # ==============================
-    global serial_obj, serial_lock
-    # 检查串口是否连接
-    with serial_lock:
-        if serial_obj is not None and serial_obj.is_open:
-            try:
-                # 发送指令，AT指令通常需要回车换行
+    def _send_task():
+        try:
+            with serial_lock:
+                if serial_obj is None or not serial_obj.is_open:
+                    ui_post(lambda: messagebox.showwarning("提示", "串口当前未连接，无法发送指令", parent=root))
+                    return
                 serial_obj.write(b"AT+RESET\r\n")
                 serial_obj.flush()
-                
-                # 在主窗口日志中记录
-                system_ui("🔄 已发送重启指令：AT+RESET", "normal")
-            except Exception as e:
-                system_ui(f"❌ 发送重启指令失败：{e}", "normal")
-        else:
-            messagebox.showwarning("提示", "串口当前未连接，无法发送指令")
+            system_ui("🔄 已发送重启指令：AT+RESET", "normal")
+        except Exception as e:
+            system_ui(f"❌ 发送重启指令失败：{e}", "normal")
+
+    threading.Thread(target=_send_task, daemon=True).start()
 
 # ================= 云端控制（WebSocket） =================
 def _normalize_imei(value: str) -> str:
@@ -4274,6 +4291,42 @@ def _cloud_identity_payload():
         "device_name": socket.gethostname(),
         "app_version": APP_VERSION,
     }
+
+async def _cloud_wait_login_ack(ws, timeout=8.0):
+    """等待服务端确认设备密码，确认前不允许上传日志或事件。"""
+    global cloud_device_authorized
+    deadline = time.monotonic() + float(timeout)
+    while not cloud_stop_event.is_set():
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            cloud_device_authorized = False
+            _cloud_log("设备登录确认超时，已停止本次云端连接", show_main=True)
+            return False
+        try:
+            msg = await asyncio.wait_for(ws.recv(), timeout=min(0.5, remain))
+        except asyncio.TimeoutError:
+            continue
+
+        try:
+            data = json.loads(msg.decode("utf-8", "ignore") if isinstance(msg, bytes) else str(msg))
+        except Exception:
+            continue
+
+        msg_type = str(data.get("type") or "").strip().lower()
+        if msg_type not in ("device_login_ack", "device_auth", "device_auth_result"):
+            _cloud_log(f"登录确认前已忽略云端消息：{_cloud_safe_preview(json.dumps(data, ensure_ascii=False))}")
+            continue
+
+        if data.get("ok") is True or str(data.get("status") or "").lower() == "ok":
+            cloud_device_authorized = True
+            _cloud_log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
+            return True
+
+        cloud_device_authorized = False
+        _cloud_log(str(data.get("message") or "服务端拒绝设备登录，控制密码不匹配"), show_main=True)
+        return False
+
+    return False
 
 async def _cloud_send_register(ws):
     payload = {
@@ -4491,6 +4544,8 @@ def _cloud_send_serial_log(line: str):
     text = str(line or "").strip()
     if not text:
         return
+    if not cloud_device_authorized:
+        return
     if len(text) > 2000:
         text = text[:2000] + "..."
 
@@ -4527,6 +4582,44 @@ def _cloud_send_serial_log(line: str):
                 return
 
         _schedule_cloud_serial_log_drain(loop, ws)
+    except Exception:
+        pass
+
+def _parse_cloud_sms_callback_head(text: str):
+    match = SMS_CALLBACK_HEAD_REGEX.search(str(text or "").strip())
+    if not match:
+        return "", str(text or "").strip()
+    return match.group(1), (match.group(2) or "").strip()
+
+def _cloud_send_sms_event(callback_head: str, full_msg: str):
+    full_msg = str(full_msg or "").strip()
+    if not full_msg:
+        return
+    if not cloud_device_authorized:
+        return
+    try:
+        loop = cloud_ws_loop
+        ws = cloud_ws_conn
+        if loop is None or not loop.is_running() or ws is None or not cloud_connected:
+            return
+        if not _cloud_runtime_imei():
+            return
+        sender, first_body = _parse_cloud_sms_callback_head(callback_head)
+        payload = {
+            "type": "sms_event",
+            "event_type": "sms",
+            "tag": "sms",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _cloud_now_ts(),
+            **_cloud_identity_payload(),
+            "from": sender,
+            "phone": sender,
+            "content": full_msg,
+            "body": full_msg,
+            "message": f"收到短信：来自 {sender or '未知号码'}，内容：{full_msg}",
+            "raw": (callback_head + "\n" + full_msg).strip() if callback_head and first_body != full_msg else full_msg,
+        }
+        asyncio.run_coroutine_threadsafe(_cloud_send_payload(ws, payload), loop)
     except Exception:
         pass
 
@@ -4689,7 +4782,41 @@ def _cloud_read_unix_timestamp(data: dict):
         ts = ts // 1000
     return ts, raw_ts
 
-async def _cloud_check_replay_window(ws, data: dict) -> bool:
+def _cloud_replay_key(data: dict, ts: int) -> str:
+    nonce = str(data.get("nonce") or data.get("request_id") or data.get("rid") or "").strip()
+    if nonce:
+        return "nonce:" + nonce
+    command = str(data.get("command") or data.get("data") or data.get("cmd") or "").strip()
+    action = str(data.get("type") or data.get("action") or "").strip().lower()
+    target = str(data.get("target_imei") or data.get("imei") or data.get("device_imei") or "").strip()
+    raw = json.dumps(
+        {
+            "ts": ts,
+            "action": action,
+            "target": target,
+            "command": command,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "fp:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def _cloud_prune_replay_cache(now_ts: int):
+    try:
+        expired = [
+            key for key, seen_ts in cloud_replay_seen.items()
+            if now_ts - int(seen_ts) > CLOUD_REPLAY_WINDOW_SECONDS
+        ]
+        for key in expired:
+            cloud_replay_seen.pop(key, None)
+        while len(cloud_replay_seen) > CLOUD_REPLAY_CACHE_MAX:
+            oldest = min(cloud_replay_seen, key=cloud_replay_seen.get)
+            cloud_replay_seen.pop(oldest, None)
+    except Exception:
+        cloud_replay_seen.clear()
+
+async def _cloud_check_replay_window(ws, data: dict, mark_seen: bool = True) -> bool:
     ts, raw_ts = _cloud_read_unix_timestamp(data)
     if ts is None:
         _cloud_log("已拒绝云端指令：缺少 Unix 时间戳字段 timestamp/ts")
@@ -4700,7 +4827,8 @@ async def _cloud_check_replay_window(ws, data: dict) -> bool:
         })
         return False
 
-    delta = abs(_cloud_now_ts() - ts)
+    now_ts = _cloud_now_ts()
+    delta = abs(now_ts - ts)
     if delta > CLOUD_REPLAY_WINDOW_SECONDS:
         _cloud_log(f"已拒绝云端指令：时间戳超时或疑似重放攻击 (timestamp={raw_ts}, delta={delta}s)")
         await _cloud_reply(ws, {
@@ -4709,6 +4837,19 @@ async def _cloud_check_replay_window(ws, data: dict) -> bool:
             "message": "安全拦截：指令已过期，请检查服务器和本机时钟是否同步",
         })
         return False
+
+    if mark_seen:
+        _cloud_prune_replay_cache(now_ts)
+        replay_key = _cloud_replay_key(data, ts)
+        if replay_key in cloud_replay_seen:
+            _cloud_log(f"已拒绝云端指令：检测到重复 nonce/指令指纹 (timestamp={raw_ts})")
+            await _cloud_reply(ws, {
+                "type": "error",
+                "ok": False,
+                "message": "安全拦截：检测到重复指令，疑似重放攻击",
+            })
+            return False
+        cloud_replay_seen[replay_key] = now_ts
 
     return True
 
@@ -4744,6 +4885,8 @@ async def _cloud_reply(ws, payload):
         _cloud_log(f"回复云端失败：{e}")
 
 async def _handle_cloud_message(ws, message):
+    global cloud_device_authorized
+
     if isinstance(message, bytes):
         raw = message.decode("utf-8", "ignore")
     else:
@@ -4762,8 +4905,22 @@ async def _handle_cloud_message(ws, message):
         })
         return
 
+    msg_type = str(data.get("type") or "").strip().lower()
+    if msg_type in ("device_login_ack", "device_auth", "device_auth_result"):
+        if data.get("ok") is True or str(data.get("status") or "").lower() == "ok":
+            cloud_device_authorized = True
+            _cloud_log(str(data.get("message") or "服务端已确认设备密码"))
+            return
+        cloud_device_authorized = False
+        _cloud_log(str(data.get("message") or "服务端拒绝设备登录，已断开连接"), show_main=True)
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        return
+
     # ===== Unix 时间戳防重放攻击校验（秒级，无时区歧义）=====
-    if not await _cloud_check_replay_window(ws, data):
+    if not await _cloud_check_replay_window(ws, data, mark_seen=False):
         return
     # ====================================
 
@@ -4777,6 +4934,9 @@ async def _handle_cloud_message(ws, message):
             "ok": False,
             "message": "IMEI 或密码校验失败",
         })
+        return
+
+    if not await _cloud_check_replay_window(ws, data, mark_seen=True):
         return
 
     if action in ("ping", "heartbeat"):
@@ -4817,7 +4977,7 @@ async def _handle_cloud_message(ws, message):
     })
 
 async def _cloud_ws_main(url: str, reconnect_interval: int):
-    global cloud_ws_conn, cloud_connected
+    global cloud_ws_conn, cloud_connected, cloud_device_authorized
 
     last_imei_request = 0.0
     current_backoff = max(1.0, float(reconnect_interval))
@@ -4844,10 +5004,15 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
             ) as ws:
                 cloud_ws_conn = ws
                 cloud_connected = True
+                cloud_device_authorized = False
                 current_backoff = max(1.0, float(reconnect_interval))
-                set_cloud_status("🌐 已连接", "#008000")
+                set_cloud_status("🌐 等待授权", "#b26a00")
                 _cloud_log(f"已连接：{url}", show_main=True)
                 await _cloud_send_register(ws)
+                if not await _cloud_wait_login_ack(ws):
+                    await ws.close()
+                    raise RuntimeError("设备登录未通过服务端确认")
+                set_cloud_status("🌐 已授权", "#008000")
 
                 while not cloud_stop_event.is_set():
                     try:
@@ -4863,6 +5028,7 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
                 break
             cloud_ws_conn = None
             cloud_connected = False
+            cloud_device_authorized = False
             _reset_cloud_serial_log_state()
             err = str(e).strip() or e.__class__.__name__
             set_cloud_status("🌐 重连中", "#b26a00")
@@ -4881,12 +5047,13 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
 
     cloud_ws_conn = None
     cloud_connected = False
+    cloud_device_authorized = False
     _reset_cloud_serial_log_state()
     set_cloud_status("🌐 已关闭" if not CLOUD_CONTROL_ENABLED else "🌐 已断开", "#666666")
     _cloud_log("连接已停止")
 
 def _cloud_thread_main(url: str, reconnect_interval: int):
-    global cloud_ws_loop
+    global cloud_ws_loop, cloud_ws_thread
 
     loop = asyncio.new_event_loop()
     with cloud_ws_lock:
@@ -4900,6 +5067,8 @@ def _cloud_thread_main(url: str, reconnect_interval: int):
     finally:
         with cloud_ws_lock:
             cloud_ws_loop = None
+            if threading.current_thread() is cloud_ws_thread:
+                cloud_ws_thread = None
         try:
             loop.close()
         except Exception:
@@ -4958,10 +5127,11 @@ def start_cloud_control(show_errors=False):
     return True
 
 def stop_cloud_control(update_status=True):
-    global cloud_ws_conn, cloud_connected
+    global cloud_ws_conn, cloud_connected, cloud_device_authorized
 
     cloud_stop_event.set()
     cloud_connected = False
+    cloud_device_authorized = False
     _reset_cloud_serial_log_state()
 
     try:
@@ -4978,7 +5148,13 @@ def stop_cloud_control(update_status=True):
         set_cloud_status("🌐 已关闭" if not CLOUD_CONTROL_ENABLED else "🌐 已断开", "#666666")
 
 def restart_cloud_control(show_errors=False):
-    old_thread = cloud_ws_thread
+    global cloud_restart_seq
+
+    with cloud_ws_lock:
+        cloud_restart_seq += 1
+        restart_seq = cloud_restart_seq
+        old_thread = cloud_ws_thread
+
     stop_cloud_control(update_status=False)
 
     def _wait_and_start():
@@ -4989,18 +5165,25 @@ def restart_cloud_control(show_errors=False):
             pass
 
         def _try_start():
-            ok = start_cloud_control(show_errors=show_errors)
             try:
-                if (
-                    not ok
-                    and cloud_ws_thread is not None
-                    and cloud_ws_thread.is_alive()
-                    and cloud_stop_event.is_set()
-                    and tk_alive()
-                ):
+                if restart_seq != cloud_restart_seq or not tk_alive():
+                    return
+
+                with cloud_ws_lock:
+                    stopping_thread = (
+                        cloud_ws_thread is not None
+                        and cloud_ws_thread.is_alive()
+                        and cloud_stop_event.is_set()
+                    )
+
+                if stopping_thread:
+                    set_cloud_status("🌐 正在重启", "#b26a00")
                     root.after(500, _try_start)
+                    return
             except Exception:
-                pass
+                return
+
+            start_cloud_control(show_errors=show_errors)
 
         ui_post(_try_start)
 
@@ -5259,8 +5442,9 @@ def open_cloud_control_window():
     for col in range(4):
         btn_frame.grid_columnconfigure(col, weight=1, uniform="cloud_actions")
 
-    def _read_form():
+    def _read_form(force_enabled=False):
         url = _get_url_value()
+        enabled = bool(enabled_var.get()) or bool(force_enabled)
         try:
             interval = int(reconnect_var.get().strip())
             if interval < 1:
@@ -5270,11 +5454,21 @@ def open_cloud_control_window():
             return None
 
         secret = _get_secret_value()
-        if bool(enabled_var.get()) and not secret:
+        if enabled and not secret:
             messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=cloud_control_win)
             return None
 
-        return bool(enabled_var.get()), url, interval, secret, bool(auto_upload_var.get())
+        if enabled and url.lower().startswith("ws://"):
+            if not messagebox.askyesno(
+                "安全警告",
+                "您正在使用未加密的 ws:// 协议！\n\n"
+                "设备控制密码将在网络中明文传输，容易被同网络环境中的第三方窃听并劫持设备。\n\n"
+                "强烈建议配置 SSL 并使用 wss://。\n是否仍要继续保存？",
+                parent=cloud_control_win
+            ):
+                return None
+
+        return enabled, url, interval, secret, bool(auto_upload_var.get())
 
     def _save_only():
         values = _read_form()
@@ -5292,7 +5486,7 @@ def open_cloud_control_window():
         _cloud_log("配置已保存")
 
     def _connect():
-        values = _read_form()
+        values = _read_form(force_enabled=True)
         if values is None:
             return
         _enabled, url, interval, secret, auto_upload = values
@@ -6248,6 +6442,7 @@ def read_serial():
     follow_lines_left = 0
     pending_parts = []
     pending_display_lines = []
+    pending_callback_head = ""
     pending_deadline = 0.0
     pending_active = False
 
@@ -6266,7 +6461,7 @@ def read_serial():
         return any(k and (k.lower() in msg_lower) for k in KEYWORDS)
     
     def flush_pending():
-        nonlocal pending_parts, pending_display_lines, pending_deadline, pending_active, follow_lines_left
+        nonlocal pending_parts, pending_display_lines, pending_callback_head, pending_deadline, pending_active, follow_lines_left
         if not pending_active:
             return
 
@@ -6274,6 +6469,7 @@ def read_serial():
 
         if full_msg:
             enqueue_third_push(full_msg)
+            _cloud_send_sms_event(pending_callback_head, full_msg)
 
         if full_msg and keyword_hit(full_msg):
             if pending_display_lines:
@@ -6330,6 +6526,7 @@ def read_serial():
 
         pending_parts = []
         pending_display_lines = []
+        pending_callback_head = ""
         pending_deadline = 0.0
         pending_active = False
         follow_lines_left = 0
@@ -6368,16 +6565,18 @@ def read_serial():
 
             set_status(f"🟡 连接中：{target_port}{desc_str} @ {BAUD}", "orange")
 
-            if is_port_locked_by_other(target_port):
-                serial_error_ui(f"⚠️ 端口冲突：{target_port} 已被本软件的其他实例占用，已绕过。")
-                set_status(f"🔴 端口冲突绕过中", "red")
-                time.sleep(RECONNECT_INTERVAL)
-                continue
-
             # 创建串口也要加锁，避免与 safe_close_serial() 并发
             with serial_lock:
                 # 使用目标端口尝试连接
-                serial_obj = serial.Serial(target_port, BAUD, timeout=0.3, write_timeout=0.5)
+                try:
+                    serial_obj = serial.Serial(target_port, BAUD, timeout=0.3, write_timeout=0.5)
+                except serial.SerialException as e:
+                    msg = str(e)
+                    lower_msg = msg.lower()
+                    if "access is denied" in lower_msg or "permission" in lower_msg or "拒绝访问" in msg or "winerror 5" in lower_msg:
+                        serial_error_ui(f"⚠️ 端口占用：{target_port} 已被其他程序或本软件其他实例占用。")
+                        set_status("🔴 端口占用，等待释放…", "red")
+                    raise
                 lock_port_mutex(target_port)  # 成功打开后再上锁
                 
                 # 自动发指令：尝试与模组进行真实通信
@@ -6729,7 +6928,9 @@ def read_serial():
 
                     msg = line.split(callback_prefix, 1)[1].strip()
                     if msg:
-                        pending_parts = [msg]
+                        sender, body = _parse_cloud_sms_callback_head(msg)
+                        pending_callback_head = msg
+                        pending_parts = [body or msg]
                         pending_display_lines = ["📩 收到短信：", msg]
                         pending_active = True
                         pending_deadline = time.monotonic() + 1.0
@@ -6737,6 +6938,7 @@ def read_serial():
                     else:
                         pending_parts = []
                         pending_display_lines = []
+                        pending_callback_head = ""
                         pending_active = False
                         follow_lines_left = 0
                     continue
