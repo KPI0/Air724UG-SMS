@@ -3373,6 +3373,29 @@ def set_cloud_status(text, color="#666666"):
         ui_post(_do)
 # ==========================================================
 
+def get_cloud_auth_status_from_ack(data: dict):
+    data = data or {}
+    auth_status = str(data.get("auth_status") or "").strip().lower()
+    status = str(data.get("status") or "").strip().lower()
+    label = str(data.get("auth_label") or "").strip()
+    message = str((data or {}).get("message") or "")
+    if auth_status in ("authorized", "ok") or status in ("authorized", "auth_ok") or label == "已授权":
+        return "authorized"
+    if auth_status in ("failed", "auth_failed", "unauthorized") or status in ("failed", "auth_failed", "unauthorized") or "不一致" in message or "错误" in message:
+        return "failed"
+    return "waiting"
+
+
+def set_cloud_auth_status_from_ack(data: dict):
+    status = get_cloud_auth_status_from_ack(data)
+    if status == "authorized":
+        set_cloud_status("🌐 已授权", "#008000")
+        return
+    if status == "failed":
+        set_cloud_status("🌐 授权失败", "#cc0000")
+        return
+    set_cloud_status("🌐 等待授权", "#b26a00")
+
 def set_status(text, color="black"):
     if not tk_alive():
         return
@@ -4341,14 +4364,17 @@ async def _cloud_wait_login_ack(ws, timeout=8.0):
             _cloud_log(f"登录确认前已忽略云端消息：{_cloud_safe_preview(json.dumps(data, ensure_ascii=False))}")
             continue
 
-        if data.get("ok") is True or str(data.get("status") or "").lower() == "ok":
+        auth_status = get_cloud_auth_status_from_ack(data)
+        if auth_status == "authorized":
             cloud_device_authorized = True
+            set_cloud_auth_status_from_ack(data)
             _cloud_log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return True
 
         cloud_device_authorized = False
-        _cloud_log(str(data.get("message") or "服务端拒绝设备登录，控制密码不匹配"), show_main=True)
-        return False
+        set_cloud_auth_status_from_ack(data)
+        _cloud_log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
+        return True
 
     return False
 
@@ -4955,16 +4981,24 @@ async def _handle_cloud_message(ws, message):
 
     msg_type = str(data.get("type") or "").strip().lower()
     if msg_type in ("device_login_ack", "device_auth", "device_auth_result"):
-        if data.get("ok") is True or str(data.get("status") or "").lower() == "ok":
+        auth_status = get_cloud_auth_status_from_ack(data)
+        if auth_status == "authorized":
             cloud_device_authorized = True
+            set_cloud_auth_status_from_ack(data)
             _cloud_log(str(data.get("message") or "服务端已确认设备密码"))
             return
         cloud_device_authorized = False
-        _cloud_log(str(data.get("message") or "服务端拒绝设备登录，已断开连接"), show_main=True)
-        try:
-            await ws.close()
-        except Exception:
-            pass
+        set_cloud_auth_status_from_ack(data)
+        _cloud_log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
+        return
+
+    if not cloud_device_authorized:
+        _cloud_log("已拒绝云端指令：设备尚未获得服务端授权")
+        await _cloud_reply(ws, {
+            "type": "auth_failed",
+            "ok": False,
+            "message": "设备尚未获得服务端授权，已拒绝执行云端指令",
+        })
         return
 
     # ===== Unix 时间戳防重放攻击校验（秒级，无时区歧义）=====
@@ -4982,8 +5016,10 @@ async def _handle_cloud_message(ws, message):
             "ok": False,
             "message": "IMEI 或密码校验失败",
         })
+        set_cloud_status("🌐 授权失败", "#cc0000")
         return
-
+    if cloud_device_authorized:
+        set_cloud_status("🌐 已授权", "#008000")
     if not await _cloud_check_replay_window(ws, data, mark_seen=True):
         return
 
@@ -5060,7 +5096,6 @@ async def _cloud_ws_main(url: str, reconnect_interval: int):
                 if not await _cloud_wait_login_ack(ws):
                     await ws.close()
                     raise RuntimeError("设备登录未通过服务端确认")
-                set_cloud_status("🌐 已授权", "#008000")
 
                 while not cloud_stop_event.is_set():
                     try:
