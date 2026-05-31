@@ -2361,7 +2361,7 @@ def open_serial_debug_window():
             
             port_ui("📞 已发送挂机指令 (ATH)", "normal")
             global PORT, BAUD
-            set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")  # 点击后立刻强制恢复绿色状态
+            set_status(format_connected_status(PORT), "green")  # 点击后立刻强制恢复绿色状态
             
             # 发送挂机指令
             _quick_send("ATH")
@@ -2372,7 +2372,7 @@ def open_serial_debug_window():
             # 只有在“真正在通话（点过拨号且没点挂断）”时，关闭窗口才发 ATH 兜底
             if is_dialing and enabled_var.get():
                 global PORT, BAUD
-                set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+                set_status(format_connected_status(PORT), "green")
                 _quick_send("ATH")
             
             win.destroy()
@@ -3309,7 +3309,7 @@ status_label.pack(side=tk.LEFT, padx=6)
 
 # ================= 温度 UI 与更新函数 =================
 temp_var = tk.StringVar(value="🌡️ -- ℃")
-temp_label = tk.Label(status_frame, textvariable=temp_var, anchor="w", fg="#0052cc") 
+temp_label = tk.Label(status_frame, textvariable=temp_var, anchor="w", fg="#008000") 
 temp_label.pack(side=tk.LEFT, padx=(20, 6))
 
 def set_temperature(temp_str):
@@ -3395,6 +3395,14 @@ def set_cloud_auth_status_from_ack(data: dict):
         set_cloud_status("🌐 授权失败", "#cc0000")
         return
     set_cloud_status("🌐 等待授权", "#b26a00")
+
+def format_connected_status(port):
+    port_text = str(port or "").strip()
+    return f"🟢 已连接：{port_text}" if port_text else "🟢 已连接"
+
+def format_connecting_status(port):
+    port_text = str(port or "").strip()
+    return f"🟡 连接中：{port_text}" if port_text else "🟡 连接中"
 
 def set_status(text, color="black"):
     if not tk_alive():
@@ -6335,7 +6343,7 @@ def try_rebind_manual_port(reason: str = "") -> bool:
     if reason:
         hint += f"；原因：{reason}"
     system_ui(hint, "normal")
-    set_status(f"🟡 连接中：{PORT} @ {BAUD}", "orange")
+    set_status(format_connecting_status(PORT), "orange")
 
     # 让串口线程立刻醒来重连
     try:
@@ -6669,7 +6677,7 @@ def read_serial():
                     time.sleep(RECONNECT_INTERVAL)
                     continue
 
-            set_status(f"🟡 连接中：{target_port}{desc_str} @ {BAUD}", "orange")
+            set_status(format_connecting_status(target_port), "orange")
 
             # 创建串口也要加锁，避免与 safe_close_serial() 并发
             with serial_lock:
@@ -6718,7 +6726,7 @@ def read_serial():
                             # 终极细节：如果这2秒内刚好进来了电话，千万不要去覆盖“响铃”或“呼叫”状态！
                             current_state = status_var.get()
                             if "响铃" not in current_state and "通话" not in current_state and "呼叫" not in current_state:
-                                status_var.set(f"🟢 已连接：{port} @ {baud}")
+                                status_var.set(format_connected_status(port))
                                 status_label.config(fg="green")
                         except Exception:
                             pass
@@ -6769,7 +6777,7 @@ def read_serial():
                 if ring_timeout_target > 0 and time.monotonic() > ring_timeout_target:
                     ring_timeout_target = 0.0  # 超时触发后复位
                     port_ui("📞 呼叫已取消或未接听", "normal")
-                    set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+                    set_status(format_connected_status(PORT), "green")
                     last_clip_num = "" 
                     close_call_popup()  # 超时对方挂断，自动关掉弹窗
                 # =====================================================
@@ -6912,7 +6920,7 @@ def read_serial():
                     now = time.monotonic()
                     if (now - last_hangup_time > 3.0):
                         port_ui("📞 语音通话已结束", "normal")
-                        set_status(f"🟢 已连接：{PORT} @ {BAUD}", "green")
+                        set_status(format_connected_status(PORT), "green")
                         last_hangup_time = now
                         last_clip_num = ""
                         close_call_popup()
