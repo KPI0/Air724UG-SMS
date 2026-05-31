@@ -830,10 +830,10 @@ def auto_connect_ui(msg: str):
             pass
 
 # ================= 串口错误重复抑制 =================
-# 用于抑制连续重复显示相同的串口异常（避免日志刷屏）
+# 用于抑制重复显示同类串口异常（避免日志刷屏）
 ERROR_REPEAT_LIMIT = 4  # 1~3 次显示详细错误；第 4 次显示“后续忽略”
-_last_serial_error_msg = None
-_last_serial_error_count = 0
+SERIAL_ERROR_REPEAT_RESET_SECONDS = 60.0
+_serial_error_repeat_state = {}
 
 # ================= 短信忽略重复抑制 =================
 # 用于抑制连续重复显示相同的“短信未命中关键词，已忽略”提示（避免日志刷屏）
@@ -2926,9 +2926,61 @@ def unlock_port_mutex():
         current_port_mutex = None
 
 def is_port_locked_by_other(port_name):
-    # 端口是否可用以 serial.Serial() 的独占打开结果为准。
-    # 旧版这里用 CreateMutexW 做“先检查再打开”，存在检查与使用之间的竞态窗口。
-    return False
+    """
+    最佳努力过滤当前明显不可用的串口，避免自动模式反复挑中忙端口。
+    这里不依赖本软件的命名互斥锁，而是直接用 Windows API 试一次独占打开：
+    - 能独占打开：说明当前端口大概率可用
+    - 打不开：说明端口已被占用/设备异常/刚拔插，自动模式先跳过
+    """
+    try:
+        port = str(port_name or "").strip()
+        if not port:
+            return True
+
+        if not port.startswith("\\\\.\\"):
+            port = "\\\\.\\" + port
+
+        GENERIC_READ = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        kernel32 = ctypes.windll.kernel32
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+
+        handle = create_file(
+            port,
+            GENERIC_READ | GENERIC_WRITE,
+            0,      # 不共享：用于探测是否已被其他进程独占
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if handle in (None, 0, INVALID_HANDLE_VALUE):
+            return True
+
+        try:
+            return False
+        finally:
+            close_handle(handle)
+    except Exception:
+        # 探测失败时宁可放行，避免把所有串口都误判成不可用。
+        return False
 
 # ================= 单实例：Windows Mutex 锁 =================
 import ctypes
@@ -6519,20 +6571,20 @@ def rebind_hint_ui(msg: str):
         except Exception:
             pass
 
-def serial_error_ui(msg: str):
-    """串口异常提示：重复抑制，避免刷屏"""
-    global _last_serial_error_msg, _last_serial_error_count
-
+def serial_error_ui(msg: str, repeat_key: str = ""):
+    """串口异常提示：按同类错误分组抑制，避免交替刷屏。"""
     try:
-        if _last_serial_error_msg == msg:
-            _last_serial_error_count += 1
-        else:
-            _last_serial_error_msg = msg
-            _last_serial_error_count = 1
+        key = str(repeat_key or msg)
+        now = time.monotonic()
+        last_seen, count = _serial_error_repeat_state.get(key, (0.0, 0))
+        if now - last_seen > SERIAL_ERROR_REPEAT_RESET_SECONDS:
+            count = 0
+        count += 1
+        _serial_error_repeat_state[key] = (now, count)
 
-        if _last_serial_error_count < ERROR_REPEAT_LIMIT:
+        if count < ERROR_REPEAT_LIMIT:
             system_ui(msg, "normal")
-        elif _last_serial_error_count == ERROR_REPEAT_LIMIT:
+        elif count == ERROR_REPEAT_LIMIT:
             system_ui(msg + "（后续同类错误已忽略）", "normal")
         else:
             pass
@@ -6686,7 +6738,7 @@ def read_serial():
     - 关键词过滤规则：full_msg 只要包含 KEYWORDS 任意一项即放行；否则忽略不显示/不弹窗/不播报
     - 其它所有串口日志全部忽略
     """
-    global serial_obj, serial_running, PORT, LOG_PREFIX, _last_serial_error_msg, _last_serial_error_count, ring_timeout_target, current_dial_num, cloud_imei_query_deadline
+    global serial_obj, serial_running, PORT, LOG_PREFIX, ring_timeout_target, current_dial_num, cloud_imei_query_deadline
 
     callback_prefix = "[I]-[handler_sms.smsCallback]"
 
@@ -6825,7 +6877,11 @@ def read_serial():
                     msg = str(e)
                     lower_msg = msg.lower()
                     if "access is denied" in lower_msg or "permission" in lower_msg or "拒绝访问" in msg or "winerror 5" in lower_msg:
-                        serial_error_ui(f"⚠️ 端口占用：{target_port} 已被其他程序或本软件其他实例占用。")
+                        repeat_key = f"serial-open-denied:{str(target_port or '').strip().upper()}"
+                        serial_error_ui(
+                            f"⚠️ 端口占用：{target_port} 已被其他程序或本软件其他实例占用。",
+                            repeat_key=repeat_key,
+                        )
                         set_status("🔴 端口占用，等待释放…", "red")
                     raise
                 lock_port_mutex(target_port)  # 成功打开后再上锁
@@ -6850,11 +6906,10 @@ def read_serial():
                 try:
                     time.sleep(delay)
                     # 一旦真正连接成功，立刻清零所有的防抖拦截计数器，让下次断开时还能正常提示
-                    global _last_auto_connect_msg, _last_auto_connect_count, _last_serial_error_msg, _last_serial_error_count
+                    global _last_auto_connect_msg, _last_auto_connect_count
                     _last_auto_connect_msg = None
                     _last_auto_connect_count = 0
-                    _last_serial_error_msg = None
-                    _last_serial_error_count = 0
+                    _serial_error_repeat_state.clear()
 
                     system_ui(f"🔌 串口已连接：{port} @ {baud}")
 
@@ -7229,7 +7284,11 @@ def read_serial():
 
             # 1) 打印原始异常
             err_msg = str(e)
-            serial_error_ui(f"⚠️ 串口异常：{err_msg}")
+            err_lower = err_msg.lower()
+            repeat_key = ""
+            if "access is denied" in err_lower or "permission" in err_lower or "拒绝访问" in err_msg or "winerror 5" in err_lower:
+                repeat_key = f"serial-open-denied:{str(target_port or PORT or '').strip().upper()}"
+            serial_error_ui(f"⚠️ 串口异常：{err_msg}", repeat_key=repeat_key)
 
             set_status(f"🔴 断开/失败：{PORT}（自动重连中…）", "red")
             set_temperature("--")  # 断开时重置温度显示
