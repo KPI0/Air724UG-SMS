@@ -34,7 +34,6 @@ import socket
 import ssl
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -81,12 +80,13 @@ LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
 RECONNECT_INTERVAL = 2  # 秒
-APP_VERSION = "3.6.5"  # 软件版本号
+APP_VERSION = "3.6.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
 GITHUB_REPO = "Air724UG-SMS"
 
 # 启动参数：开机自启时是否默认最小化到托盘
 AUTOSTART_FLAG = "--autostart"
+RESTART_HELPER_FLAG = "--restart-helper"
 START_MINIMIZED = AUTOSTART_FLAG in sys.argv
 
 # 程序启动时间（用于延迟启动时的 UI 日志显示）
@@ -125,6 +125,147 @@ def _get_launch_target_and_args():
 
     return pyw, script_path, os.path.dirname(script_path)
 
+def _create_windows_shortcut(lnk_path: str, target: str, arguments: str = "", working_dir: str = "", window_style: int = 1):
+    """直接通过 Windows COM 创建 .lnk，避免生成并执行临时 VBS。"""
+    try:
+        import pythoncom
+        from win32com.client import Dispatch
+    except Exception as e:
+        raise RuntimeError(f"缺少创建快捷方式所需组件 pywin32：{e}") from e
+
+    os.makedirs(os.path.dirname(lnk_path), exist_ok=True)
+
+    com_initialized = False
+    shell = None
+    shortcut = None
+    try:
+        pythoncom.CoInitialize()
+        com_initialized = True
+
+        shell = Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortcut(lnk_path)
+        shortcut.TargetPath = target
+        shortcut.WorkingDirectory = working_dir or os.path.dirname(target)
+        shortcut.WindowStyle = int(window_style)
+        if arguments:
+            shortcut.Arguments = arguments
+        shortcut.Save()
+    except Exception as e:
+        raise RuntimeError(f"创建快捷方式失败：{e}") from e
+    finally:
+        shortcut = None
+        shell = None
+        if com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    if not os.path.exists(lnk_path):
+        raise RuntimeError("创建快捷方式失败：未生成 .lnk 文件")
+
+def _get_clean_restart_env():
+    # PyInstaller 6.9+ 重启时需要显式重置 onefile 运行环境。
+    clean_env = os.environ.copy()
+    clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    for k in ("_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"):
+        clean_env.pop(k, None)
+    return clean_env
+
+def _get_detached_creationflags():
+    flags = 0
+    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= getattr(subprocess, name, 0)
+    return flags
+
+def _launch_detached_process(command, env=None, cwd=None):
+    kwargs = {
+        "env": env,
+        "cwd": cwd,
+        "close_fds": True,
+    }
+    creationflags = _get_detached_creationflags()
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    return subprocess.Popen(command, **kwargs)
+
+def _encode_restart_args(args):
+    payload = json.dumps(list(args), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii")
+
+def _decode_restart_args(payload: str):
+    if not payload:
+        return []
+    raw = base64.urlsafe_b64decode(payload.encode("ascii"))
+    data = json.loads(raw.decode("utf-8"))
+    return data if isinstance(data, list) else []
+
+def _show_early_error(title: str, message: str):
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, str(message), str(title), 0x10)
+    except Exception:
+        pass
+
+def _wait_for_process_exit(pid: int):
+    try:
+        import ctypes
+
+        target_pid = int(pid)
+        if target_pid <= 0:
+            return
+
+        SYNCHRONIZE = 0x00100000
+        WAIT_OBJECT_0 = 0x00000000
+        WAIT_TIMEOUT = 0x00000102
+
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, target_pid)
+        if handle:
+            try:
+                while True:
+                    result = ctypes.windll.kernel32.WaitForSingleObject(handle, 200)
+                    if result == WAIT_OBJECT_0:
+                        break
+                    if result != WAIT_TIMEOUT:
+                        break
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        else:
+            time.sleep(2.0)
+    except Exception:
+        time.sleep(2.0)
+
+    time.sleep(0.3)
+
+def _maybe_run_restart_helper_mode():
+    if RESTART_HELPER_FLAG not in sys.argv:
+        return
+
+    try:
+        idx = sys.argv.index(RESTART_HELPER_FLAG)
+        wait_pid = int(sys.argv[idx + 1])
+        payload = sys.argv[idx + 2] if len(sys.argv) > idx + 2 else ""
+        restart_args = _decode_restart_args(payload)
+
+        target, script_arg, workdir = _get_launch_target_and_args()
+        launch_cmd = [target]
+        if script_arg:
+            launch_cmd.append(script_arg)
+        launch_cmd.extend(arg for arg in restart_args if arg != RESTART_HELPER_FLAG)
+
+        _wait_for_process_exit(wait_pid)
+        _launch_detached_process(
+            launch_cmd,
+            env=_get_clean_restart_env(),
+            cwd=workdir,
+        )
+        raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _show_early_error("重启失败", f"软件重启辅助进程启动失败：\n\n{e}")
+        raise SystemExit(1)
+
 def create_startup_shortcut():
     startup_dir = get_startup_dir()
     os.makedirs(startup_dir, exist_ok=True)
@@ -132,59 +273,20 @@ def create_startup_shortcut():
     lnk_path = get_startup_lnk()
     target, args, workdir = _get_launch_target_and_args()
 
-    # vbs 用双引号包裹字符串；内部双引号要变成 ""
-    def vbs_quote(s: str) -> str:
-        return '"' + s.replace('"', '""') + '"'
-
-    # 生成临时 vbs（wscript 执行默认无窗口，不闪）
-    vbs = f'''
-        Set WshShell = CreateObject("WScript.Shell")
-        Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
-        Shortcut.TargetPath = {vbs_quote(target)}
-        Shortcut.WorkingDirectory = {vbs_quote(workdir)}
-        Shortcut.WindowStyle = 1
-        '''
-
     if args:
         # 脚本模式：pythonw.exe "脚本路径" --autostart
         arg_line = f'"{args}" {AUTOSTART_FLAG}'
-        vbs += f'Shortcut.Arguments = {vbs_quote(arg_line)}\n'
     else:
         # exe 模式：sms.exe --autostart
-        vbs += f'Shortcut.Arguments = {vbs_quote(AUTOSTART_FLAG)}\n'
+        arg_line = AUTOSTART_FLAG
 
-    vbs += 'Shortcut.Save\n'
-
-    vbs_path = os.path.join(
-        tempfile.gettempdir(),
-        f"sms_autostart_create_{os.getpid()}_{threading.get_ident()}.vbs"
+    _create_windows_shortcut(
+        lnk_path=lnk_path,
+        target=target,
+        arguments=arg_line,
+        working_dir=workdir,
+        window_style=1,
     )
-    try:
-        with open(vbs_path, "w", encoding="mbcs") as f:
-            f.write(vbs)
-
-        # 用 wscript.exe 执行（无控制台窗口）
-        r = subprocess.run(
-            ["wscript.exe", "//Nologo", vbs_path],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-    finally:
-        try:
-            if os.path.exists(vbs_path):
-                os.remove(vbs_path)
-        except Exception:
-            pass
-
-    # 校验是否真的创建成功
-    if not os.path.exists(lnk_path):
-        err = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
-        raise RuntimeError(
-            "创建快捷方式失败：\n"
-            f"returncode={r.returncode}\n"
-            f"{err or '（stderr/stdout 为空，lnk 未生成）'}"
-        )
 
 def remove_startup_shortcut():
     lnk = get_startup_lnk()
@@ -1172,53 +1274,18 @@ def create_desktop_shortcut(shortcut_name: str):
 
     target, args, workdir = _get_launch_target_and_args()
 
-    def vbs_quote(s: str) -> str:
-        return '"' + s.replace('"', '""') + '"'
-
-    vbs = f'''
-Set WshShell = CreateObject("WScript.Shell")
-Set Shortcut = WshShell.CreateShortcut({vbs_quote(lnk_path)})
-Shortcut.TargetPath = {vbs_quote(target)}
-Shortcut.WorkingDirectory = {vbs_quote(workdir)}
-Shortcut.WindowStyle = 1
-'''
-
     if args:
         arg_line = f'"{args}"'   # 脚本路径加引号，防空格
-        vbs += f'Shortcut.Arguments = {vbs_quote(arg_line)}\n'
+    else:
+        arg_line = ""
 
-    vbs += 'Shortcut.Save\n'
-
-    vbs_path = os.path.join(
-        tempfile.gettempdir(),
-        f"sms_desktop_shortcut_{os.getpid()}_{threading.get_ident()}.vbs"
+    _create_windows_shortcut(
+        lnk_path=lnk_path,
+        target=target,
+        arguments=arg_line,
+        working_dir=workdir,
+        window_style=1,
     )
-    try:
-        with open(vbs_path, "w", encoding="mbcs") as f:
-            f.write(vbs)
-
-        # 只执行一次
-        r = subprocess.run(
-            ["cscript.exe", "//Nologo", vbs_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
-    finally:
-        try:
-            if os.path.exists(vbs_path):
-                os.remove(vbs_path)
-        except Exception:
-            pass
-
-    # 校验必须在函数内部
-    if not os.path.exists(lnk_path):
-        detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
-        raise RuntimeError(
-            "桌面快捷方式创建失败：\n" +
-            (detail or "（cscript 未返回错误信息，但 .lnk 未生成）")
-        )
 
 def save_voice_text_setting():
     try:
@@ -2914,6 +2981,8 @@ def center_on_screen(win, w=None, h=None):
     win.geometry(f"{w}x{h}+{x}+{y}")
 
 # ================= 单实例：二次启动拦截（应放在 Tk 创建之前） =================
+_maybe_run_restart_helper_mode()
+
 if not ALLOW_MULTI_INSTANCE:
     check_single_instance()
 
@@ -4479,7 +4548,7 @@ def _set_cloud_device_imei(imei: str, source=""):
     cloud_imei_verified = bool(normalized)
 
     if CLOUD_DEVICE_IMEI:
-        _cloud_log(f"设备IMEI已更新：{CLOUD_DEVICE_IMEI}" + (f"（{source}）" if source else ""))
+        _cloud_log(f"设备IMEI已更新：{CLOUD_DEVICE_IMEI}")
         _notify_cloud_identity_changed()
 
     return True
@@ -7722,87 +7791,30 @@ def restart_software():
     if not messagebox.askyesno("重启软件", "确定要重启软件吗？", parent=root):
         return
 
-    # 先启动外部重启助手；只有这一步成功，才退出当前软件。
-    vbs_path = None
+    # 先启动无界面的重启辅助进程；只有这一步成功，才退出当前软件。
     try:
-        if getattr(sys, 'frozen', False):
-            exe_path = sys.executable
-            launch_args = []
-        else:
-            # 源码模式用 pythonw.exe 启动脚本，避免 .pyw 文件关联打开编辑器。
-            exe_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-            if not os.path.exists(exe_path):
-                exe_path = sys.executable
-            launch_args = [os.path.abspath(sys.argv[0])]
-            
+        target, script_arg, workdir = _get_launch_target_and_args()
+
         # 移除自启标识，避免重启后变最小化
-        launch_args.extend(arg for arg in sys.argv[1:] if arg != AUTOSTART_FLAG)
-        command_line = subprocess.list2cmdline([exe_path] + launch_args)
-
-        def _vbs_string(s: str) -> str:
-            return '"' + str(s).replace('"', '""') + '"'
-        
-        # PyInstaller 6.9+ 会把 sys.executable 启动的同一个 exe 默认当作子进程，
-        # 让它复用当前 onefile 的 _MEI 解压目录；重启场景必须显式重置环境。
-        clean_env = os.environ.copy()
-        clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-
-        # 兼容旧版 PyInstaller/运行时残留变量，避免新进程继续指向旧的临时目录。
-        for k in ("_MEIPASS2", "_MEIPASS", "PYINSTALLER_TEMP", "TCL_LIBRARY", "TK_LIBRARY"):
-            clean_env.pop(k, None)
-
+        restart_args = [
+            arg for arg in sys.argv[1:]
+            if arg not in (AUTOSTART_FLAG, RESTART_HELPER_FLAG)
+        ]
         current_pid = os.getpid()
-        # 使用 VBS 轮询旧进程 PID；旧进程真正退出后再启动，避免撞单实例锁。
-        vbs_code = fr'''
-Dim targetPid, query, wmi, processes
-On Error Resume Next
-targetPid = {current_pid}
-Set wmi = GetObject("winmgmts:\\.\root\cimv2")
-If Err.Number <> 0 Then
-    Err.Clear
-    WScript.Sleep 2000
-Else
-    Do
-        query = "SELECT ProcessId FROM Win32_Process WHERE ProcessId = " & targetPid
-        Set processes = wmi.ExecQuery(query)
-        If Err.Number <> 0 Then
-            Err.Clear
-            WScript.Sleep 2000
-            Exit Do
-        End If
-        If processes.Count = 0 Then Exit Do
-        WScript.Sleep 200
-    Loop
-End If
-On Error GoTo 0
-WScript.Sleep 300
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run {_vbs_string(command_line)}, 1, False
-Set fso = CreateObject("Scripting.FileSystemObject")
-fso.DeleteFile WScript.ScriptFullName
-'''
-        # 多开同时重启时，PID + 线程 ID 可避免多个实例抢写同一个临时 VBS。
-        vbs_path = os.path.join(
-            tempfile.gettempdir(),
-            f"sms_restart_helper_{os.getpid()}_{threading.get_ident()}.vbs"
+
+        helper_cmd = [target]
+        if script_arg:
+            helper_cmd.append(script_arg)
+        helper_cmd.extend(
+            [RESTART_HELPER_FLAG, str(current_pid), _encode_restart_args(restart_args)]
         )
-        with open(vbs_path, "w", encoding="mbcs") as f:
-            f.write(vbs_code)
-            
-        subprocess.Popen(
-            ["wscript.exe", "//Nologo", vbs_path],
-            env=clean_env,
-            cwd=os.path.dirname(exe_path),
-            close_fds=True,
-            creationflags=0x08000000
+
+        _launch_detached_process(
+            helper_cmd,
+            env=_get_clean_restart_env(),
+            cwd=workdir,
         )
     except Exception as e:
-        try:
-            if vbs_path and os.path.exists(vbs_path):
-                os.remove(vbs_path)
-        except Exception:
-            pass
-
         err = f"重启尝试失败：{e}"
         log_file_only(err)
         try:
@@ -7963,7 +7975,7 @@ schedule_next_midnight_clear()
 if MODE == "Auto":
     set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
 else:
-    set_status(f"✍️ 手动模式：{PORT or '未指定'} @ {BAUD}", "orange")
+    set_status(f"✍️ 手动模式：{PORT or '未指定'}", "orange")
 
 if CLOUD_CONTROL_ENABLED:
     start_cloud_control()
