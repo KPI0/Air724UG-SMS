@@ -79,6 +79,7 @@ CONFIG_FILE = os.path.join(APP_DIR, "config.ini")  # 软件配置文件
 LOG_DIR = os.path.join(APP_DIR, "sms_logs") # 短信日志文件夹
 TTS_DIR = os.path.join(APP_DIR, "tts") # 语音播报文件夹
 TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
+APP_WINDOW_TITLE = "短信监听系统"
 RECONNECT_INTERVAL = 2  # 秒
 APP_VERSION = "3.6.6"  # 软件版本号
 GITHUB_OWNER = "KPI0"
@@ -2934,6 +2935,72 @@ import ctypes
 
 app_mutex = None
 
+def focus_existing_instance():
+    """二次启动时，尽量把已运行实例恢复到前台。"""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, APP_WINDOW_TITLE)
+        if not hwnd:
+            return False
+
+        SW_SHOW = 5
+        SW_RESTORE = 9
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_SHOWWINDOW = 0x0040
+        HWND_TOPMOST = -1
+        HWND_NOTOPMOST = -2
+
+        try:
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            else:
+                user32.ShowWindow(hwnd, SW_SHOW)
+                user32.ShowWindow(hwnd, SW_RESTORE)
+        except Exception:
+            pass
+
+        try:
+            user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+            user32.SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+        except Exception:
+            pass
+
+        try:
+            user32.BringWindowToTop(hwnd)
+        except Exception:
+            pass
+
+        try:
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+        try:
+            user32.SetActiveWindow(hwnd)
+        except Exception:
+            pass
+
+        return True
+    except Exception:
+        return False
+
 def check_single_instance():
     global app_mutex
     # 当前用户会话内唯一；不使用 Global\，避免普通用户权限下创建失败
@@ -2951,8 +3018,9 @@ def check_single_instance():
             except Exception:
                 pass
         app_mutex = None
-        # 发现已有实例运行，弹出友好的系统原生提示框并立刻退出
-        ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
+        # 发现已有实例运行：优先直接唤醒已运行窗口，失败再回退到提示框。
+        if not focus_existing_instance():
+            ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中，请在右下角托盘查看。", "提示", 0x30)
         sys.exit(0)
 
     # 2. 如果不是被占用，而是真的句柄创建失败（如系统资源耗尽），再做致命报错兜底
@@ -3064,7 +3132,7 @@ except Exception as _e:
     # 任何异常都不能影响主程序和弹窗正常使用
     log_file_only(f"弹窗图标补丁加载失败：{_e}")
 
-root.title("短信监听系统")
+root.title(APP_WINDOW_TITLE)
 root.geometry("800x520")
 
 root.update_idletasks()
@@ -3238,7 +3306,7 @@ def create_tray():
         pystray.MenuItem("退出", lambda: cleanup_and_exit()),
     )
 
-    tray_icon = pystray.Icon("sms_tray", img, "短信监听系统", menu)
+    tray_icon = pystray.Icon("sms_tray", img, APP_WINDOW_TITLE, menu)
     tray_icon.run()
 
 threading.Thread(target=create_tray, daemon=True).start()

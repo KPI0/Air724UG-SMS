@@ -39,7 +39,7 @@ jobs:
         run: |
           python -m pip check
           python -m py_compile sms.pyw
-          python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api"
+          python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
 
       - name: Build EXE with PyInstaller
         shell: pwsh
@@ -52,6 +52,11 @@ jobs:
             --icon "icon.ico" `
             --add-data "icon.ico;." `
             --hidden-import "pyttsx3.drivers.sapi5" `
+            --hidden-import "pythoncom" `
+            --hidden-import "pywintypes" `
+            --hidden-import "win32com" `
+            --hidden-import "win32com.client" `
+            --collect-submodules "win32com" `
             --collect-submodules "websockets" `
             --clean `
             sms.pyw
