@@ -41,6 +41,11 @@ pyinstaller ^
   --icon=icon.ico ^
   --add-data "icon.ico;." ^
   --hidden-import "pyttsx3.drivers.sapi5" ^
+  --hidden-import "pythoncom" ^
+  --hidden-import "pywintypes" ^
+  --hidden-import "win32com" ^
+  --hidden-import "win32com.client" ^
+  --collect-submodules "win32com" ^
   --collect-submodules "websockets" ^
   --clean ^
   sms.pyw
