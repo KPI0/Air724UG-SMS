@@ -410,6 +410,28 @@ if not os.path.exists(CONFIG_FILE):
 
 config.read(CONFIG_FILE, encoding="utf-8")
 
+CLOUD_WS_DEFAULT_PATH = "/websocket"
+
+
+def normalize_cloud_ws_url(url: str) -> str:
+    """同端口部署时，允许用户只填写 ws://host:port，自动补默认 WebSocket 路径。"""
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    if not (lower.startswith("ws://") or lower.startswith("wss://")):
+        return text
+    try:
+        parsed = urllib.parse.urlsplit(text)
+        if parsed.scheme.lower() not in ("ws", "wss") or not parsed.netloc:
+            return text
+        if parsed.path in ("", "/"):
+            parsed = parsed._replace(path=CLOUD_WS_DEFAULT_PATH)
+            return urllib.parse.urlunsplit(parsed)
+    except Exception:
+        return text
+    return text
+
 # ===== 语音播报内容（从配置读取）=====
 DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
 try:
@@ -469,7 +491,9 @@ except Exception:
     CLOUD_CONTROL_ENABLED = False
 
 try:
-    CLOUD_WS_URL = config.get("cloud_control", "url", fallback="").strip()
+    CLOUD_WS_URL = normalize_cloud_ws_url(
+        config.get("cloud_control", "url", fallback="")
+    )
 except Exception:
     CLOUD_WS_URL = ""
 
@@ -511,7 +535,9 @@ def refresh_cloud_control_settings_from_config():
         CLOUD_CONTROL_ENABLED = False
 
     try:
-        CLOUD_WS_URL = config.get("cloud_control", "url", fallback="").strip()
+        CLOUD_WS_URL = normalize_cloud_ws_url(
+            config.get("cloud_control", "url", fallback="")
+        )
     except Exception:
         CLOUD_WS_URL = ""
 
@@ -4679,7 +4705,7 @@ def save_cloud_control_setting(enabled=None, url=None, reconnect_interval=None, 
     if enabled is not None:
         CLOUD_CONTROL_ENABLED = bool(enabled)
     if url is not None:
-        CLOUD_WS_URL = str(url).strip()
+        CLOUD_WS_URL = normalize_cloud_ws_url(url)
     if device_secret is not None:
         CLOUD_DEVICE_SECRET = str(device_secret).strip()
     if reconnect_interval is not None:
@@ -5088,10 +5114,21 @@ def _cloud_prune_replay_cache(now_ts: int):
         cloud_replay_seen.clear()
 
 async def _cloud_check_replay_window(ws, data: dict, mark_seen: bool = True) -> bool:
+    task_id = str(data.get("task_id") or data.get("command_task_id") or "").strip()
+
+    async def _reply_replay_error(payload):
+        if task_id:
+            payload = {
+                **payload,
+                "task_id": payload.get("task_id") or task_id,
+                "command_task_id": payload.get("command_task_id") or task_id,
+            }
+        await _cloud_reply(ws, payload)
+
     ts, raw_ts = _cloud_read_unix_timestamp(data)
     if ts is None:
         _cloud_log("已拒绝云端指令：缺少 Unix 时间戳字段 timestamp/ts")
-        await _cloud_reply(ws, {
+        await _reply_replay_error({
             "type": "error",
             "ok": False,
             "message": "安全拦截：缺少 Unix 时间戳，请使用 timestamp 或 ts 秒级时间戳",
@@ -5102,7 +5139,7 @@ async def _cloud_check_replay_window(ws, data: dict, mark_seen: bool = True) -> 
     delta = abs(now_ts - ts)
     if delta > CLOUD_REPLAY_WINDOW_SECONDS:
         _cloud_log(f"已拒绝云端指令：时间戳超时或疑似重放攻击 (timestamp={raw_ts}, delta={delta}s)")
-        await _cloud_reply(ws, {
+        await _reply_replay_error({
             "type": "error",
             "ok": False,
             "message": "安全拦截：指令已过期，请检查服务器和本机时钟是否同步",
@@ -5114,7 +5151,7 @@ async def _cloud_check_replay_window(ws, data: dict, mark_seen: bool = True) -> 
         replay_key = _cloud_replay_key(data, ts)
         if replay_key in cloud_replay_seen:
             _cloud_log(f"已拒绝云端指令：检测到重复 nonce/指令指纹 (timestamp={raw_ts})")
-            await _cloud_reply(ws, {
+            await _reply_replay_error({
                 "type": "error",
                 "ok": False,
                 "message": "安全拦截：检测到重复指令，疑似重放攻击",
@@ -5177,6 +5214,17 @@ async def _handle_cloud_message(ws, message):
         return
 
     msg_type = str(data.get("type") or "").strip().lower()
+    cloud_task_id = str(data.get("task_id") or data.get("command_task_id") or "").strip()
+
+    async def _cloud_task_reply(payload):
+        if cloud_task_id and isinstance(payload, dict):
+            payload = {
+                **payload,
+                "task_id": payload.get("task_id") or cloud_task_id,
+                "command_task_id": payload.get("command_task_id") or cloud_task_id,
+            }
+        await _cloud_reply(ws, payload)
+
     if msg_type in ("device_login_ack", "device_auth", "device_auth_result"):
         auth_status = get_cloud_auth_status_from_ack(data)
         if auth_status == "authorized":
@@ -5191,7 +5239,7 @@ async def _handle_cloud_message(ws, message):
 
     if not cloud_device_authorized:
         _cloud_log("已拒绝云端指令：设备尚未获得服务端授权")
-        await _cloud_reply(ws, {
+        await _cloud_task_reply({
             "type": "auth_failed",
             "ok": False,
             "message": "设备尚未获得服务端授权，已拒绝执行云端指令",
@@ -5208,7 +5256,7 @@ async def _handle_cloud_message(ws, message):
         action = "cmd"
 
     if not _cloud_auth_matches(data):
-        await _cloud_reply(ws, {
+        await _cloud_task_reply({
             "type": "auth_failed",
             "ok": False,
             "message": "IMEI 或密码校验失败",
@@ -5221,7 +5269,7 @@ async def _handle_cloud_message(ws, message):
         return
 
     if action in ("ping", "heartbeat"):
-        await _cloud_reply(ws, {
+        await _cloud_task_reply({
             "type": "pong",
             "ok": True,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -5230,7 +5278,7 @@ async def _handle_cloud_message(ws, message):
         return
 
     if action in ("status", "get_status"):
-        await _cloud_reply(ws, _cloud_send_status_payload())
+        await _cloud_task_reply(_cloud_send_status_payload())
         return
 
     if action in ("send_at", "at", "cmd", "command"):
@@ -5238,20 +5286,20 @@ async def _handle_cloud_message(ws, message):
         _cloud_log(f"云端下发指令：{command}")
         loop = asyncio.get_running_loop()
         ok, info = await loop.run_in_executor(None, _cloud_send_serial_command, command)
-        await _cloud_reply(ws, {"type": "send_at_result", "ok": ok, "message": info})
+        await _cloud_task_reply({"type": "send_at_result", "ok": ok, "message": info})
         return
 
     if action == "show_window":
         show_window()
-        await _cloud_reply(ws, {"type": "show_window_result", "ok": True})
+        await _cloud_task_reply({"type": "show_window_result", "ok": True})
         return
 
     if action == "hide_window":
         hide_window()
-        await _cloud_reply(ws, {"type": "hide_window_result", "ok": True})
+        await _cloud_task_reply({"type": "hide_window_result", "ok": True})
         return
 
-    await _cloud_reply(ws, {
+    await _cloud_task_reply({
         "type": "error",
         "ok": False,
         "message": f"未知云端指令：{action or '(empty)'}",
@@ -5367,7 +5415,7 @@ def start_cloud_control(show_errors=False):
             )
         return False
 
-    url = CLOUD_WS_URL.strip()
+    url = normalize_cloud_ws_url(CLOUD_WS_URL)
     if not url:
         set_cloud_status("🌐 未配置", "#cc0000")
         if show_errors:
@@ -5537,7 +5585,7 @@ def open_cloud_control_window():
         top_opts_frame, text="主动公开设备", variable=auto_upload_var, command=_on_upload_toggle
     ).pack(side="left")
 
-    url_placeholder = "wss://example.com/ws"
+    url_placeholder = "wss://example.com/websocket"
     url_placeholder_active = {"value": False}
     # ===== WebSocket 地址显隐控制变量与函数 =====
     url_visible_var = tk.BooleanVar(value=True)  # 默认明文可见
@@ -5592,8 +5640,9 @@ def open_cloud_control_window():
         messagebox.showinfo(
             "WebSocket 地址参考",
             "参考格式：\n"
-            "wss://example.com/ws\n"
-            "ws://192.168.1.100:8080/ws\n\n"
+            "wss://example.com/websocket\n"
+            "ws://192.168.1.100:8000/websocket\n\n"
+            "如果只填写 ws://主机:端口，程序会自动补 /websocket。\n"
             "地址必须以 ws:// 或 wss:// 开头。",
             parent=cloud_control_win
         )
@@ -5723,7 +5772,10 @@ def open_cloud_control_window():
         btn_frame.grid_columnconfigure(col, weight=1, uniform="cloud_actions")
 
     def _read_form(force_enabled=False):
-        url = _get_url_value()
+        url = normalize_cloud_ws_url(_get_url_value())
+        if url:
+            url_placeholder_active["value"] = False
+            url_var.set(url)
         enabled = bool(enabled_var.get()) or bool(force_enabled)
         try:
             interval = int(reconnect_var.get().strip())
