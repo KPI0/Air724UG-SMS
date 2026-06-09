@@ -194,7 +194,7 @@ def apply_cloud_control_settings(settings: CloudControlSettings):
 def refresh_cloud_control_settings_from_config():
     """重新从 config.ini 读取云端控制配置，避免窗口复用时显示旧状态。"""
     try:
-        config.read(CONFIG_FILE, encoding="utf-8")
+        config.read(CONFIG_FILE, encoding="utf-8-sig")
     except Exception:
         pass
     apply_cloud_control_settings(read_cloud_control_settings(config))
@@ -486,5 +486,4 @@ def main():
     _build_main_menu()
     _start_services()
     root.mainloop()
-
 

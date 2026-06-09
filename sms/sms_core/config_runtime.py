@@ -31,7 +31,7 @@ def initialize_config_runtime(
     defaults_by_section,
     save_config,
     path_exists=os.path.exists,
-    encoding="utf-8",
+    encoding="utf-8-sig",
 ):
     created = False
     if not path_exists(config_file):

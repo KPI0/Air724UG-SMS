@@ -29,7 +29,7 @@ def apply_third_push_settings_namespace_runtime(namespace, settings):
 
 def refresh_third_push_settings_namespace_runtime(namespace):
     try:
-        namespace["config"].read(namespace["CONFIG_FILE"], encoding="utf-8")
+        namespace["config"].read(namespace["CONFIG_FILE"], encoding="utf-8-sig")
     except Exception:
         pass
 

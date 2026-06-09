@@ -1,4 +1,5 @@
 import configparser
+import os
 import tempfile
 import unittest
 
@@ -162,7 +163,25 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(calls, [])
         self.assertEqual(config.sections, {})
-        self.assertEqual(config.read_calls, [("config.ini", "utf-8")])
+        self.assertEqual(config.read_calls, [("config.ini", "utf-8-sig")])
+
+    def test_initialize_config_runtime_accepts_utf8_bom_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.ini")
+            with open(config_file, "w", encoding="utf-8-sig") as file:
+                file.write("[ui]\nvoice_enabled = 1\n")
+
+            config = configparser.ConfigParser(interpolation=None)
+
+            result = initialize_config_runtime(
+                config=config,
+                config_file=config_file,
+                defaults_by_section={"ui": {"voice_enabled": "0"}},
+                save_config=lambda: None,
+            )
+
+            self.assertFalse(result)
+            self.assertEqual(config.get("ui", "voice_enabled"), "1")
 
     def test_safe_save_config_runtime_writes_temp_and_replaces_target(self):
         config = configparser.ConfigParser()
