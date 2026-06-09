@@ -1,0 +1,89 @@
+SERIAL_DEBUG_MAX_STORE_LINES = 20000
+SERIAL_DEBUG_MAX_VISIBLE_LINES = 5000
+
+COMMON_SERIAL_COMMANDS = [
+    ("AT", "测试通信"),
+    ("ATI", "查模块信息"),
+    ("AT+CGMR", "查固件版本"),
+    ("AT+CSQ", "查信号(RSSI/通用)"),
+    ("AT+CESQ", "查精确信号(4G RSRP)"),
+    ("AT+CGSN", "查模组IMEI"),
+    ("AT+WISN?", "查模组SN"),
+    ("AT+MIFIMAC=R", "查WiFi热点MAC地址"),
+    ("AT+CGPADDR", "查PDP上下文IP地址"),
+    ("AT+CGDCONT?", "查APN配置"),
+    ("AT+RFTEMPERATURE?", "查模组温度"),
+    ("AT+CNUM", "查本机号码"),
+    ("AT+CSCA?", "查短信中心号码"),
+    ("AT+COPS?", "查运营商"),
+    ("AT+CPIN?", "查PIN码锁状态"),
+    ("AT+ICCID", "查SIM卡ICCID"),
+    ("AT+CIMI", "查SIM卡IMSI"),
+    ("AT+CGATT?", "查网络附着"),
+    ("AT+CFUN=1,1", "重启基带"),
+    ("AT+RESET", "重启模组"),
+    ("AT+CFUN?", "查看当前飞行模式状态"),
+    ("AT+CFUN=0", "打开飞行模式"),
+    ("AT+CFUN=1", "关闭飞行模式"),
+    ("AT+EEMGINFO?", "查基站定位数据"),
+]
+
+
+def quick_command_label(command: str, description: str) -> str:
+    return f"{command}  ({description})"
+
+
+def build_serial_command_payload(command: str, append_crlf: bool = True):
+    text = str(command or "")
+    suffix = "\r\n" if append_crlf else ""
+    display_suffix = "\\r\\n" if append_crlf else ""
+    return (text + suffix).encode("utf-8", "ignore"), display_suffix
+
+
+def build_pin_unlock_command(pin: str) -> str:
+    return f'AT+CPIN="{str(pin or "").strip()}"'
+
+
+def build_puk_unlock_command(puk: str, new_pin: str) -> str:
+    return f'AT+CPIN="{str(puk or "").strip()}","{str(new_pin or "").strip()}"'
+
+
+def build_pin_lock_command(pin: str, enable: bool) -> str:
+    mode = "1" if enable else "0"
+    return f'AT+CLCK="SC",{mode},"{str(pin or "").strip()}"'
+
+
+def build_pin_change_command(old_pin: str, new_pin: str) -> str:
+    return f'AT+CPWD="SC","{str(old_pin or "").strip()}","{str(new_pin or "").strip()}"'
+
+
+def normalize_own_number(phone: str) -> str:
+    text = str(phone or "").strip()
+    if text and not text.startswith("+"):
+        text = "+86" + text
+    return text
+
+
+def build_own_number_commands(phone: str):
+    normalized = normalize_own_number(phone)
+    return 'AT+CPBS="ON"', f'AT+CPBW=1,"{normalized}",145'
+
+
+def build_sn_command(sn: str) -> str:
+    return f'AT+WISN={str(sn or "").strip()}'
+
+
+def normalize_dial_number(phone: str) -> str:
+    text = str(phone or "").strip()
+    if text.startswith("+86"):
+        return text[3:]
+    if text.startswith("86") and len(text) == 13:
+        return text[2:]
+    return text
+
+
+def build_dial_command(phone: str) -> str:
+    return f"ATD{normalize_dial_number(phone)};"
+
+
+HANGUP_COMMAND = "ATH"

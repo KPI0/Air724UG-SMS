@@ -1,0 +1,43 @@
+from sms_core.app_shutdown import cleanup_and_exit_runtime
+
+
+def cleanup_and_exit_app_runtime(
+    *,
+    root,
+    messagebox,
+    is_exiting,
+    set_exiting,
+    set_serial_running,
+    shutdown_events,
+    worker_stop_events,
+    tts_stop_event,
+    safe_set_events,
+    stop_cloud_control,
+    safe_close_serial,
+    stop_tray_icon,
+    flush_log_queue,
+    file_log_queue,
+    destroy_root=None,
+    cleanup_runtime=cleanup_and_exit_runtime,
+):
+    destroy_root = destroy_root or root.destroy
+    return cleanup_runtime(
+        is_exiting=is_exiting,
+        confirm_exit=lambda: messagebox.askyesno(
+            "退出软件",
+            "确定要完全退出软件吗？\n\n退出后将停止监听短信和来电。",
+            parent=root,
+        ),
+        set_exiting=set_exiting,
+        set_serial_running=set_serial_running,
+        shutdown_events=shutdown_events,
+        worker_stop_events=worker_stop_events,
+        tts_stop_event=tts_stop_event,
+        safe_set_events=safe_set_events,
+        stop_cloud_control=stop_cloud_control,
+        safe_close_serial=safe_close_serial,
+        stop_tray_icon=stop_tray_icon,
+        flush_log_queue=flush_log_queue,
+        file_log_queue=file_log_queue,
+        destroy_root=destroy_root,
+    )

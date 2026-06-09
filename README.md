@@ -18,12 +18,12 @@
 ## 📦 依赖安装
 
 ```bash
-pip install pyserial pystray pillow pyttsx3 websockets
+pip install -r requirements.txt
 ```
 
 ## 🚀 源码运行
 ```bash
-py sms.pyw
+py sms\sms.pyw
 ```
 ## 🏗 打包为 EXE
 
@@ -40,15 +40,20 @@ pyinstaller ^
   --name "sms" ^
   --icon=icon.ico ^
   --add-data "icon.ico;." ^
+  --paths "sms" ^
   --hidden-import "pyttsx3.drivers.sapi5" ^
   --hidden-import "pythoncom" ^
   --hidden-import "pywintypes" ^
   --hidden-import "win32com" ^
   --hidden-import "win32com.client" ^
+  --hidden-import "sms_core" ^
+  --hidden-import "sms_ui" ^
   --collect-submodules "win32com" ^
   --collect-submodules "websockets" ^
+  --collect-submodules "sms_core" ^
+  --collect-submodules "sms_ui" ^
   --clean ^
-  sms.pyw
+  sms\sms.pyw
 ```
 生成的 exe 文件位于：
 ```bash
@@ -58,7 +63,12 @@ dist/sms.exe
 ```
 Air724UG-SMS/
 │
-├── sms.pyw    # 主程序入口
+├── sms.pyw             # 原始整合版/安全备份版，Release 不打包此文件
+├── sms/                # 重构版源码目录，GitHub Actions 和手动打包均使用此目录
+│   ├── sms.pyw         # 重构版主程序入口
+│   ├── sms_core/       # 串口、短信、云控、推送、配置等核心逻辑
+│   └── sms_ui/         # Tkinter 窗口、菜单、设置页、托盘等 UI 逻辑
+├── requirements.txt    # Python 依赖
 ├── icon.ico   # 应用图标
 ├── config.ini # 软件配置文件（首次运行自动创建）
 ├── sms_logs/  # 短信日志存储目录（首次运行自动创建）

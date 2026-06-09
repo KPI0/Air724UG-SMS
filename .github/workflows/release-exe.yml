@@ -6,10 +6,10 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-        tag:
-          description: "Release tag (e.g. v3.1.0)"
-          required: true
-          type: string
+      tag:
+        description: "Release tag (e.g. v3.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write   # 允许创建/更新 Release 并上传附件
@@ -38,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip check
-          python -m py_compile sms.pyw
+          python -m compileall -q sms\sms.pyw sms\sms_core sms\sms_ui
           python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
 
       - name: Build EXE with PyInstaller
@@ -51,15 +51,20 @@ jobs:
             --name "sms" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
+            --paths "sms" `
             --hidden-import "pyttsx3.drivers.sapi5" `
             --hidden-import "pythoncom" `
             --hidden-import "pywintypes" `
             --hidden-import "win32com" `
             --hidden-import "win32com.client" `
+            --hidden-import "sms_core" `
+            --hidden-import "sms_ui" `
             --collect-submodules "win32com" `
             --collect-submodules "websockets" `
+            --collect-submodules "sms_core" `
+            --collect-submodules "sms_ui" `
             --clean `
-            sms.pyw
+            sms\sms.pyw
 
       - name: Zip EXE
         shell: pwsh

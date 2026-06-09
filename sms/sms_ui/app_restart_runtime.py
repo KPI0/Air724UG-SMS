@@ -1,0 +1,58 @@
+import os
+import sys
+
+from sms_core.app_launch import restart_software_runtime
+
+
+def restart_software_app_runtime(
+    *,
+    root,
+    messagebox,
+    is_exiting,
+    set_exiting,
+    set_serial_running,
+    autostart_flag,
+    restart_helper_flag,
+    log_error,
+    system_ui,
+    stop_tray_icon,
+    safe_set_events,
+    stop_events,
+    stop_cloud_control,
+    safe_close_serial,
+    app_mutex,
+    release_mutex,
+    flush_log_queue,
+    file_log_queue,
+    exit_process=os._exit,
+    argv=None,
+    current_pid=None,
+    restart_runtime=restart_software_runtime,
+):
+    return restart_runtime(
+        is_exiting=is_exiting,
+        confirm_restart=lambda: messagebox.askyesno("重启软件", "确定要重启软件吗？", parent=root),
+        argv=sys.argv if argv is None else argv,
+        autostart_flag=autostart_flag,
+        restart_helper_flag=restart_helper_flag,
+        current_pid=os.getpid() if current_pid is None else current_pid,
+        log_error=log_error,
+        show_launch_error=lambda error: messagebox.showerror(
+            "重启失败",
+            f"启动重启助手失败，当前软件将继续运行。\n\n{error}",
+            parent=root,
+        ),
+        set_exiting=set_exiting,
+        system_ui=system_ui,
+        stop_tray_icon=stop_tray_icon,
+        set_serial_running=set_serial_running,
+        safe_set_events=safe_set_events,
+        stop_events=stop_events,
+        stop_cloud_control=stop_cloud_control,
+        safe_close_serial=safe_close_serial,
+        app_mutex=app_mutex,
+        release_mutex=release_mutex,
+        flush_log_queue=flush_log_queue,
+        file_log_queue=file_log_queue,
+        exit_process=exit_process,
+    )
