@@ -25,6 +25,36 @@ pip install -r requirements.txt
 ```bash
 py sms\sms.pyw
 ```
+
+源码运行至少需要保留：
+
+```text
+sms/
+requirements.txt
+icon.ico
+```
+
+首次运行会在项目根目录自动生成：
+
+```text
+config.ini
+sms_logs/
+tts/
+```
+
+其中 `config.ini` 可能包含云控密钥、第三方推送 Token、SMTP 密码等个人配置，`sms_logs/` 可能包含短信、来电、设备 IMEI 等运行日志，请勿提交到公开仓库。
+
+## ✅ 回归测试
+
+仓库已包含 `tests/` 回归测试。源码修改或打包发布前建议执行：
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path "sms").Path
+py -m unittest discover -s tests -q
+```
+
+GitHub Actions 会在打包 EXE 之前自动执行同样的测试；测试失败时不会继续发布，避免生成明显异常的 Release。
+
 ## 🏗 打包为 EXE
 
 安装 PyInstaller：
@@ -71,6 +101,7 @@ Air724UG-SMS/
 │   ├── sms_app/        # 启动装配层，负责 main/bootstrap 与跨层绑定
 │   ├── sms_core/       # 串口、短信、云控、推送、配置等核心逻辑
 │   └── sms_ui/         # Tkinter 窗口、菜单、设置页、托盘等 UI 逻辑
+├── tests/              # 回归测试，Actions 打包前会自动运行
 ├── requirements.txt    # Python 依赖
 ├── icon.ico   # 应用图标
 ├── config.ini # 软件配置文件（首次运行自动创建）

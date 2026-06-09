@@ -1,0 +1,66 @@
+import unittest
+import importlib.util
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "sms" / "sms_core" / "threading_runtime.py"
+SPEC = importlib.util.spec_from_file_location("target_threading_runtime", MODULE_PATH)
+threading_runtime = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(threading_runtime)
+start_daemon_thread = threading_runtime.start_daemon_thread
+
+
+class FakeThread:
+    def __init__(self, target, daemon, name=None):
+        self.target = target
+        self.daemon = daemon
+        self.name = name
+        self.started = False
+
+    def start(self):
+        self.started = True
+        self.target()
+
+
+class ThreadingRuntimeTests(unittest.TestCase):
+    def test_start_daemon_thread_logs_target_exception(self):
+        logs = []
+
+        def boom():
+            raise RuntimeError("boom")
+
+        thread = start_daemon_thread(
+            "worker",
+            boom,
+            log_error=logs.append,
+            thread_factory=FakeThread,
+        )
+
+        self.assertTrue(thread.started)
+        self.assertTrue(thread.daemon)
+        self.assertEqual(thread.name, "worker")
+        self.assertEqual(len(logs), 1)
+        self.assertIn("worker", logs[0])
+        self.assertIn("boom", logs[0])
+        self.assertIn("Traceback", logs[0])
+
+    def test_start_daemon_thread_calls_before_start_before_starting(self):
+        calls = []
+
+        class OrderedThread(FakeThread):
+            def start(self):
+                calls.append("start")
+                super().start()
+
+        thread = start_daemon_thread(
+            "ordered",
+            lambda: calls.append("target"),
+            before_start=lambda thread: calls.append(("before", thread)),
+            thread_factory=OrderedThread,
+        )
+
+        self.assertEqual(calls, [("before", thread), "start", "target"])
+
+
+if __name__ == "__main__":
+    unittest.main()

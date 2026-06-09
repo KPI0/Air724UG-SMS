@@ -40,6 +40,12 @@ jobs:
           python -m pip check
           python -m compileall -q sms\sms.pyw sms\sms_app sms\sms_core sms\sms_ui
           python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
+      
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path "sms").Path
+          python -m unittest discover -s tests -q
 
       - name: Build EXE with PyInstaller
         shell: pwsh

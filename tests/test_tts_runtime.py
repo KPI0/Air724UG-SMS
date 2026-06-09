@@ -1,0 +1,186 @@
+import os
+import queue
+import tempfile
+import threading
+import unittest
+
+from sms_core.tts_runtime import (
+    cleanup_tts_alt_files,
+    clear_tts_queue,
+    enqueue_tts_request,
+    ensure_tts_worker_runtime,
+    generate_alert_voice_runtime,
+    generate_tts_file,
+    normalize_voice_text,
+)
+
+
+class FakeEngine:
+    def __init__(self):
+        self.rate = None
+        self.saved = None
+        self.stopped = False
+
+    def setProperty(self, name, value):
+        if name == "rate":
+            self.rate = value
+
+    def save_to_file(self, text, path):
+        self.saved = (text, path)
+        with open(path, "wb") as file:
+            file.write(b"wav")
+
+    def runAndWait(self):
+        pass
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeThread:
+    def __init__(self, *, alive=False):
+        self.alive = alive
+        self.started = False
+
+    def is_alive(self):
+        return self.alive
+
+    def start(self):
+        self.started = True
+        self.alive = True
+
+
+class FakeEvent:
+    def __init__(self, set_value=False):
+        self.set_value = set_value
+
+    def is_set(self):
+        return self.set_value
+
+
+class TtsRuntimeTests(unittest.TestCase):
+    def test_normalize_voice_text_uses_default_for_blank_values(self):
+        self.assertEqual(normalize_voice_text("", "default"), "default")
+        self.assertEqual(normalize_voice_text(" hello ", "default"), "hello")
+
+    def test_clear_and_enqueue_tts_request_debounces_queue(self):
+        request_queue = queue.Queue()
+        request_queue.put(("old", False, False))
+        request_queue.put(("older", False, False))
+
+        self.assertEqual(clear_tts_queue(request_queue), 2)
+        enqueue_tts_request(request_queue, "new", force=True, play_after=True)
+
+        self.assertEqual(request_queue.get_nowait(), ("new", True, True))
+
+    def test_cleanup_tts_alt_files_keeps_current_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current = os.path.join(tmp, "alert_alt_keep.wav")
+            stale = os.path.join(tmp, "alert_alt_old.wav")
+            other = os.path.join(tmp, "note.wav")
+            for path in (current, stale, other):
+                with open(path, "wb") as file:
+                    file.write(b"x")
+
+            self.assertEqual(cleanup_tts_alt_files(tmp, current), 1)
+            self.assertTrue(os.path.exists(current))
+            self.assertFalse(os.path.exists(stale))
+            self.assertTrue(os.path.exists(other))
+
+    def test_generate_tts_file_replaces_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert.wav")
+            engine = FakeEngine()
+
+            new_path = generate_tts_file(
+                "hello",
+                target,
+                tmp,
+                threading.Lock(),
+                engine_factory=lambda: engine,
+            )
+
+            self.assertEqual(new_path, target)
+            self.assertEqual(engine.rate, 150)
+            self.assertTrue(engine.stopped)
+            with open(target, "rb") as file:
+                self.assertEqual(file.read(), b"wav")
+
+    def test_ensure_tts_worker_runtime_starts_thread(self):
+        state = {"thread": None}
+
+        result = ensure_tts_worker_runtime(
+            get_thread=lambda: state["thread"],
+            set_thread=lambda thread: state.__setitem__("thread", thread),
+            stop_event=FakeEvent(False),
+            worker_target=lambda: None,
+            thread_factory=lambda **_kwargs: FakeThread(),
+            log_error=lambda exc: None,
+        )
+
+        self.assertEqual(result, "started")
+        self.assertTrue(state["thread"].started)
+
+    def test_ensure_tts_worker_runtime_skips_running_or_stopped(self):
+        self.assertEqual(
+            ensure_tts_worker_runtime(
+                get_thread=lambda: FakeThread(alive=True),
+                set_thread=lambda thread: None,
+                stop_event=FakeEvent(False),
+                worker_target=lambda: None,
+                thread_factory=lambda **_kwargs: FakeThread(),
+                log_error=lambda exc: None,
+            ),
+            "already_running",
+        )
+        self.assertEqual(
+            ensure_tts_worker_runtime(
+                get_thread=lambda: None,
+                set_thread=lambda thread: None,
+                stop_event=FakeEvent(True),
+                worker_target=lambda: None,
+                thread_factory=lambda **_kwargs: FakeThread(),
+                log_error=lambda exc: None,
+            ),
+            "stopped",
+        )
+
+    def test_generate_alert_voice_runtime_enqueues_normalized_request(self):
+        request_queue = queue.Queue()
+        calls = []
+
+        result = generate_alert_voice_runtime(
+            force=True,
+            text=None,
+            play_after=True,
+            get_voice_text=lambda: " hello ",
+            default_text="default",
+            ensure_worker=lambda: calls.append("worker"),
+            request_queue=request_queue,
+            log_queue_full=lambda: calls.append("full"),
+        )
+
+        self.assertEqual(result, "queued")
+        self.assertEqual(calls, ["worker"])
+        self.assertEqual(request_queue.get_nowait(), ("hello", True, True))
+
+    def test_generate_alert_voice_runtime_logs_full_queue(self):
+        request_queue = queue.Queue(maxsize=1)
+        request_queue.put_nowait(("existing", False, False))
+        calls = []
+
+        result = generate_alert_voice_runtime(
+            get_voice_text=lambda: "hello",
+            default_text="default",
+            ensure_worker=lambda: None,
+            request_queue=request_queue,
+            log_queue_full=lambda: calls.append("full"),
+            enqueue_request=lambda *_args, **_kwargs: (_ for _ in ()).throw(queue.Full()),
+        )
+
+        self.assertEqual(result, "full")
+        self.assertEqual(calls, ["full"])
+
+
+if __name__ == "__main__":
+    unittest.main()

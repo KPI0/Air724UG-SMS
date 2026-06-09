@@ -1,0 +1,133 @@
+import os
+import queue
+import tempfile
+import unittest
+
+from sms_core.app_shutdown import cleanup_and_exit_runtime, drain_log_queue, flush_log_queue, safe_set_events
+
+
+class FakeEvent:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.set_count = 0
+
+    def set(self):
+        if self.fail:
+            raise RuntimeError("set failed")
+        self.set_count += 1
+
+
+class AppShutdownTests(unittest.TestCase):
+    def test_safe_set_events_ignores_none_and_failed_events(self):
+        ok = FakeEvent()
+        failed = FakeEvent(fail=True)
+
+        self.assertEqual(safe_set_events(ok, None, failed), 1)
+        self.assertEqual(ok.set_count, 1)
+
+    def test_drain_log_queue_groups_lines_by_path(self):
+        log_queue = queue.Queue()
+        log_queue.put(("a.log", "a1"))
+        log_queue.put(("b.log", "b1"))
+        log_queue.put(("a.log", "a2"))
+
+        self.assertEqual(
+            drain_log_queue(log_queue),
+            {"a.log": ["a1", "a2"], "b.log": ["b1"]},
+        )
+        self.assertTrue(log_queue.empty())
+
+    def test_flush_log_queue_writes_pending_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sms.log")
+            log_queue = queue.Queue()
+            log_queue.put((path, "line1\n"))
+            log_queue.put((path, "line2\n"))
+
+            self.assertEqual(flush_log_queue(log_queue), 2)
+
+            with open(path, encoding="utf-8") as file:
+                self.assertEqual(file.read(), "line1\nline2\n")
+
+    def test_cleanup_and_exit_runtime_skips_when_already_exiting(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=True,
+            confirm_exit=lambda: calls.append(("confirm",)) or True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue=queue.Queue(),
+            destroy_root=lambda: calls.append(("destroy",)),
+        )
+
+        self.assertEqual(result, "already_exiting")
+        self.assertEqual(calls, [])
+
+    def test_cleanup_and_exit_runtime_skips_when_confirmation_cancelled(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: False,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue=queue.Queue(),
+            destroy_root=lambda: calls.append(("destroy",)),
+        )
+
+        self.assertEqual(result, "cancelled")
+        self.assertEqual(calls, [])
+
+    def test_cleanup_and_exit_runtime_runs_shutdown_steps(self):
+        calls = []
+        shutdown_event = FakeEvent()
+        worker_event = FakeEvent()
+        tts_event = FakeEvent()
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(shutdown_event,),
+            worker_stop_events=(worker_event,),
+            tts_stop_event=tts_event,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue=queue.Queue(),
+            destroy_root=lambda: calls.append(("destroy",)),
+            safe_set_events=lambda *events: calls.append(("events", events)),
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+        )
+
+        self.assertEqual(result, "exited")
+        self.assertEqual(calls, [
+            ("exiting", True),
+            ("events", (shutdown_event,)),
+            ("serial", False),
+            ("events", (worker_event,)),
+            ("cloud", {"update_status": False}),
+            ("close",),
+            ("tray", {"wait_after": 0.25}),
+            ("flush", calls[7][1]),
+            ("destroy",),
+            ("events", (tts_event,)),
+        ])
+
+
+if __name__ == "__main__":
+    unittest.main()
