@@ -46,10 +46,12 @@ pyinstaller ^
   --hidden-import "pywintypes" ^
   --hidden-import "win32com" ^
   --hidden-import "win32com.client" ^
+  --hidden-import "sms_app" ^
   --hidden-import "sms_core" ^
   --hidden-import "sms_ui" ^
   --collect-submodules "win32com" ^
   --collect-submodules "websockets" ^
+  --collect-submodules "sms_app" ^
   --collect-submodules "sms_core" ^
   --collect-submodules "sms_ui" ^
   --clean ^
@@ -66,6 +68,7 @@ Air724UG-SMS/
 ├── sms.pyw             # 原始整合版/安全备份版，Release 不打包此文件
 ├── sms/                # 重构版源码目录，GitHub Actions 和手动打包均使用此目录
 │   ├── sms.pyw         # 重构版主程序入口
+│   ├── sms_app/        # 启动装配层，负责 main/bootstrap 与跨层绑定
 │   ├── sms_core/       # 串口、短信、云控、推送、配置等核心逻辑
 │   └── sms_ui/         # Tkinter 窗口、菜单、设置页、托盘等 UI 逻辑
 ├── requirements.txt    # Python 依赖

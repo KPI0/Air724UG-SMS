@@ -38,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip check
-          python -m compileall -q sms\sms.pyw sms\sms_core sms\sms_ui
+          python -m compileall -q sms\sms.pyw sms\sms_app sms\sms_core sms\sms_ui
           python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
 
       - name: Build EXE with PyInstaller
@@ -57,10 +57,12 @@ jobs:
             --hidden-import "pywintypes" `
             --hidden-import "win32com" `
             --hidden-import "win32com.client" `
+            --hidden-import "sms_app" `
             --hidden-import "sms_core" `
             --hidden-import "sms_ui" `
             --collect-submodules "win32com" `
             --collect-submodules "websockets" `
+            --collect-submodules "sms_app" `
             --collect-submodules "sms_core" `
             --collect-submodules "sms_ui" `
             --clean `
