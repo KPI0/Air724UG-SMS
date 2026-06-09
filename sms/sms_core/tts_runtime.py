@@ -2,6 +2,8 @@ import os
 import queue
 import uuid
 
+from sms_core.threading_runtime import start_daemon_thread
+
 
 def ensure_tts_worker_runtime(
     *,
@@ -18,9 +20,13 @@ def ensure_tts_worker_runtime(
             return "already_running"
         if stop_event.is_set():
             return "stopped"
-        thread = thread_factory(target=worker_target, daemon=True)
-        set_thread(thread)
-        thread.start()
+        thread = start_daemon_thread(
+            "tts_worker",
+            worker_target,
+            log_error=log_error,
+            before_start=set_thread,
+            thread_factory=thread_factory,
+        )
         return "started"
     except Exception as exc:
         log_error(exc)

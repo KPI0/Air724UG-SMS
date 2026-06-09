@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-import threading
 import time
 
 from sms_core.serial_debug import build_serial_command_payload
 from sms_core.sms_pdu import encode_text_sms_pdu
+from sms_core.threading_runtime import start_daemon_thread
 
 
 @dataclass(frozen=True)
@@ -132,9 +132,10 @@ def _run_serial_command_with_result(serial_lock, get_serial, command, append_crl
         on_result(result)
 
 
-def send_command_async(serial_lock, get_serial, command, append_crlf=True, push_debug=None):
-    thread = threading.Thread(
-        target=lambda: _run_with_serial(
+def send_command_async(serial_lock, get_serial, command, append_crlf=True, push_debug=None, log_error=None):
+    return start_daemon_thread(
+        "serial_send_command",
+        lambda: _run_with_serial(
             serial_lock,
             get_serial,
             lambda serial_obj: write_serial_command(
@@ -144,10 +145,8 @@ def send_command_async(serial_lock, get_serial, command, append_crlf=True, push_
                 push_debug=push_debug,
             ),
         ),
-        daemon=True,
+        log_error=log_error,
     )
-    thread.start()
-    return thread
 
 
 def send_command_with_result_async(
@@ -157,9 +156,11 @@ def send_command_with_result_async(
     append_crlf=True,
     push_debug=None,
     on_result=None,
+    log_error=None,
 ):
-    thread = threading.Thread(
-        target=lambda: _run_serial_command_with_result(
+    return start_daemon_thread(
+        "serial_send_command_with_result",
+        lambda: _run_serial_command_with_result(
             serial_lock,
             get_serial,
             command,
@@ -167,15 +168,14 @@ def send_command_with_result_async(
             push_debug,
             on_result,
         ),
-        daemon=True,
+        log_error=log_error,
     )
-    thread.start()
-    return thread
 
 
-def send_command_sequence_async(serial_lock, get_serial, commands, push_debug=None, delay_sec=0.3):
-    thread = threading.Thread(
-        target=lambda: _run_with_serial(
+def send_command_sequence_async(serial_lock, get_serial, commands, push_debug=None, delay_sec=0.3, log_error=None):
+    return start_daemon_thread(
+        "serial_send_sequence",
+        lambda: _run_with_serial(
             serial_lock,
             get_serial,
             lambda serial_obj: write_serial_command_sequence(
@@ -185,15 +185,14 @@ def send_command_sequence_async(serial_lock, get_serial, commands, push_debug=No
                 delay_sec=delay_sec,
             ),
         ),
-        daemon=True,
+        log_error=log_error,
     )
-    thread.start()
-    return thread
 
 
-def send_text_sms_pdu_async(serial_lock, get_serial, phone, message, push_debug=None, port_ui=None):
-    thread = threading.Thread(
-        target=lambda: _run_with_serial(
+def send_text_sms_pdu_async(serial_lock, get_serial, phone, message, push_debug=None, port_ui=None, log_error=None):
+    return start_daemon_thread(
+        "serial_send_sms_pdu",
+        lambda: _run_with_serial(
             serial_lock,
             get_serial,
             lambda serial_obj: write_text_sms_pdu(
@@ -204,7 +203,5 @@ def send_text_sms_pdu_async(serial_lock, get_serial, phone, message, push_debug=
                 port_ui=port_ui,
             ),
         ),
-        daemon=True,
+        log_error=log_error,
     )
-    thread.start()
-    return thread

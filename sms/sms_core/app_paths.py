@@ -7,7 +7,10 @@ def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     try:
-        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if os.path.basename(package_dir).lower() == "sms":
+            return os.path.dirname(package_dir)
+        return package_dir
     except Exception:
         return os.path.dirname(os.path.abspath(sys.argv[0] or "."))
 
@@ -24,4 +27,7 @@ def get_startup_lnk(name="sms.lnk"):
 def resource_path(relative):
     if getattr(sys, "frozen", False):
         return os.path.join(sys._MEIPASS, relative)
-    return os.path.join(get_app_dir(), relative)
+    app_path = os.path.join(get_app_dir(), relative)
+    if os.path.exists(app_path):
+        return app_path
+    return os.path.join(os.path.dirname(get_app_dir()), relative)

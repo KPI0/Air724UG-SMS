@@ -93,6 +93,7 @@ def start_cloud_control_app_runtime(
         stop_event=stop_event,
         thread_factory=thread_factory,
         thread_target=thread_target,
+        log_error=lambda message: cloud_log(message, show_main=True),
     )
 
 
@@ -143,6 +144,7 @@ def restart_cloud_control_app_runtime(
     ui_post,
     start_control,
     thread_factory,
+    cloud_log=None,
     restart_runtime=restart_cloud_control_runtime,
 ):
     def increment_restart_seq():
@@ -164,6 +166,7 @@ def restart_cloud_control_app_runtime(
         ui_post=ui_post,
         start_control=start_control,
         thread_factory=thread_factory,
+        log_error=(lambda message: cloud_log(message, show_main=True)) if cloud_log is not None else None,
     )
 
 

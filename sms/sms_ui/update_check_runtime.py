@@ -1,5 +1,6 @@
 import threading
 
+from sms_core.threading_runtime import start_daemon_thread
 from sms_core.updates import check_latest_release, normalize_config_bases
 
 
@@ -52,6 +53,7 @@ def check_update_and_prompt_runtime(
     open_url,
     check_latest=check_latest_release,
     thread_factory=threading.Thread,
+    log_error=None,
 ):
     def worker():
         try:
@@ -70,6 +72,9 @@ def check_update_and_prompt_runtime(
         except Exception as exc:
             ui_post(lambda exc=exc: show_error("检测更新失败", str(exc)))
 
-    thread = thread_factory(target=worker, daemon=True)
-    thread.start()
-    return thread
+    return start_daemon_thread(
+        "update_check",
+        worker,
+        log_error=log_error,
+        thread_factory=thread_factory,
+    )

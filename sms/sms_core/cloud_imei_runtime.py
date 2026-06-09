@@ -1,6 +1,8 @@
 import threading
 import time
 
+from sms_core.threading_runtime import start_daemon_thread
+
 
 IMEI_READ_COMMAND = "AT+CGSN"
 IMEI_QUERY_WINDOW_SECONDS = 6.0
@@ -142,7 +144,12 @@ def request_cloud_device_imei_runtime(
         )
 
     try:
-        thread_factory(target=task, daemon=True).start()
+        start_daemon_thread(
+            "cloud_device_imei_request",
+            task,
+            log_error=cloud_log,
+            thread_factory=thread_factory,
+        )
         return True, "已尝试发送读取IMEI指令"
     except Exception as exc:
         try:

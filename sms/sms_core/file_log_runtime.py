@@ -1,6 +1,8 @@
 import queue
 import threading
 
+from sms_core.threading_runtime import start_daemon_thread
+
 
 def drain_available_log_lines(log_queue, first_item):
     path, line = first_item
@@ -50,9 +52,8 @@ def start_file_log_worker(
     stop_event,
     thread_factory=threading.Thread,
 ):
-    thread = thread_factory(
-        target=lambda: run_file_log_worker(log_queue=log_queue, stop_event=stop_event),
-        daemon=True,
+    return start_daemon_thread(
+        "file_log_worker",
+        lambda: run_file_log_worker(log_queue=log_queue, stop_event=stop_event),
+        thread_factory=thread_factory,
     )
-    thread.start()
-    return thread

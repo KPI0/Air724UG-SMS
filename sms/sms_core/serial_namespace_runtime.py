@@ -96,6 +96,7 @@ def schedule_delayed_connected_log_namespace_runtime(
         app_start_mono=namespace["APP_START_MONO"],
         start_ui_delay=namespace["START_UI_DELAY"],
         format_connected_status=format_connected_status,
+        log_error=namespace.get("log_file_only"),
     )
 
 

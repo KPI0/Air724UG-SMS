@@ -48,6 +48,7 @@ def open_serial_debug_window_namespace_runtime(
         format_connected_status=namespace["format_connected_status"],
         get_port=lambda: namespace["PORT"],
         center_window=namespace["center_window"],
+        log_error=namespace.get("log_file_only"),
     )
 
 

@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass
 
+from sms_core.threading_runtime import start_daemon_thread
 from sms_core.updates import (
     format_proxy_test_result,
     normalize_proxy_base,
@@ -280,6 +281,7 @@ def test_update_proxy_async(
     connectivity_func=test_update_proxy_connectivity,
     formatter=format_proxy_test_result,
     thread_factory=threading.Thread,
+    log_error=None,
 ):
     def worker():
         try:
@@ -288,9 +290,12 @@ def test_update_proxy_async(
         except Exception as exc:
             ui_post(lambda exc=exc: on_error(str(exc)))
 
-    thread = thread_factory(target=worker, daemon=True)
-    thread.start()
-    return thread
+    return start_daemon_thread(
+        "update_proxy_test",
+        worker,
+        log_error=log_error,
+        thread_factory=thread_factory,
+    )
 
 
 def open_update_proxy_dialog_runtime(
@@ -302,6 +307,7 @@ def open_update_proxy_dialog_runtime(
     save_config,
     ui_post,
     center_window,
+    log_error=None,
     open_dialog=open_update_proxy_dialog,
     test_async=test_update_proxy_async,
 ):
@@ -311,7 +317,19 @@ def open_update_proxy_dialog_runtime(
         save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
 
     def test_connection(api_proxy_base, proxy_base, on_success, on_error):
-        test_async(owner, repo, api_proxy_base, proxy_base, on_success, on_error, ui_post)
+        if log_error is None:
+            test_async(owner, repo, api_proxy_base, proxy_base, on_success, on_error, ui_post)
+        else:
+            test_async(
+                owner,
+                repo,
+                api_proxy_base,
+                proxy_base,
+                on_success,
+                on_error,
+                ui_post,
+                log_error=log_error,
+            )
 
     open_dialog(
         parent,

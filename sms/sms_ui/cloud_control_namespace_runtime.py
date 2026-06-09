@@ -79,6 +79,7 @@ def restart_cloud_control_namespace_runtime(
         ui_post=namespace["ui_post"],
         start_control=namespace["start_cloud_control"],
         thread_factory=namespace.get("threading", threading).Thread,
+        cloud_log=namespace["_cloud_log"],
     )
 
 

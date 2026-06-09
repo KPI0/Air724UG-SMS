@@ -10,6 +10,7 @@ def send_reset_command_runtime(
     ui_post,
     system_ui,
     show_warning,
+    log_error=None,
 ):
     if not confirm_reset():
         return "cancelled"
@@ -28,5 +29,6 @@ def send_reset_command_runtime(
         get_serial,
         RESET_COMMAND,
         on_result=on_result,
+        log_error=log_error,
     )
     return "submitted"

@@ -173,4 +173,5 @@ def send_reset_cmd_namespace_runtime(namespace):
             message,
             parent=namespace["root"],
         ),
+        log_error=namespace.get("log_file_only"),
     )

@@ -56,6 +56,7 @@ def open_update_proxy_dialog_namespace_runtime(
         save_config=namespace["safe_save_config"],
         ui_post=namespace["ui_post"],
         center_window=namespace["center_window"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -116,4 +117,5 @@ def check_update_and_prompt_namespace_runtime(
         show_error=namespace["messagebox"].showerror,
         ask_open_download=namespace["messagebox"].askyesno,
         open_url=webbrowser_module.open,
+        log_error=namespace.get("log_file_only"),
     )

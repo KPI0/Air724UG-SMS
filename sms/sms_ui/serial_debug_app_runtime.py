@@ -15,10 +15,11 @@ def open_serial_debug_window_runtime(
     format_connected_status,
     get_port,
     center_window,
+    log_error=None,
     open_dialog=open_serial_debug_window_dialog,
 ):
     current_window, current_text = get_state("window_refs")
-    window, text = open_dialog(
+    args = (
         parent,
         current_window,
         current_text,
@@ -38,5 +39,9 @@ def open_serial_debug_window_runtime(
         lambda: set_state("clear_window_refs"),
         center_window,
     )
+    if log_error is None:
+        window, text = open_dialog(*args)
+    else:
+        window, text = open_dialog(*args, log_error=log_error)
     set_state("window_refs", window, text)
     return window, text

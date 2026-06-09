@@ -48,6 +48,7 @@ def show_call_popup_runtime(
     *,
     open_popup=open_call_popup,
     send_command_async=send_command_with_result_async,
+    log_error=None,
 ):
     if popup_exists(current_popup):
         return current_popup
@@ -65,12 +66,10 @@ def show_call_popup_runtime(
                 set_ring_timeout,
             )
 
-        send_command_async(
-            serial_lock,
-            serial_getter,
-            "ATA",
-            on_result=on_result,
-        )
+        kwargs = {"on_result": on_result}
+        if log_error is not None:
+            kwargs["log_error"] = log_error
+        send_command_async(serial_lock, serial_getter, "ATA", **kwargs)
 
     def hangup(restore_hangup):
         def on_result(result):
@@ -82,12 +81,10 @@ def show_call_popup_runtime(
                 close_popup,
             )
 
-        send_command_async(
-            serial_lock,
-            serial_getter,
-            "ATH",
-            on_result=on_result,
-        )
+        kwargs = {"on_result": on_result}
+        if log_error is not None:
+            kwargs["log_error"] = log_error
+        send_command_async(serial_lock, serial_getter, "ATH", **kwargs)
 
     win = open_popup(
         parent,
@@ -117,10 +114,11 @@ def show_call_popup_app_runtime(
     close_popup,
     set_ring_timeout,
     run_on_ui_thread,
+    log_error=None,
     show_runtime=show_call_popup_runtime,
 ):
     def show_on_ui():
-        return show_runtime(
+        args = (
             parent,
             caller_num,
             get_popup(),
@@ -134,5 +132,8 @@ def show_call_popup_app_runtime(
             close_popup,
             set_ring_timeout,
         )
+        if log_error is None:
+            return show_runtime(*args)
+        return show_runtime(*args, log_error=log_error)
 
     return run_on_ui_thread(show_on_ui, ui_post)

@@ -12,6 +12,7 @@ from sms_core.cloud_control_settings import (
     write_cloud_control_settings,
 )
 from sms_core.cloud_protocol import normalize_cloud_ws_url
+from sms_core.threading_runtime import start_daemon_thread
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ def start_cloud_control_runtime(
     stop_event,
     thread_factory,
     thread_target,
+    log_error=None,
     start_thread_action=cloud_start_thread_action,
     restarting_status=cloud_restarting_status,
 ):
@@ -119,13 +121,14 @@ def start_cloud_control_runtime(
             return True
 
         stop_event.clear()
-        thread = thread_factory(
-            target=thread_target,
+        start_daemon_thread(
+            "cloud_control",
+            thread_target,
             args=(validation.url, reconnect_interval),
-            daemon=True,
+            log_error=log_error,
+            before_start=set_thread,
+            thread_factory=thread_factory,
         )
-        set_thread(thread)
-        thread.start()
 
     return True
 
@@ -180,6 +183,7 @@ def restart_cloud_control_runtime(
     ui_post,
     start_control,
     thread_factory,
+    log_error=None,
     restart_attempt_action=cloud_restart_attempt_action,
     restarting_status=cloud_restarting_status,
 ):
@@ -224,9 +228,12 @@ def restart_cloud_control_runtime(
 
         ui_post(try_start)
 
-    thread = thread_factory(target=wait_and_start, daemon=True)
-    thread.start()
-    return thread
+    return start_daemon_thread(
+        "cloud_control_restart",
+        wait_and_start,
+        log_error=log_error,
+        thread_factory=thread_factory,
+    )
 
 
 def validate_cloud_start(websockets_available, url, device_secret):

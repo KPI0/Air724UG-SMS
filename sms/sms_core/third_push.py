@@ -4,7 +4,7 @@ import re
 
 from .config_schema import THIRD_PUSH_DEFAULTS
 from sms_core.third_push_format import apply_vars, format_message, template_vars
-from sms_core.third_push_sender import api_ok, http_request, required, send_channel
+from sms_core.third_push_sender import send_channel
 
 
 THIRD_PUSH_TEST_MESSAGE = "这是一条三方推送测试短信。"

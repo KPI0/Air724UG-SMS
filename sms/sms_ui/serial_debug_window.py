@@ -45,6 +45,7 @@ def open_serial_debug_window_dialog(
     set_drop_count,
     clear_window_refs,
     center_window,
+    log_error=None,
 ):
     if current_window is not None and current_window.winfo_exists():
         current_window.deiconify()
@@ -146,6 +147,7 @@ def open_serial_debug_window_dialog(
             cmd,
             append_crlf=crlf_var.get(),
             push_debug=push_serial_debug,
+            log_error=log_error,
         )
         return "break"
 
@@ -163,6 +165,7 @@ def open_serial_debug_window_dialog(
             commands,
             push_debug=push_serial_debug,
             delay_sec=delay_sec,
+            log_error=log_error,
         )
 
     def send_text_sms_pdu(phone, msg):
@@ -173,6 +176,7 @@ def open_serial_debug_window_dialog(
             msg,
             push_debug=push_serial_debug,
             port_ui=port_ui,
+            log_error=log_error,
         )
 
     btn_quick = ttk.Button(send_frame, text="快捷命令 ▶")

@@ -2,6 +2,7 @@ import threading
 import time
 
 from sms_core.status_text import format_connected_status as default_format_connected_status
+from sms_core.threading_runtime import start_daemon_thread
 
 
 PROTECTED_STATUS_WORDS = ("响铃", "通话", "呼叫")
@@ -72,11 +73,12 @@ def start_delayed_connected_log_runtime(
     baud,
     *,
     thread_factory=threading.Thread,
+    log_error=None,
     **kwargs,
 ):
-    thread = thread_factory(
-        target=lambda: run_delayed_connected_log_runtime(port, baud, **kwargs),
-        daemon=True,
+    return start_daemon_thread(
+        "delayed_connected_log",
+        lambda: run_delayed_connected_log_runtime(port, baud, **kwargs),
+        log_error=log_error,
+        thread_factory=thread_factory,
     )
-    thread.start()
-    return thread

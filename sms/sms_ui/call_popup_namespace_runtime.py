@@ -34,6 +34,7 @@ def show_call_popup_namespace_runtime(
         close_popup=namespace["close_call_popup"],
         set_ring_timeout=lambda value: namespace.__setitem__("ring_timeout_target", value),
         run_on_ui_thread=namespace["run_on_ui_thread"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
