@@ -5,6 +5,11 @@ __pycache__/
 build/
 dist/
 *.spec
+*.log
+*.tmp
+*.bak
+.coverage
+htmlcov/
 
 config.ini
 sms_logs/

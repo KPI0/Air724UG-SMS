@@ -1,7 +1,36 @@
 import ctypes
+import sys
 
 
 EXISTING_INSTANCE_ERRORS = (183, 5)
+
+
+# 跨平台兼容层
+if sys.platform == 'win32':
+    # Windows: 使用真实的Win32 API
+    _windll = ctypes.windll
+else:
+    # Linux/Mac: 创建stub
+    class WindowsAPIStub:
+        class kernel32:
+            @staticmethod
+            def CreateMutexW(security, initial_owner, name):
+                # 返回一个假的句柄(整数)
+                return hash(name) if name else 0
+
+            @staticmethod
+            def CloseHandle(handle):
+                return True
+
+            @staticmethod
+            def ReleaseMutex(handle):
+                return True
+
+            @staticmethod
+            def GetLastError():
+                return 0
+
+    _windll = WindowsAPIStub()
 
 
 def port_mutex_name(port_name):
@@ -18,20 +47,20 @@ def normalize_serial_device_path(port_name):
 
 
 def create_named_mutex(mutex_name):
-    return ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    return _windll.kernel32.CreateMutexW(None, False, mutex_name)
 
 
 def close_windows_handle(handle):
     if not handle:
         return
-    ctypes.windll.kernel32.CloseHandle(handle)
+    _windll.kernel32.CloseHandle(handle)
 
 
 def release_mutex_handle(handle):
     if not handle:
         return
     try:
-        ctypes.windll.kernel32.ReleaseMutex(handle)
+        _windll.kernel32.ReleaseMutex(handle)
     except Exception:
         pass
     try:
@@ -42,7 +71,7 @@ def release_mutex_handle(handle):
 
 def acquire_mutex_with_error(mutex_name):
     handle = create_named_mutex(mutex_name)
-    return handle, ctypes.windll.kernel32.GetLastError()
+    return handle, _windll.kernel32.GetLastError()
 
 
 def is_existing_instance_error(last_error):

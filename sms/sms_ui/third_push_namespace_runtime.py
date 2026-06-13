@@ -120,6 +120,13 @@ def enqueue_third_push_namespace_runtime(
 
 
 def open_third_push_window_namespace_runtime(namespace):
+    def sync_existing_window(win, attr):
+        return namespace["sync_and_focus_existing_window"](
+            win,
+            attr,
+            log_error=namespace.get("log_file_only"),
+        )
+
     return open_third_push_values_app_runtime(
         parent=namespace["root"],
         current_window=lambda: namespace["third_push_win"],
@@ -132,7 +139,7 @@ def open_third_push_window_namespace_runtime(namespace):
         save_setting=namespace["save_third_push_setting"],
         enqueue_push=namespace["enqueue_third_push"],
         system_ui=namespace["system_ui"],
-        sync_existing_window=namespace["sync_and_focus_existing_window"],
+        sync_existing_window=sync_existing_window,
         set_window=lambda win: namespace.__setitem__("third_push_win", win),
         center_window=namespace["center_window"],
     )

@@ -10,12 +10,14 @@ from sms_ui.ui_log_runtime import (
 
 
 def ui_post_namespace_runtime(namespace, fn, *args, ui_post_runtime_func=ui_post_runtime, **kwargs):
+    log_error = namespace.get("log_file_only")
     return ui_post_runtime_func(
         namespace["UI_TASK_QUEUE"],
         fn,
         args,
         kwargs,
-        on_full=lambda: namespace["log_file_only"]("⚠️ UI_TASK_QUEUE 已满：丢弃一次 UI 任务"),
+        on_full=lambda: log_error("⚠️ UI_TASK_QUEUE 已满：丢弃一次 UI 任务") if log_error else None,
+        log_error=log_error,
     )
 
 

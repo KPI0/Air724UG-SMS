@@ -2,6 +2,7 @@ import inspect
 import queue
 import sys
 import threading
+import time
 
 from sms_core.threading_runtime import start_daemon_thread
 
@@ -66,17 +67,28 @@ def run_file_log_worker(
     log_queue,
     stop_event,
     poll_timeout=0.5,
+    queue_error_sleep=0.2,
     drain_batches=drain_available_log_lines,
     write_batches=write_log_batches,
     on_error=_default_diagnostic,
+    sleep=time.sleep,
 ):
     while not stop_event.is_set():
         try:
             first_item = log_queue.get(timeout=poll_timeout)
         except queue.Empty:
             continue
-        except Exception:
-            # Unexpected queue failure: avoid a hot spin, keep the worker alive.
+        except Exception as exc:
+            # Unexpected queue failure: report it, avoid a hot spin, keep alive.
+            if on_error is not None:
+                try:
+                    on_error(f"file_log_worker queue read failed: {exc!r}")
+                except Exception:
+                    pass
+            try:
+                sleep(queue_error_sleep)
+            except Exception:
+                pass
             continue
 
         try:

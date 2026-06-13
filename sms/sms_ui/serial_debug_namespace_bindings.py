@@ -1,3 +1,4 @@
+from sms_core.namespace_binding import make_namespace_runtime_binder
 from sms_ui.serial_debug_namespace_runtime import (
     get_serial_debug_state_namespace_runtime,
     open_serial_debug_window_namespace_runtime,
@@ -6,18 +7,11 @@ from sms_ui.serial_debug_namespace_runtime import (
 
 
 def install_serial_debug_namespace_bindings(namespace):
-    def get_serial_debug_state(name):
-        return get_serial_debug_state_namespace_runtime(namespace, name)
-
-    def set_serial_debug_state(name, *values):
-        return set_serial_debug_state_namespace_runtime(namespace, name, *values)
-
-    def open_serial_debug_window():
-        return open_serial_debug_window_namespace_runtime(namespace)
+    bind = make_namespace_runtime_binder(namespace, globals())
 
     namespace.update({
-        "get_serial_debug_state": get_serial_debug_state,
-        "set_serial_debug_state": set_serial_debug_state,
-        "open_serial_debug_window": open_serial_debug_window,
+        "get_serial_debug_state": bind("get_serial_debug_state_namespace_runtime"),
+        "set_serial_debug_state": bind("set_serial_debug_state_namespace_runtime"),
+        "open_serial_debug_window": bind("open_serial_debug_window_namespace_runtime"),
     })
     return namespace

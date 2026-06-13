@@ -1,3 +1,4 @@
+from sms_core.namespace_binding import make_namespace_runtime_binder
 from sms_ui.settings_namespace_runtime import (
     open_call_filter_setting_namespace_runtime,
     open_desktop_shortcut_dialog_namespace_runtime,
@@ -10,53 +11,44 @@ from sms_ui.settings_runtime import save_ui_config_values
 
 
 def install_settings_namespace_bindings(namespace):
+    bind = make_namespace_runtime_binder(namespace, globals())
+
     def save_voice_text_setting():
         return save_ui_config_values(
             namespace["config"],
             {"voice_text": namespace["VOICE_TEXT"]},
             namespace["safe_save_config"],
+            log_error=namespace.get("log_file_only"),
         )
-
-    def open_sms_font_dialog():
-        return open_sms_font_dialog_namespace_runtime(namespace)
-
-    def open_voice_text_dialog():
-        return open_voice_text_dialog_namespace_runtime(namespace)
-
-    def open_serial_setting():
-        return open_serial_setting_namespace_runtime(namespace)
-
-    def open_desktop_shortcut_dialog():
-        return open_desktop_shortcut_dialog_namespace_runtime(namespace)
-
-    def open_keywords_setting():
-        return open_keywords_setting_namespace_runtime(namespace)
-
-    def open_call_filter_setting():
-        return open_call_filter_setting_namespace_runtime(namespace)
 
     def update_voice_menu_label():
         try:
             label = "🔊 语音播报" if namespace["VOICE_ENABLED"] else "🔇 语音播报"
             namespace["menu_bar"].entryconfig(namespace["voice_menu_index"], label=label)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_error = namespace.get("log_file_only")
+            if log_error is not None:
+                try:
+                    log_error(f"Update voice menu label failed: {exc!r}")
+                except Exception:
+                    pass
 
     def save_voice_setting():
         return save_ui_config_values(
             namespace["config"],
             {"voice_enabled": "1" if namespace["VOICE_ENABLED"] else "0"},
             namespace["safe_save_config"],
+            log_error=namespace.get("log_file_only"),
         )
 
     namespace.update({
         "save_voice_text_setting": save_voice_text_setting,
-        "open_sms_font_dialog": open_sms_font_dialog,
-        "open_voice_text_dialog": open_voice_text_dialog,
-        "open_serial_setting": open_serial_setting,
-        "open_desktop_shortcut_dialog": open_desktop_shortcut_dialog,
-        "open_keywords_setting": open_keywords_setting,
-        "open_call_filter_setting": open_call_filter_setting,
+        "open_sms_font_dialog": bind("open_sms_font_dialog_namespace_runtime"),
+        "open_voice_text_dialog": bind("open_voice_text_dialog_namespace_runtime"),
+        "open_serial_setting": bind("open_serial_setting_namespace_runtime"),
+        "open_desktop_shortcut_dialog": bind("open_desktop_shortcut_dialog_namespace_runtime"),
+        "open_keywords_setting": bind("open_keywords_setting_namespace_runtime"),
+        "open_call_filter_setting": bind("open_call_filter_setting_namespace_runtime"),
         "update_voice_menu_label": update_voice_menu_label,
         "save_voice_setting": save_voice_setting,
     })

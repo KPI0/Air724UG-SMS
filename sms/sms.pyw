@@ -17,7 +17,7 @@
 #  9. 支持开机自启与桌面快捷方式创建
 # 10. 支持在线检测更新（支持代理）
 #
-#  作者：ChatGPT、Gemini、Codex、KPI0
+#  作者：ChatGPT、Gemini、Codex、Claude、KPI0
 #  GitHub：https://github.com/KPI0/Air724UG-SMS
 # 
 #  Air724UG-SMS

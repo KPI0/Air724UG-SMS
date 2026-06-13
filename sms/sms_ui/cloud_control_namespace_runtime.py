@@ -140,6 +140,13 @@ def open_cloud_control_window_namespace_runtime(
     *,
     open_values_app_runtime=open_cloud_control_values_app_runtime,
 ):
+    def sync_existing_window(win, attr):
+        return namespace["sync_and_focus_existing_window"](
+            win,
+            attr,
+            log_error=namespace.get("log_file_only"),
+        )
+
     return open_values_app_runtime(
         namespace["root"],
         current_window=namespace["cloud_control_win"],
@@ -160,7 +167,7 @@ def open_cloud_control_window_namespace_runtime(
         restart_control=namespace["restart_cloud_control"],
         stop_control=namespace["stop_cloud_control"],
         cloud_log=namespace["_cloud_log"],
-        sync_existing_window=namespace["sync_and_focus_existing_window"],
+        sync_existing_window=sync_existing_window,
         set_window=lambda win: namespace.__setitem__("cloud_control_win", win),
         center_window=namespace["center_window"],
     )

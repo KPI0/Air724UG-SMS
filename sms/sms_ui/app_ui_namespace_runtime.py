@@ -10,11 +10,22 @@ from sms_ui.tray_runtime import create_tray_icon_runtime, stop_tray_icon_runtime
 from sms_ui.ui_log_runtime import clear_text_widget_runtime
 
 
+def _safe_log(namespace, message):
+    log_error = namespace.get("log_file_only")
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
 def stop_tray_icon_namespace_runtime(namespace, *, wait_after=0.45):
     return stop_tray_icon_runtime(
         tray_icon=namespace["tray_icon"],
         clear_tray_icon=lambda: namespace.__setitem__("tray_icon", None),
         wait_after=wait_after,
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -24,8 +35,8 @@ def show_window_namespace_runtime(namespace):
             namespace["root"].deiconify()
             namespace["root"].lift()
             namespace["root"].focus_force()
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(namespace, f"Show window failed: {exc!r}")
 
     return namespace["run_on_ui_thread"](do_show, namespace["ui_post"])
 
@@ -34,8 +45,8 @@ def hide_window_namespace_runtime(namespace):
     def do_hide():
         try:
             namespace["root"].withdraw()
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(namespace, f"Hide window failed: {exc!r}")
 
     return namespace["run_on_ui_thread"](do_hide, namespace["ui_post"])
 
@@ -48,6 +59,7 @@ def create_tray_namespace_runtime(namespace):
         hide_window=namespace["hide_window"],
         cleanup_and_exit=namespace["cleanup_and_exit"],
         set_tray_icon=lambda icon: namespace.__setitem__("tray_icon", icon),
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -95,6 +107,7 @@ def set_temperature_namespace_runtime(namespace, temp_str):
         temp_var=namespace["temp_var"],
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -105,6 +118,7 @@ def set_signal_namespace_runtime(namespace, rsrp_val):
         signal_var=namespace["signal_var"],
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -117,6 +131,7 @@ def set_cloud_status_namespace_runtime(namespace, text, color="#666666"):
         label=namespace["cloud_label"],
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -138,6 +153,7 @@ def set_status_namespace_runtime(namespace, text, color="black"):
         label=namespace["status_label"],
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -146,6 +162,7 @@ def apply_sms_font_style_namespace_runtime(namespace):
         namespace["text_area"],
         namespace["SMS_FONT_SIZE"],
         namespace["SMS_FONT_COLOR"],
+        log_error=namespace.get("log_file_only"),
     )
 
 

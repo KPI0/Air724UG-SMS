@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +12,18 @@ from sms_core.third_push_format import apply_vars, template_vars
 
 
 ALLOWED_PUSH_SCHEMES = ("http", "https")
+SENSITIVE_TEXT_RE = re.compile(
+    r"(?i)"
+    r"([\"']?(?:token|secret|password|passwd|pwd|key|sign|access_token|chat_id)[\"']?"
+    r"\s*(?:=|:)\s*)"
+    r"([\"']?)"
+    r"([^&\s,;\"'}]+)"
+    r"([\"']?)"
+)
+
+
+def redact_sensitive_text(text):
+    return SENSITIVE_TEXT_RE.sub(r"\1\2***\4", str(text or ""))
 
 
 def http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
@@ -39,12 +52,12 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
             body = ""
         return False, exc.code, body
     except Exception as exc:
-        return False, None, str(exc)
+        return False, None, redact_sensitive_text(str(exc))
 
 
 def api_ok(channel: str, http_ok: bool, code, body: str):
     if not http_ok or code is None or not (200 <= int(code) < 300):
-        return False, f"HTTP {code or '-'} {body}".strip()
+        return False, redact_sensitive_text(f"HTTP {code or '-'} {body}".strip())
 
     text = (body or "").strip()
     if not text:
@@ -58,15 +71,15 @@ def api_ok(channel: str, http_ok: bool, code, body: str):
     if channel in ("dingtalk", "wecom"):
         errcode = data.get("errcode", 0)
         if str(errcode) not in ("0", ""):
-            return False, data.get("errmsg") or text
+            return False, redact_sensitive_text(data.get("errmsg") or text)
     elif channel == "feishu":
         errcode = data.get("code", data.get("StatusCode", 0))
         if str(errcode) not in ("0", ""):
-            return False, data.get("msg") or data.get("StatusMessage") or text
+            return False, redact_sensitive_text(data.get("msg") or data.get("StatusMessage") or text)
     elif channel in ("pushdeer", "serverchan"):
         errcode = data.get("code", 0)
         if str(errcode) not in ("0", ""):
-            return False, data.get("message") or data.get("msg") or text
+            return False, redact_sensitive_text(data.get("message") or data.get("msg") or text)
 
     return True, f"HTTP {code}"
 

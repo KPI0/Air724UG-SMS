@@ -12,6 +12,15 @@ from sms_core.windows_runtime import (
 APP_MUTEX_NAME = "Air724UG_SMS_Monitor_Mutex_V3"
 
 
+def _safe_log(log_error, message):
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
 def check_single_instance_app_runtime(
     *,
     allow_multi_instance,
@@ -23,6 +32,7 @@ def check_single_instance_app_runtime(
     focus_window=focus_existing_window,
     show_message=show_message_box,
     exit_process=sys.exit,
+    log_error=None,
 ):
     if allow_multi_instance:
         return None
@@ -33,8 +43,8 @@ def check_single_instance_app_runtime(
         if app_mutex:
             try:
                 close_handle(app_mutex)
-            except Exception:
-                pass
+            except Exception as exc:
+                _safe_log(log_error, f"Close existing instance mutex failed: {exc!r}")
         if not focus_window(window_title):
             show_message("提示", "程序已经在运行中，请在右下角托盘查看。", 0x30)
         exit_process(0)

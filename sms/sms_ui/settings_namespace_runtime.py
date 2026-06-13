@@ -27,6 +27,7 @@ def open_sms_font_dialog_namespace_runtime(
         system_ui=namespace["system_ui"],
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_sms_font_dialog"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -45,6 +46,7 @@ def open_voice_text_dialog_namespace_runtime(
         system_ui=namespace["system_ui"],
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_voice_text_dialog"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -105,6 +107,7 @@ def open_keywords_setting_namespace_runtime(
         namespace["system_ui"],
         lambda enabled: namespace.__setitem__("LOG_UNMATCHED_SMS", bool(enabled)),
         namespace["center_window"],
+        namespace.get("log_file_only"),
     )
 
 
@@ -123,4 +126,5 @@ def open_call_filter_setting_namespace_runtime(
         namespace["system_ui"],
         lambda mode: namespace.__setitem__("CALL_FILTER_MODE", mode),
         namespace["center_window"],
+        namespace.get("log_file_only"),
     )

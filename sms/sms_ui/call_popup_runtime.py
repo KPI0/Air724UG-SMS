@@ -3,17 +3,30 @@ from sms_core.serial_sender import send_command_with_result_async
 from sms_ui.call_popup import open_call_popup
 
 
-def popup_exists(window):
+def _safe_log(log_error, message):
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
+def popup_exists(window, *, log_error=None):
     try:
         return window is not None and window.winfo_exists()
-    except Exception:
+    except Exception as exc:
+        _safe_log(log_error, f"Check call popup window failed: {exc!r}")
         return False
 
 
-def close_call_popup_runtime(current_popup, set_popup):
+def close_call_popup_runtime(current_popup, set_popup, *, log_error=None):
     try:
-        if popup_exists(current_popup):
-            current_popup.destroy()
+        if popup_exists(current_popup, log_error=log_error):
+            try:
+                current_popup.destroy()
+            except Exception as exc:
+                _safe_log(log_error, f"Close call popup failed: {exc!r}")
     finally:
         set_popup(None)
 
@@ -24,10 +37,13 @@ def close_call_popup_app_runtime(
     set_popup,
     run_on_ui_thread,
     ui_post,
+    log_error=None,
     close_runtime=close_call_popup_runtime,
 ):
     def close_on_ui():
-        return close_runtime(get_popup(), set_popup)
+        if log_error is None:
+            return close_runtime(get_popup(), set_popup)
+        return close_runtime(get_popup(), set_popup, log_error=log_error)
 
     return run_on_ui_thread(close_on_ui, ui_post)
 
@@ -50,7 +66,7 @@ def show_call_popup_runtime(
     send_command_async=send_command_with_result_async,
     log_error=None,
 ):
-    if popup_exists(current_popup):
+    if popup_exists(current_popup, log_error=log_error):
         return current_popup
 
     def answer(mark_connected, restore_answer):

@@ -43,6 +43,7 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         flush_log_queue=namespace["flush_log_queue"],
         file_log_queue=namespace["FILE_LOG_Q"],
         destroy_root=namespace["root"].destroy,
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -58,6 +59,7 @@ def toggle_voice_broadcast_namespace_runtime(
         lambda value: namespace.__setitem__("VOICE_ENABLED", bool(value)),
         namespace["update_voice_menu_label"],
         namespace["system_ui"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -72,6 +74,7 @@ def toggle_multi_instance_namespace_runtime(
         namespace["safe_save_config"],
         lambda value: namespace.__setitem__("ALLOW_MULTI_INSTANCE", bool(value)),
         namespace["system_ui"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -82,6 +85,7 @@ def toggle_popup_namespace_runtime(namespace, *, toggle_runtime=toggle_popup_run
         namespace["safe_save_config"],
         lambda value: namespace.__setitem__("POPUP_ENABLED", bool(value)),
         namespace["system_ui"],
+        log_error=namespace.get("log_file_only"),
     )
 
 

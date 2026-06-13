@@ -6,17 +6,26 @@ from sms_ui.settings_dialogs import (
 )
 
 
-def save_keywords_config(config, keywords, safe_save):
+def _safe_log(log_error, message):
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
+def save_keywords_config(config, keywords, safe_save, *, log_error=None):
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "keywords", json.dumps(keywords, ensure_ascii=False))
         safe_save()
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Save keywords config failed: {exc!r}")
 
 
-def save_ui_config_values(config, values, safe_save):
+def save_ui_config_values(config, values, safe_save, *, log_error=None):
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
@@ -24,7 +33,8 @@ def save_ui_config_values(config, values, safe_save):
             config.set("ui", str(key), str(value))
         safe_save()
         return True
-    except Exception:
+    except Exception as exc:
+        _safe_log(log_error, f"Save UI config values failed: {exc!r}")
         return False
 
 
@@ -38,28 +48,28 @@ def keyword_change_message(action, value=None, old_value=None):
     return ""
 
 
-def save_log_unmatched_config(config, enabled, safe_save):
+def save_log_unmatched_config(config, enabled, safe_save, *, log_error=None):
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "log_unmatched_sms", "1" if enabled else "0")
         safe_save()
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Save unmatched SMS config failed: {exc!r}")
 
 
 def log_unmatched_status(enabled):
     return f"⚙️ 未匹配短信写入COM日志：{'已开启' if enabled else '已关闭'}"
 
 
-def save_multi_instance_config(config, enabled, safe_save):
+def save_multi_instance_config(config, enabled, safe_save, *, log_error=None):
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "allow_multi_instance", "1" if enabled else "0")
         safe_save()
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Save multi-instance config failed: {exc!r}")
 
 
 def multi_instance_status(enabled):
@@ -74,27 +84,27 @@ def popup_status(enabled):
     return "✅️ 短信弹窗：已开启" if enabled else "❌ 短信弹窗：已关闭"
 
 
-def toggle_voice_broadcast_runtime(current_enabled, config, safe_save, set_enabled, update_label, system_ui):
+def toggle_voice_broadcast_runtime(current_enabled, config, safe_save, set_enabled, update_label, system_ui, *, log_error=None):
     enabled = not bool(current_enabled)
     set_enabled(enabled)
     update_label()
-    save_ui_config_values(config, {"voice_enabled": "1" if enabled else "0"}, safe_save)
+    save_ui_config_values(config, {"voice_enabled": "1" if enabled else "0"}, safe_save, log_error=log_error)
     system_ui(voice_broadcast_status(enabled), "normal")
     return enabled
 
 
-def toggle_popup_runtime(enabled, config, safe_save, set_enabled, system_ui):
+def toggle_popup_runtime(enabled, config, safe_save, set_enabled, system_ui, *, log_error=None):
     enabled = bool(enabled)
     set_enabled(enabled)
-    save_ui_config_values(config, {"popup_enabled": "1" if enabled else "0"}, safe_save)
+    save_ui_config_values(config, {"popup_enabled": "1" if enabled else "0"}, safe_save, log_error=log_error)
     system_ui(popup_status(enabled), "normal")
     return enabled
 
 
-def toggle_multi_instance_runtime(enabled, config, safe_save, set_multi_instance, system_ui):
+def toggle_multi_instance_runtime(enabled, config, safe_save, set_multi_instance, system_ui, *, log_error=None):
     enabled = bool(enabled)
     set_multi_instance(enabled)
-    save_multi_instance_config(config, enabled, safe_save)
+    save_multi_instance_config(config, enabled, safe_save, log_error=log_error)
     system_ui(multi_instance_status(enabled), "normal")
 
 
@@ -109,13 +119,14 @@ def open_voice_text_dialog_runtime(
     system_ui,
     center_window,
     open_dialog,
+    log_error=None,
 ):
     def preview(text):
         generate_voice(force=True, text=text, play_after=True)
 
     def save(text):
         set_voice_text(text)
-        save_ui_config_values(config, {"voice_text": text}, safe_save)
+        save_ui_config_values(config, {"voice_text": text}, safe_save, log_error=log_error)
         generate_voice(force=True)
         system_ui("🔊 已更新语音播报内容：" + text, "normal")
 
@@ -134,6 +145,7 @@ def open_sms_font_dialog_runtime(
     system_ui,
     center_window,
     open_dialog,
+    log_error=None,
 ):
     def save_font(size, color):
         set_font(size, color)
@@ -144,6 +156,7 @@ def open_sms_font_dialog_runtime(
                 "sms_font_color": color,
             },
             safe_save,
+            log_error=log_error,
         )
         apply_font_style()
         system_ui(f"🎨 已更新短信字体：字号 {size}，颜色 {color}", "normal")
@@ -160,9 +173,10 @@ def open_keywords_setting_runtime(
     system_ui,
     set_log_unmatched,
     center_window,
+    log_error=None,
 ):
     def on_keywords_changed(action, value=None, old_value=None):
-        save_keywords_config(config, keywords, safe_save)
+        save_keywords_config(config, keywords, safe_save, log_error=log_error)
         message = keyword_change_message(action, value=value, old_value=old_value)
         if message:
             system_ui(message)
@@ -170,7 +184,7 @@ def open_keywords_setting_runtime(
     def on_log_unmatched_changed(enabled):
         enabled = bool(enabled)
         set_log_unmatched(enabled)
-        save_log_unmatched_config(config, enabled, safe_save)
+        save_log_unmatched_config(config, enabled, safe_save, log_error=log_error)
         system_ui(log_unmatched_status(enabled), "normal")
 
     open_keywords_setting_dialog(
@@ -183,24 +197,24 @@ def open_keywords_setting_runtime(
     )
 
 
-def save_call_filter_list(config, config_key, target_list, safe_save):
+def save_call_filter_list(config, config_key, target_list, safe_save, *, log_error=None):
     try:
         if "ui" not in config:
             config["ui"] = {}
         config.set("ui", config_key, json.dumps(target_list, ensure_ascii=False))
         safe_save()
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Save call filter list failed: {exc!r}")
 
 
-def save_call_filter_mode(config, mode, safe_save):
+def save_call_filter_mode(config, mode, safe_save, *, log_error=None):
     try:
         if "ui" not in config:
             config["ui"] = {}
         config.set("ui", "call_filter_mode", mode)
         safe_save()
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Save call filter mode failed: {exc!r}")
 
 
 def call_filter_mode_label(mode):
@@ -236,17 +250,18 @@ def open_call_filter_setting_runtime(
     system_ui,
     set_mode,
     center_window,
+    log_error=None,
 ):
     def on_mode_changed(next_mode):
         set_mode(next_mode)
-        save_call_filter_mode(config, next_mode, safe_save)
+        save_call_filter_mode(config, next_mode, safe_save, log_error=log_error)
         system_ui(call_filter_mode_status(next_mode))
 
     def on_list_changed(list_kind, action, value=None, old_value=None):
         if list_kind == "whitelist":
-            save_call_filter_list(config, "call_whitelist", whitelist, safe_save)
+            save_call_filter_list(config, "call_whitelist", whitelist, safe_save, log_error=log_error)
         else:
-            save_call_filter_list(config, "call_blacklist", blacklist, safe_save)
+            save_call_filter_list(config, "call_blacklist", blacklist, safe_save, log_error=log_error)
 
         message = call_filter_list_status(list_kind, action, value=value, old_value=old_value)
         if message:

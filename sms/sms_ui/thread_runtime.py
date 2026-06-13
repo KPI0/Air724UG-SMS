@@ -2,7 +2,22 @@ import queue
 import threading
 
 
-def run_on_ui_thread(callback, ui_post, *, current_thread=threading.current_thread, main_thread=threading.main_thread):
+def _safe_log(log_error, message):
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
+def run_on_ui_thread(
+    callback,
+    ui_post,
+    *,
+    current_thread=threading.current_thread,
+    main_thread=threading.main_thread,
+):
     if current_thread() is main_thread():
         return callback()
     ui_post(callback)
@@ -22,20 +37,20 @@ def tk_alive_runtime(root, shutdown_event, *, current_thread=threading.current_t
     return True
 
 
-def ui_post_runtime(task_queue, callback, args=(), kwargs=None, *, on_full=None):
+def ui_post_runtime(task_queue, callback, args=(), kwargs=None, *, on_full=None, log_error=None):
     try:
         task_queue.put_nowait((callback, tuple(args), dict(kwargs or {})))
     except queue.Full:
         if on_full is not None:
             try:
                 on_full()
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                _safe_log(log_error, f"UI task queue full handler failed: {exc!r}")
+    except Exception as exc:
+        _safe_log(log_error, f"UI task enqueue failed: {exc!r}")
 
 
-def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200, interval_ms=30):
+def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200, interval_ms=30, log_error=None):
     processed = 0
     while processed < max_batch:
         try:
@@ -44,15 +59,15 @@ def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200,
             break
         try:
             callback(*args, **kwargs)
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(log_error, f"UI task failed: {exc!r}")
         processed += 1
 
     if tk_alive():
         try:
             root.after(interval_ms, schedule_self)
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(log_error, f"UI pump reschedule failed: {exc!r}")
     return processed
 
 
@@ -65,20 +80,30 @@ def schedule_delayed_ui_runtime(
     root_after,
     run_on_ui_thread,
     ui_post,
+    log_error=None,
 ):
+    def run_callback_once():
+        try:
+            return callback()
+        except Exception as exc:
+            _safe_log(log_error, f"Delayed UI callback failed: {exc!r}")
+            return None
+
     def schedule_in_main():
         try:
             elapsed = monotonic() - app_start_mono
             delay_ms = int(max(0.0, start_ui_delay - elapsed) * 1000)
-        except Exception:
+        except Exception as exc:
+            _safe_log(log_error, f"Compute delayed UI schedule failed: {exc!r}")
             delay_ms = 0
 
-        try:
-            if delay_ms > 0:
+        if delay_ms > 0:
+            try:
                 return root_after(delay_ms, callback)
-            return callback()
-        except Exception:
-            return callback()
+            except Exception as exc:
+                _safe_log(log_error, f"Schedule delayed UI callback failed: {exc!r}")
+
+        return run_callback_once()
 
     return run_on_ui_thread(schedule_in_main, ui_post)
 

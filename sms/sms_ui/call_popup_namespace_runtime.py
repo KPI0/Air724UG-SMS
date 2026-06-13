@@ -11,6 +11,7 @@ def close_call_popup_namespace_runtime(namespace, *, close_app_runtime=close_cal
         set_popup=lambda window: set_call_popup_namespace_runtime(namespace, window),
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 

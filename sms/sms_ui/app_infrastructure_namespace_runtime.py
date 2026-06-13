@@ -9,6 +9,16 @@ from sms_ui.thread_runtime import schedule_delayed_ui_runtime
 from sms_ui.ui_log_runtime import schedule_next_midnight_clear_runtime, show_sms_popup_runtime
 
 
+def _safe_log(namespace, message):
+    log_error = namespace.get("log_file_only")
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
 def safe_save_config_namespace_runtime(namespace):
     return safe_save_config_runtime(
         config=namespace["config"],
@@ -36,6 +46,7 @@ def schedule_delayed_ui_namespace_runtime(namespace, callback):
         root_after=namespace["root"].after,
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -53,8 +64,8 @@ def unlock_port_mutex_namespace_runtime(namespace):
     if mutex:
         try:
             close_windows_handle(mutex)
-        except Exception:
-            pass
+        except Exception as exc:
+            _safe_log(namespace, f"Close port mutex failed: {exc!r}")
         namespace.__setitem__("current_port_mutex", None)
 
 
@@ -62,6 +73,7 @@ def check_single_instance_namespace_runtime(namespace):
     mutex = check_single_instance_app_runtime(
         allow_multi_instance=namespace["ALLOW_MULTI_INSTANCE"],
         window_title=namespace["APP_WINDOW_TITLE"],
+        log_error=namespace.get("log_file_only"),
     )
     namespace.__setitem__("app_mutex", mutex)
     return mutex

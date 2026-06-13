@@ -19,6 +19,7 @@ def cleanup_and_exit_app_runtime(
     file_log_queue,
     destroy_root=None,
     cleanup_runtime=cleanup_and_exit_runtime,
+    log_error=None,
 ):
     destroy_root = destroy_root or root.destroy
     return cleanup_runtime(
@@ -40,4 +41,5 @@ def cleanup_and_exit_app_runtime(
         flush_log_queue=flush_log_queue,
         file_log_queue=file_log_queue,
         destroy_root=destroy_root,
+        log_error=log_error,
     )

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from datetime import datetime
 
 from sms_core.cloud_message_runtime import (
@@ -14,30 +15,51 @@ from sms_core.cloud_serial_log_runtime import (
 )
 
 
+def _call_with_optional_log_error(func, *args, log_error=None, **kwargs):
+    if log_error is not None:
+        try:
+            signature = inspect.signature(func)
+            supports_log_error = (
+                "log_error" in signature.parameters
+                or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+            )
+        except (TypeError, ValueError):
+            supports_log_error = True
+        if supports_log_error:
+            kwargs["log_error"] = log_error
+    return func(*args, **kwargs)
+
+
 def reset_cloud_serial_log_state_namespace_runtime(namespace):
-    return reset_cloud_serial_log_state(
+    return _call_with_optional_log_error(
+        reset_cloud_serial_log_state,
         namespace["CLOUD_SERIAL_LOG_Q"],
         namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
 async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws):
-    return await drain_cloud_serial_log_queue(
+    return await _call_with_optional_log_error(
+        drain_cloud_serial_log_queue,
         ws,
         log_queue=namespace["CLOUD_SERIAL_LOG_Q"],
         batch_size=namespace["CLOUD_SERIAL_LOG_DRAIN_BATCH"],
         state=namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
         is_current_connection=lambda current_ws: current_ws is namespace["cloud_ws_conn"],
         is_connected=lambda: namespace["cloud_connected"],
+        log_error=namespace.get("log_file_only"),
     )
 
 
 def schedule_cloud_serial_log_drain_namespace_runtime(namespace, loop, ws):
-    return schedule_cloud_serial_log_drain(
+    return _call_with_optional_log_error(
+        schedule_cloud_serial_log_drain,
         loop,
         ws,
         state=namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
         drain_coro_factory=lambda current_ws: namespace["_cloud_drain_serial_log_queue"](current_ws),
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -66,6 +88,7 @@ def send_cloud_serial_log_namespace_runtime(
         build_payload=build_payload,
         log_queue=namespace["CLOUD_SERIAL_LOG_Q"],
         schedule_drain=lambda loop, ws: namespace["_schedule_cloud_serial_log_drain"](loop, ws),
+        log_error=namespace.get("log_file_only"),
     )
 
 

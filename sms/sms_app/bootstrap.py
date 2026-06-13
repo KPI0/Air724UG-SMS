@@ -6,17 +6,48 @@ import re
 import sys
 import threading
 import time
-import winsound
 import webbrowser
 import queue
+
+# ---- 跨平台兼容性 ----
+try:
+    import winsound
+except ImportError:
+    # Linux/Mac: 创建winsound stub
+    class winsound:
+        @staticmethod
+        def Beep(frequency, duration):
+            pass
+        MB_OK = 0
 
 # ---- 第三方库 ----
 import serial
 from serial.tools import list_ports
 
-# ---- tkinter ----
-import tkinter as tk
-from tkinter import messagebox
+# ---- tkinter (跨平台兼容) ----
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except ImportError:
+    # Headless环境: 创建tkinter stub
+    class tk:
+        class Tk:
+            def __init__(self):
+                raise RuntimeError("Tkinter不可用: headless环境")
+        class StringVar:
+            def __init__(self, *args, **kwargs):
+                self.value = ""
+            def get(self):
+                return self.value
+            def set(self, v):
+                self.value = v
+    class messagebox:
+        @staticmethod
+        def showinfo(*args, **kwargs):
+            pass
+        @staticmethod
+        def showerror(*args, **kwargs):
+            pass
 
 from sms_core.app_launch import (
     maybe_run_restart_helper_mode,
@@ -125,7 +156,7 @@ def _initialize_paths_and_constants():
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.6.7"
+    APP_VERSION = "3.6.8"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"

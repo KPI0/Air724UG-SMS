@@ -52,7 +52,24 @@ def _coerce_text_list_default(value):
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _read_keywords(config, coerce_text_list):
+def _safe_log(log_error, message):
+    if log_error is None:
+        return
+    try:
+        log_error(message)
+    except Exception:
+        pass
+
+
+def _read_config_value(label, fallback, reader, log_error=None):
+    try:
+        return reader()
+    except Exception as exc:
+        _safe_log(log_error, f"Config value {label} invalid; using default {fallback!r}: {exc!r}")
+        return fallback
+
+
+def _read_keywords(config, coerce_text_list, log_error=None):
     try:
         raw = config.get("ui", "keywords", fallback="").strip()
         if not raw:
@@ -60,90 +77,130 @@ def _read_keywords(config, coerce_text_list):
         if raw.startswith("[") and raw.endswith("]"):
             try:
                 return coerce_text_list(json.loads(raw))
-            except Exception:
+            except Exception as exc:
+                _safe_log(log_error, f"Config value ui.keywords JSON invalid; using pipe fallback: {exc!r}")
                 return coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
         return coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
-    except Exception:
+    except Exception as exc:
+        _safe_log(log_error, f"Config value ui.keywords invalid; using default []: {exc!r}")
         return []
 
 
-def _read_json_text_list(config, key, coerce_text_list):
+def _read_json_text_list(config, key, coerce_text_list, log_error=None):
     try:
         raw = config.get("ui", key, fallback="").strip()
         if raw:
             return coerce_text_list(json.loads(raw))
-    except Exception:
-        pass
+    except Exception as exc:
+        _safe_log(log_error, f"Config value ui.{key} JSON invalid; using default []: {exc!r}")
     return []
 
 
-def read_startup_config_values(config, *, default_voice_text, coerce_text_list=_coerce_text_list_default):
-    try:
-        voice_text = config.get("ui", "voice_text", fallback=default_voice_text).strip()
-        if not voice_text:
-            voice_text = default_voice_text
-    except Exception:
+def read_startup_config_values(
+    config,
+    *,
+    default_voice_text,
+    coerce_text_list=_coerce_text_list_default,
+    log_error=None,
+):
+    voice_text = _read_config_value(
+        "ui.voice_text",
+        default_voice_text,
+        lambda: config.get("ui", "voice_text", fallback=default_voice_text).strip(),
+        log_error,
+    )
+    if not voice_text:
         voice_text = default_voice_text
 
-    try:
-        popup_enabled = config.getboolean("ui", "popup_enabled", fallback=True)
-    except Exception:
-        popup_enabled = True
+    popup_enabled = _read_config_value(
+        "ui.popup_enabled",
+        True,
+        lambda: config.getboolean("ui", "popup_enabled", fallback=True),
+        log_error,
+    )
+    auto_log_cleanup = _read_config_value(
+        "ui.auto_log_cleanup",
+        True,
+        lambda: config.getboolean("ui", "auto_log_cleanup", fallback=True),
+        log_error,
+    )
+    log_retention_days = _read_config_value(
+        "ui.log_retention_days",
+        30,
+        lambda: config.getint("ui", "log_retention_days", fallback=30),
+        log_error,
+    )
+    allow_multi_instance = _read_config_value(
+        "ui.allow_multi_instance",
+        False,
+        lambda: config.getboolean("ui", "allow_multi_instance", fallback=False),
+        log_error,
+    )
+    log_unmatched_sms = _read_config_value(
+        "ui.log_unmatched_sms",
+        False,
+        lambda: config.getboolean("ui", "log_unmatched_sms", fallback=False),
+        log_error,
+    )
+    voice_enabled = _read_config_value(
+        "ui.voice_enabled",
+        True,
+        lambda: config.getboolean("ui", "voice_enabled", fallback=True),
+        log_error,
+    )
+    sms_font_size = _read_config_value(
+        "ui.sms_font_size",
+        30,
+        lambda: config.getint("ui", "sms_font_size", fallback=30),
+        log_error,
+    )
+    sms_font_color = _read_config_value(
+        "ui.sms_font_color",
+        "#ff0000",
+        lambda: config.get("ui", "sms_font_color", fallback="#ff0000").strip() or "#ff0000",
+        log_error,
+    )
 
-    try:
-        auto_log_cleanup = config.getboolean("ui", "auto_log_cleanup", fallback=True)
-    except Exception:
-        auto_log_cleanup = True
+    keywords = _read_keywords(config, coerce_text_list, log_error=log_error)
 
-    try:
-        log_retention_days = config.getint("ui", "log_retention_days", fallback=30)
-    except Exception:
-        log_retention_days = 30
-
-    try:
-        allow_multi_instance = config.getboolean("ui", "allow_multi_instance", fallback=False)
-    except Exception:
-        allow_multi_instance = False
-
-    try:
-        log_unmatched_sms = config.getboolean("ui", "log_unmatched_sms", fallback=False)
-    except Exception:
-        log_unmatched_sms = False
-
-    try:
-        voice_enabled = config.getboolean("ui", "voice_enabled", fallback=True)
-    except Exception:
-        voice_enabled = True
-
-    try:
-        sms_font_size = config.getint("ui", "sms_font_size", fallback=30)
-    except Exception:
-        sms_font_size = 30
-
-    try:
-        sms_font_color = config.get("ui", "sms_font_color", fallback="#ff0000").strip() or "#ff0000"
-    except Exception:
-        sms_font_color = "#ff0000"
-
-    keywords = _read_keywords(config, coerce_text_list)
-
-    try:
-        call_filter_mode_raw = config.get("ui", "call_filter_mode", fallback="Disabled").strip()
-    except Exception:
-        call_filter_mode_raw = "Disabled"
+    call_filter_mode_raw = _read_config_value(
+        "ui.call_filter_mode",
+        "Disabled",
+        lambda: config.get("ui", "call_filter_mode", fallback="Disabled").strip(),
+        log_error,
+    )
     call_filter_mode = {
         "disabled": "Disabled",
         "whitelist": "Whitelist",
         "blacklist": "Blacklist",
     }.get(call_filter_mode_raw.lower(), "Disabled")
 
-    call_whitelist = _read_json_text_list(config, "call_whitelist", coerce_text_list)
-    call_blacklist = _read_json_text_list(config, "call_blacklist", coerce_text_list)
+    call_whitelist = _read_json_text_list(config, "call_whitelist", coerce_text_list, log_error=log_error)
+    call_blacklist = _read_json_text_list(config, "call_blacklist", coerce_text_list, log_error=log_error)
 
-    port = config.get("serial", "port", fallback="").strip()
-    baud = config.getint("serial", "baud", fallback=115200)
-    mode = config.get("serial", "mode", fallback="Auto").strip().lower()
+    port = _read_config_value(
+        "serial.port",
+        "",
+        lambda: config.get("serial", "port", fallback="").strip(),
+        log_error,
+    )
+    baud = _read_config_value(
+        "serial.baud",
+        115200,
+        lambda: config.getint("serial", "baud", fallback=115200),
+        log_error,
+    )
+    if baud <= 0:
+        _safe_log(log_error, f"Config value serial.baud must be positive; using default 115200: {baud!r}")
+        baud = 115200
+    mode = _read_config_value(
+        "serial.mode",
+        "Auto",
+        lambda: config.get("serial", "mode", fallback="Auto").strip(),
+        log_error,
+    ).lower()
     if mode not in ("auto", "manual"):
+        _safe_log(log_error, f"Config value serial.mode unknown; using default 'Auto': {mode!r}")
         mode = "auto"
     mode = "Auto" if mode == "auto" else "Manual"
 

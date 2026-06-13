@@ -1,6 +1,10 @@
 import asyncio
 import time
 
+from sms_core.namespace_binding import (
+    make_async_namespace_runtime_binder,
+    make_namespace_runtime_binder,
+)
 from sms_core.cloud_connection_runtime import (
     reply_cloud_payload_runtime,
     schedule_cloud_unregister_runtime,
@@ -45,20 +49,9 @@ from sms_ui.cloud_control_namespace_runtime import (
 
 
 def install_cloud_namespace_bindings(namespace):
-    def cloud_runtime_imei():
-        return cloud_runtime_imei_namespace_runtime(namespace)
-
-    def cloud_identity_payload():
-        return cloud_identity_payload_namespace_runtime(namespace)
-
-    async def cloud_wait_login_ack(ws, timeout=8.0):
-        return await wait_cloud_login_ack_namespace_runtime(namespace, ws, timeout=timeout)
-
-    async def cloud_send_register(ws):
-        return await send_cloud_register_namespace_runtime(namespace, ws)
-
-    async def cloud_send_unregister(ws, reason="hidden"):
-        return await send_cloud_unregister_namespace_runtime(namespace, ws, reason=reason)
+    module_globals = globals()
+    bind = make_namespace_runtime_binder(namespace, module_globals)
+    bind_async = make_async_namespace_runtime_binder(namespace, module_globals)
 
     def cloud_schedule_unregister(reason="hidden"):
         return schedule_cloud_unregister_runtime(
@@ -68,6 +61,7 @@ def install_cloud_namespace_bindings(namespace):
             is_connected=lambda: namespace["cloud_connected"],
             send_unregister=namespace["_cloud_send_unregister"],
             run_coroutine_threadsafe=asyncio.run_coroutine_threadsafe,
+            log_error=namespace.get("_cloud_log"),
         )
 
     async def cloud_unregister_then_close(ws, reason="disconnect"):
@@ -76,13 +70,8 @@ def install_cloud_namespace_bindings(namespace):
             reason=reason,
             auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
             send_unregister=namespace["_cloud_send_unregister"],
+            log_error=namespace.get("_cloud_log"),
         )
-
-    def notify_cloud_identity_changed():
-        return notify_cloud_identity_changed_namespace_runtime(namespace)
-
-    def set_cloud_device_imei(imei, source=""):
-        return set_cloud_device_imei_namespace_runtime(namespace, imei, source=source)
 
     def save_cloud_control_setting(
         enabled=None,
@@ -106,33 +95,6 @@ def install_cloud_namespace_bindings(namespace):
     async def cloud_send_payload(ws, payload):
         return await send_cloud_payload_runtime(ws, payload)
 
-    def reset_cloud_serial_log_state():
-        return reset_cloud_serial_log_state_namespace_runtime(namespace)
-
-    async def cloud_drain_serial_log_queue(ws):
-        return await drain_cloud_serial_log_queue_namespace_runtime(namespace, ws)
-
-    def schedule_cloud_serial_log_drain(loop, ws):
-        return schedule_cloud_serial_log_drain_namespace_runtime(namespace, loop, ws)
-
-    def cloud_send_serial_log(line):
-        return send_cloud_serial_log_namespace_runtime(namespace, line)
-
-    def cloud_send_sms_event(callback_head, full_msg):
-        return send_cloud_sms_event_namespace_runtime(namespace, callback_head, full_msg)
-
-    def cloud_auth_matches(data):
-        return cloud_auth_matches_namespace_runtime(namespace, data)
-
-    def request_cloud_device_imei():
-        return request_cloud_device_imei_namespace_runtime(namespace)
-
-    def maybe_capture_cloud_device_imei(line):
-        return maybe_capture_cloud_device_imei_namespace_runtime(namespace, line)
-
-    def cloud_send_status_payload():
-        return cloud_status_payload_namespace_runtime(namespace)
-
     def cloud_now_ts():
         return int(time.time())
 
@@ -144,9 +106,6 @@ def install_cloud_namespace_bindings(namespace):
             mark_seen=mark_seen,
         )
 
-    def cloud_send_serial_command(command):
-        return send_cloud_serial_command_namespace_runtime(namespace, command)
-
     async def cloud_reply(ws, payload):
         return await reply_cloud_payload_runtime(
             ws,
@@ -155,59 +114,59 @@ def install_cloud_namespace_bindings(namespace):
             log=namespace["_cloud_log"],
         )
 
-    async def handle_cloud_message(ws, message):
-        return await handle_cloud_message_namespace_runtime(namespace, ws, message)
-
-    async def cloud_ws_main(url, reconnect_interval):
-        return await cloud_ws_main_namespace_runtime(namespace, url, reconnect_interval)
-
-    def cloud_thread_main(url, reconnect_interval):
-        return cloud_thread_main_namespace_runtime(namespace, url, reconnect_interval)
-
-    def start_cloud_control(show_errors=False):
-        return start_cloud_control_namespace_runtime(namespace, show_errors=show_errors)
-
-    def stop_cloud_control(update_status=True):
-        return stop_cloud_control_namespace_runtime(namespace, update_status=update_status)
-
-    def restart_cloud_control(show_errors=False):
-        return restart_cloud_control_namespace_runtime(namespace, show_errors=show_errors)
-
-    def open_cloud_control_window():
-        return open_cloud_control_window_namespace_runtime(namespace)
-
     namespace.update({
-        "_cloud_runtime_imei": cloud_runtime_imei,
-        "_cloud_identity_payload": cloud_identity_payload,
-        "_cloud_wait_login_ack": cloud_wait_login_ack,
-        "_cloud_send_register": cloud_send_register,
-        "_cloud_send_unregister": cloud_send_unregister,
+        "_cloud_runtime_imei": bind("cloud_runtime_imei_namespace_runtime"),
+        "_cloud_identity_payload": bind("cloud_identity_payload_namespace_runtime"),
+        "_cloud_wait_login_ack": bind_async(
+            "wait_cloud_login_ack_namespace_runtime",
+            positional_keywords=("timeout",),
+            positional_prefix_count=1,
+        ),
+        "_cloud_send_register": bind_async("send_cloud_register_namespace_runtime"),
+        "_cloud_send_unregister": bind_async(
+            "send_cloud_unregister_namespace_runtime",
+            positional_keywords=("reason",),
+            positional_prefix_count=1,
+        ),
         "_cloud_schedule_unregister": cloud_schedule_unregister,
         "_cloud_unregister_then_close": cloud_unregister_then_close,
-        "_notify_cloud_identity_changed": notify_cloud_identity_changed,
-        "_set_cloud_device_imei": set_cloud_device_imei,
+        "_notify_cloud_identity_changed": bind("notify_cloud_identity_changed_namespace_runtime"),
+        "_set_cloud_device_imei": bind(
+            "set_cloud_device_imei_namespace_runtime",
+            positional_keywords=("source",),
+            positional_prefix_count=1,
+        ),
         "save_cloud_control_setting": save_cloud_control_setting,
         "_cloud_log": cloud_log,
         "_cloud_send_payload": cloud_send_payload,
-        "_reset_cloud_serial_log_state": reset_cloud_serial_log_state,
-        "_cloud_drain_serial_log_queue": cloud_drain_serial_log_queue,
-        "_schedule_cloud_serial_log_drain": schedule_cloud_serial_log_drain,
-        "_cloud_send_serial_log": cloud_send_serial_log,
-        "_cloud_send_sms_event": cloud_send_sms_event,
-        "_cloud_auth_matches": cloud_auth_matches,
-        "request_cloud_device_imei": request_cloud_device_imei,
-        "_maybe_capture_cloud_device_imei": maybe_capture_cloud_device_imei,
-        "_cloud_send_status_payload": cloud_send_status_payload,
+        "_reset_cloud_serial_log_state": bind("reset_cloud_serial_log_state_namespace_runtime"),
+        "_cloud_drain_serial_log_queue": bind_async("drain_cloud_serial_log_queue_namespace_runtime"),
+        "_schedule_cloud_serial_log_drain": bind("schedule_cloud_serial_log_drain_namespace_runtime"),
+        "_cloud_send_serial_log": bind("send_cloud_serial_log_namespace_runtime"),
+        "_cloud_send_sms_event": bind("send_cloud_sms_event_namespace_runtime"),
+        "_cloud_auth_matches": bind("cloud_auth_matches_namespace_runtime"),
+        "request_cloud_device_imei": bind("request_cloud_device_imei_namespace_runtime"),
+        "_maybe_capture_cloud_device_imei": bind("maybe_capture_cloud_device_imei_namespace_runtime"),
+        "_cloud_send_status_payload": bind("cloud_status_payload_namespace_runtime"),
         "_cloud_now_ts": cloud_now_ts,
         "_cloud_check_replay_window": cloud_check_replay_window,
-        "_cloud_send_serial_command": cloud_send_serial_command,
+        "_cloud_send_serial_command": bind("send_cloud_serial_command_namespace_runtime"),
         "_cloud_reply": cloud_reply,
-        "_handle_cloud_message": handle_cloud_message,
-        "_cloud_ws_main": cloud_ws_main,
-        "_cloud_thread_main": cloud_thread_main,
-        "start_cloud_control": start_cloud_control,
-        "stop_cloud_control": stop_cloud_control,
-        "restart_cloud_control": restart_cloud_control,
-        "open_cloud_control_window": open_cloud_control_window,
+        "_handle_cloud_message": bind_async("handle_cloud_message_namespace_runtime"),
+        "_cloud_ws_main": bind_async("cloud_ws_main_namespace_runtime"),
+        "_cloud_thread_main": bind("cloud_thread_main_namespace_runtime"),
+        "start_cloud_control": bind(
+            "start_cloud_control_namespace_runtime",
+            positional_keywords=("show_errors",),
+        ),
+        "stop_cloud_control": bind(
+            "stop_cloud_control_namespace_runtime",
+            positional_keywords=("update_status",),
+        ),
+        "restart_cloud_control": bind(
+            "restart_cloud_control_namespace_runtime",
+            positional_keywords=("show_errors",),
+        ),
+        "open_cloud_control_window": bind("open_cloud_control_window_namespace_runtime"),
     })
     return namespace
