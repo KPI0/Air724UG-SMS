@@ -1,4 +1,5 @@
 import datetime
+import os
 import queue
 import unittest
 
@@ -80,7 +81,7 @@ class UiLogRuntimeTests(unittest.TestCase):
 
         path, line = write_port_log_runtime("msg", "logs", "COM5", written.append, now=now)
 
-        self.assertEqual(path, "logs\\sms_COM5_2026-06-08.txt")
+        self.assertEqual(path, os.path.join("logs", "sms_COM5_2026-06-08.txt"))
         self.assertEqual(line, "2026-06-08 12:30:05 msg\n")
         self.assertEqual(written, [(path, line)])
 
@@ -90,7 +91,7 @@ class UiLogRuntimeTests(unittest.TestCase):
 
         path, line = write_system_log_runtime("msg", "logs", written.append, now=now)
 
-        self.assertEqual(path, "logs\\sms_system_2026-06-08.txt")
+        self.assertEqual(path, os.path.join("logs", "sms_system_2026-06-08.txt"))
         self.assertEqual(line, "2026-06-08 12:30:05 msg\n")
         self.assertEqual(written, [(path, line)])
 

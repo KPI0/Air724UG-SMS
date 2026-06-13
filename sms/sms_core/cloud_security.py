@@ -38,12 +38,15 @@ def safe_preview(raw: str, limit: int = 500) -> str:
 
 
 def read_unix_timestamp(data: dict):
-    raw_ts = (
-        data.get("timestamp")
-        or data.get("ts")
-        or data.get("unix_time")
-        or data.get("time")
-    )
+    # Use explicit None check to avoid treating 0 timestamp as falsy
+    raw_ts = data.get("timestamp")
+    if raw_ts is None:
+        raw_ts = data.get("ts")
+    if raw_ts is None:
+        raw_ts = data.get("unix_time")
+    if raw_ts is None:
+        raw_ts = data.get("time")
+
     if raw_ts is None or raw_ts == "":
         return None, None
 

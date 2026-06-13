@@ -127,7 +127,9 @@ def generate_tts_file(
     uuid_func=None,
 ):
     with tts_lock:
-        os.makedirs(os.path.dirname(tts_file), exist_ok=True)
+        target_dir = os.path.dirname(tts_file)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
         cleanup_func(tts_dir, tts_file)
         tmp_path = tts_file + ".tmp.wav"
 
@@ -136,8 +138,13 @@ def generate_tts_file(
             engine.setProperty("rate", 150)
             engine.save_to_file(text, tmp_path)
             engine.runAndWait()
-            engine.stop()
         finally:
+            # stop() must run even if runAndWait() raised, otherwise the SAPI
+            # engine can be left in a busy state and leak COM resources.
+            try:
+                engine.stop()
+            except Exception:
+                pass
             del engine
 
         if not os.path.exists(tmp_path):

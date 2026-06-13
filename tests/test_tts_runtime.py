@@ -182,5 +182,45 @@ class TtsRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, ["full"])
 
 
+
+class GenerateTtsFileResilienceTests(unittest.TestCase):
+    def test_stop_called_even_when_run_and_wait_raises(self):
+        class BoomEngine(FakeEngine):
+            def runAndWait(self):
+                raise RuntimeError("sapi boom")
+
+        engine = BoomEngine()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert.wav")
+            with self.assertRaises(RuntimeError):
+                generate_tts_file(
+                    "hello",
+                    target,
+                    tmp,
+                    threading.Lock(),
+                    engine_factory=lambda: engine,
+                )
+        # stop() must still run so the SAPI engine is released.
+        self.assertTrue(engine.stopped)
+
+    def test_bare_filename_without_directory_does_not_crash(self):
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                engine = FakeEngine()
+                new_path = generate_tts_file(
+                    "hello",
+                    "alert.wav",  # no directory component
+                    tmp,
+                    threading.Lock(),
+                    engine_factory=lambda: engine,
+                )
+                self.assertEqual(new_path, "alert.wav")
+                self.assertTrue(os.path.exists(os.path.join(tmp, "alert.wav")))
+            finally:
+                os.chdir(cwd)
+
+
 if __name__ == "__main__":
     unittest.main()

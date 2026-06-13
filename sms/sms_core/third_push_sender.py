@@ -10,11 +10,23 @@ import urllib.request
 from sms_core.third_push_format import apply_vars, template_vars
 
 
+ALLOWED_PUSH_SCHEMES = ("http", "https")
+
+
 def http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
     headers = dict(headers or {})
     headers.setdefault("User-Agent", user_agent)
     if isinstance(data, str):
         data = data.encode("utf-8")
+    # Only allow http/https. urllib.urlopen otherwise honours file://, ftp://
+    # and other schemes, so a webhook URL set to e.g. file:///etc/passwd would
+    # read a local file and leak its contents back in the response body.
+    try:
+        scheme = urllib.parse.urlparse(str(url)).scheme.lower()
+    except Exception:
+        scheme = ""
+    if scheme not in ALLOWED_PUSH_SCHEMES:
+        return False, None, f"不支持的 URL 协议：{scheme or '(空)'}（仅允许 http/https）"
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=timeout) as resp:

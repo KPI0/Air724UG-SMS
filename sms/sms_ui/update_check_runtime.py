@@ -34,8 +34,14 @@ def handle_update_check_plan(
     if ok:
         try:
             open_url(plan.download_url)
-        except Exception:
-            pass
+        except Exception as exc:
+            # If the browser fails to open, swallowing the error leaves the
+            # user waiting with nothing. Surface the URL so they can copy it
+            # and download manually, plus the reason it could not auto-open.
+            show_warning(
+                "无法打开下载链接",
+                f"自动打开浏览器失败：{exc}\n\n请手动复制以下链接下载：\n{plan.download_url}",
+            )
     return "update"
 
 

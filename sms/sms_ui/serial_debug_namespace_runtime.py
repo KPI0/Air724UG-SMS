@@ -14,20 +14,46 @@ def get_serial_debug_state_namespace_runtime(namespace, name):
 
 
 def set_serial_debug_state_namespace_runtime(namespace, name, *values):
-    if name == "window_refs":
-        namespace.__setitem__("serial_debug_win", values[0])
-        namespace.__setitem__("serial_debug_text", values[1])
-    elif name == "clear_window_refs":
-        namespace.__setitem__("serial_debug_win", None)
-        namespace.__setitem__("serial_debug_text", None)
-    elif name == "debug_enabled":
-        namespace.__setitem__("SERIAL_DEBUG_ENABLED", bool(values[0]))
-    elif name == "drop_count":
-        namespace.__setitem__("serial_debug_drop_count", int(values[0]))
-    elif name == "current_dial_num":
-        namespace.__setitem__("current_dial_num", values[0])
-    else:
+    """
+    Set serial debug state by name.
+
+    Refactored from nested if-elif chain to dispatch table pattern
+    for better maintainability and reduced cyclomatic complexity.
+    """
+    def _require_values(count, actual):
+        if len(actual) < count:
+            raise ValueError(f"{name} requires {count} value(s), got {len(actual)}")
+
+    # Dispatch table: cleaner than 6-level if-elif nesting
+    handlers = {
+        "window_refs": lambda: (
+            _require_values(2, values),
+            namespace.__setitem__("serial_debug_win", values[0]),
+            namespace.__setitem__("serial_debug_text", values[1]),
+        ),
+        "clear_window_refs": lambda: (
+            namespace.__setitem__("serial_debug_win", None),
+            namespace.__setitem__("serial_debug_text", None),
+        ),
+        "debug_enabled": lambda: (
+            _require_values(1, values),
+            namespace.__setitem__("SERIAL_DEBUG_ENABLED", bool(values[0])),
+        ),
+        "drop_count": lambda: (
+            _require_values(1, values),
+            namespace.__setitem__("serial_debug_drop_count", int(values[0])),
+        ),
+        "current_dial_num": lambda: (
+            _require_values(1, values),
+            namespace.__setitem__("current_dial_num", values[0]),
+        ),
+    }
+
+    handler = handlers.get(name)
+    if handler is None:
         raise KeyError(name)
+
+    handler()
 
 
 def open_serial_debug_window_namespace_runtime(

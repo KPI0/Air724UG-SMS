@@ -82,6 +82,26 @@ class UpdateCheckRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "ask")
         self.assertEqual(calls[1], ("open", "https://example.com/app.zip"))
 
+    def test_handle_update_check_plan_surfaces_url_when_open_fails(self):
+        # If the browser fails to open, the download URL must be shown so the
+        # user can copy it manually instead of being left with nothing.
+        calls = []
+
+        result = handle_update_check_plan(
+            SimpleNamespace(kind="update", latest_tag="v1.0.1", download_url="https://example.com/app.zip"),
+            "1.0.0",
+            show_info=lambda title, message: calls.append(("info", title, message)),
+            show_warning=lambda title, message: calls.append(("warning", title, message)),
+            ask_open_download=lambda title, message: True,
+            open_url=lambda url: (_ for _ in ()).throw(RuntimeError("no browser")),
+        )
+
+        self.assertEqual(result, "update")
+        warnings = [c for c in calls if c[0] == "warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("https://example.com/app.zip", warnings[0][2])
+        self.assertIn("no browser", warnings[0][2])
+
     def test_check_update_and_prompt_runtime_posts_plan_to_ui(self):
         calls = []
 

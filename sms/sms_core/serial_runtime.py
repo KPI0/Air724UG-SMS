@@ -218,6 +218,10 @@ def run_serial_runtime_thread(
     state = SerialRuntimeState.create(parse_callback_head)
     now = clock or time.monotonic
     set_call_state(0.0, "")
+    # Cache config at startup: keywords, log dir, call filters rarely change
+    # during runtime (user edits require app restart), so rebuilding the config
+    # object on every serial line (hot path) wastes CPU. Fetch once here.
+    config = get_runtime_config()
 
     def sync_app_call_state():
         set_call_state(
@@ -234,7 +238,7 @@ def run_serial_runtime_thread(
             now(),
             get_target_port(),
             popup_active(),
-            get_runtime_config(),
+            config,
             callbacks,
             ignore_repeat_state,
         )

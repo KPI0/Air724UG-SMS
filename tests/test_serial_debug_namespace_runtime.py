@@ -100,6 +100,30 @@ class SerialDebugNamespaceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(namespace["serial_debug_drop_count"], 5)
 
+    def test_set_serial_debug_state_raises_on_insufficient_arguments(self):
+        # Validates that parameter count is checked to prevent IndexError
+        namespace = self.base_namespace()
+
+        with self.assertRaises(ValueError) as ctx:
+            set_serial_debug_state_namespace_runtime(namespace, "window_refs")
+        self.assertIn("requires 2", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            set_serial_debug_state_namespace_runtime(namespace, "window_refs", "only_one")
+        self.assertIn("requires 2", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            set_serial_debug_state_namespace_runtime(namespace, "debug_enabled")
+        self.assertIn("requires 1", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            set_serial_debug_state_namespace_runtime(namespace, "drop_count")
+        self.assertIn("requires 1", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            set_serial_debug_state_namespace_runtime(namespace, "current_dial_num")
+        self.assertIn("requires 1", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

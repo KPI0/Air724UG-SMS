@@ -68,16 +68,23 @@ def manual_rebind_runtime(
         config.set("serial", "port", new_port)
         config.set("serial", "baud", str(baud))
         save_config()
-    except Exception:
-        pass
+    except Exception as exc:
+        # The in-memory port has already switched, so rebinding can still
+        # proceed; but a failed save means the new port is lost on restart.
+        # Surface it instead of swallowing so the user can re-save manually.
+        system_ui(f"⚠️ 串口重绑定已切换到 {new_port}，但配置保存失败：{exc}", "normal")
 
     system_ui(hint_formatter(old_port, new_port, candidate.description, reason), "normal")
     set_status(format_connecting_status(new_port), "orange")
 
     try:
         wake_serial()
-    except Exception:
-        pass
+    except Exception as exc:
+        # wake_serial is the action that actually reconnects to the new port.
+        # If it fails silently the device looks offline with no explanation,
+        # which is the worst case for diagnosis. Report and keep going so the
+        # status/hint already shown to the user stays consistent.
+        system_ui(f"⚠️ 串口重绑定到 {new_port} 后唤醒失败：{exc}", "normal")
     reset_rebind_hint()
     return True
 

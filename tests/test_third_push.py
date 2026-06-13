@@ -24,6 +24,7 @@ from sms_core.third_push_config import (
     update_third_push_settings,
     write_third_push_settings,
 )
+from sms_core.third_push_sender import ALLOWED_PUSH_SCHEMES, http_request
 
 
 class ThirdPushDispatchTests(unittest.TestCase):
@@ -256,6 +257,62 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(config.get("third_push", "call_enabled"), "0")
         self.assertEqual(json.loads(config.get("third_push", "notify_type")), ["wecom", "bark"])
         self.assertEqual(config.get("third_push", "wecom_webhook"), "https://example.test/wecom")
+
+
+class HttpRequestSchemeTests(unittest.TestCase):
+    def test_rejects_non_http_schemes_without_opening(self):
+        for url in (
+            "file:///etc/passwd",
+            "ftp://example.test/data",
+            "gopher://example.test/",
+            "data:text/plain,boom",
+            "C:\\Windows\\System32\\drivers\\etc\\hosts",
+            "",
+        ):
+            ok, code, body = http_request(url)
+            self.assertFalse(ok, f"scheme should be rejected: {url!r}")
+            self.assertIsNone(code)
+            self.assertIn("不支持的 URL 协议", body)
+
+    def test_allows_http_and_https_schemes(self):
+        opened = []
+
+        class FakeResp:
+            def __init__(self, url):
+                self._url = url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, _n):
+                return b"ok"
+
+            def getcode(self):
+                return 200
+
+        def fake_urlopen(req, timeout=None):
+            opened.append(req.full_url)
+            return FakeResp(req.full_url)
+
+        import urllib.request as _u
+
+        original = _u.urlopen
+        _u.urlopen = fake_urlopen
+        try:
+            for url in ("http://example.test/hook", "https://example.test/hook"):
+                ok, code, body = http_request(url, method="GET")
+                self.assertTrue(ok, f"scheme should be allowed: {url!r}")
+                self.assertEqual(code, 200)
+        finally:
+            _u.urlopen = original
+
+        self.assertEqual(opened, ["http://example.test/hook", "https://example.test/hook"])
+
+    def test_allowed_schemes_constant(self):
+        self.assertEqual(ALLOWED_PUSH_SCHEMES, ("http", "https"))
 
 
 if __name__ == "__main__":

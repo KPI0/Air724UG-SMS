@@ -106,6 +106,60 @@ class SerialReconnectTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(calls, [])
 
+    def test_manual_rebind_runtime_reports_config_save_failure(self):
+        # A failed config save must not be swallowed: the new port would be
+        # lost on restart, so the user must be told via system_ui.
+        ui_messages = []
+
+        ok = manual_rebind_runtime(
+            mode="Manual",
+            current_port="COM5",
+            baud=115200,
+            reason="changed",
+            find_luat_best_port=lambda: ("COM7", "LUAT MODEM"),
+            list_ports=lambda: [],
+            choose_candidate=lambda dev, desc, ports, current_port="": ManualRebindCandidate(dev, desc),
+            config=configparser.ConfigParser(),
+            save_config=lambda: (_ for _ in ()).throw(OSError("disk full")),
+            set_port=lambda port: None,
+            system_ui=lambda text, tag: ui_messages.append(text),
+            set_status=lambda text, color: None,
+            wake_serial=lambda: None,
+            reset_rebind_hint=lambda: None,
+            hint_formatter=lambda old, new, desc, reason: "hint",
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(any("配置保存失败" in m for m in ui_messages))
+        self.assertTrue(any("disk full" in m for m in ui_messages))
+
+    def test_manual_rebind_runtime_reports_wake_failure(self):
+        # wake_serial is the real reconnect action; its failure must surface
+        # so the device does not appear silently offline.
+        ui_messages = []
+
+        ok = manual_rebind_runtime(
+            mode="Manual",
+            current_port="COM5",
+            baud=115200,
+            reason="changed",
+            find_luat_best_port=lambda: ("COM7", "LUAT MODEM"),
+            list_ports=lambda: [],
+            choose_candidate=lambda dev, desc, ports, current_port="": ManualRebindCandidate(dev, desc),
+            config=configparser.ConfigParser(),
+            save_config=lambda: None,
+            set_port=lambda port: None,
+            system_ui=lambda text, tag: ui_messages.append(text),
+            set_status=lambda text, color: None,
+            wake_serial=lambda: (_ for _ in ()).throw(RuntimeError("port busy")),
+            reset_rebind_hint=lambda: None,
+            hint_formatter=lambda old, new, desc, reason: "hint",
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(any("唤醒失败" in m for m in ui_messages))
+        self.assertTrue(any("port busy" in m for m in ui_messages))
+
     def test_manual_rebind_runtime_falls_back_to_empty_ports_on_listing_error(self):
         calls = []
 

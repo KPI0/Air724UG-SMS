@@ -105,3 +105,122 @@ class FileLogRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FileLogWorkerResilienceTests(unittest.TestCase):
+    def test_malformed_queue_item_does_not_kill_worker(self):
+        # A bad item (not a (path, line) tuple) must not crash the only
+        # thread that flushes logs to disk. It should be reported and skipped.
+        log_queue = queue.Queue()
+        log_queue.put_nowait("not-a-tuple")
+        stop_event = FakeStopEvent(stop_after=1)
+        errors = []
+
+        run_file_log_worker(
+            log_queue=log_queue,
+            stop_event=stop_event,
+            poll_timeout=0,
+            on_error=errors.append,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("file_log_worker", errors[0])
+
+    def test_good_item_after_bad_item_is_still_written(self):
+        # Worker survives a malformed item and keeps processing later items.
+        log_queue = queue.Queue()
+        log_queue.put_nowait("bad")
+        log_queue.put_nowait(("a.log", "a1\n"))
+        stop_event = FakeStopEvent(stop_after=2)
+        writes = []
+        errors = []
+
+        run_file_log_worker(
+            log_queue=log_queue,
+            stop_event=stop_event,
+            poll_timeout=0,
+            write_batches=lambda batches: writes.append(batches),
+            on_error=errors.append,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(writes, [{"a.log": ["a1\n"]}])
+
+    def test_write_log_batches_reports_failing_path_and_continues(self):
+        # A failing path (e.g. disk full) must be reported, not silently
+        # swallowed, and must not abort writes to the remaining paths.
+        errors = []
+        writes = []
+
+        def open_file(path, mode, encoding):
+            if path == "bad.log":
+                raise OSError("disk full")
+            return FakeFile(writes)
+
+        count = write_log_batches(
+            {"bad.log": ["x\n"], "good.log": ["y\n"]},
+            open_file=open_file,
+            on_error=errors.append,
+        )
+
+        # good.log still written; bad.log reported.
+        self.assertEqual(count, 1)
+        self.assertEqual(writes, [["y\n"]])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("bad.log", errors[0])
+        self.assertIn("disk full", errors[0])
+
+    def test_worker_forwards_on_error_to_default_write_batches(self):
+        # The worker must forward its on_error into write_log_batches so that
+        # per-path write failures surface through the same channel.
+        errors = []
+        log_queue = queue.Queue()
+        log_queue.put_nowait(("bad.log", "x\n"))
+        stop_event = FakeStopEvent(stop_after=1)
+
+        def open_file(path, mode, encoding):
+            raise OSError("denied")
+
+        run_file_log_worker(
+            log_queue=log_queue,
+            stop_event=stop_event,
+            poll_timeout=0,
+            write_batches=lambda batches, on_error=None: write_log_batches(
+                batches, open_file=open_file, on_error=on_error
+            ),
+            on_error=errors.append,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("bad.log", errors[0])
+
+    def test_start_file_log_worker_passes_log_error_to_guard(self):
+        # If the worker thread dies, the daemon guard must be able to log why.
+        captured = []
+
+        def boom_factory(target, daemon, name=None):
+            class _T:
+                def __init__(self):
+                    self.target = target
+
+                def start(self):
+                    # Simulate the thread body running and raising.
+                    self.target()
+
+            return _T()
+
+        # Force run_file_log_worker to raise immediately by giving a stop_event
+        # whose is_set raises; the guard should capture and log it.
+        class ExplodingStop:
+            def is_set(self):
+                raise RuntimeError("stop check failed")
+
+        start_file_log_worker(
+            log_queue=queue.Queue(),
+            stop_event=ExplodingStop(),
+            thread_factory=boom_factory,
+            log_error=captured.append,
+        )
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("file_log_worker", captured[0])
