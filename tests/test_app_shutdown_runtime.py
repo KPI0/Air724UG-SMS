@@ -48,6 +48,7 @@ class AppShutdownRuntimeTests(unittest.TestCase):
             stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
             flush_log_queue=lambda queue: calls.append(("flush", queue)),
             file_log_queue="queue",
+            log_error="logger",
             cleanup_runtime=cleanup_runtime,
         )
 
@@ -58,6 +59,7 @@ class AppShutdownRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["worker_stop_events"], ("file", "third"))
         self.assertEqual(kwargs["tts_stop_event"], "tts")
         self.assertEqual(kwargs["file_log_queue"], "queue")
+        self.assertEqual(kwargs["log_error"], "logger")
         self.assertEqual(messagebox.ask_calls[0][2], root)
         self.assertEqual(root.destroy_calls, 1)
 

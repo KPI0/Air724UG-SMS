@@ -75,7 +75,7 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_send_register": lambda ws: ("register", ws),
             "_cloud_schedule_unregister": lambda reason="hidden": ("unregister", reason),
             "restart_cloud_control": lambda **kwargs: ("restart", kwargs),
-            "sync_and_focus_existing_window": lambda win, attr: ("sync", win, attr),
+            "sync_and_focus_existing_window": lambda win, attr, **kwargs: ("sync", win, attr, kwargs["log_error"]("sync log")),
             "center_window": lambda win: ("center", win),
             "_cloud_file_notice": "file_notice",
             "_cloud_main_notice": "main_notice",
@@ -206,6 +206,10 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         forwarded["set_window"]("next_window")
         self.assertEqual(namespace["cloud_control_win"], "next_window")
         self.assertEqual(forwarded["run_coroutine_threadsafe"]("coro", "loop"), ("future", "coro", "loop"))
+        self.assertEqual(
+            forwarded["sync_existing_window"]("win", "_sync"),
+            ("sync", "win", "_sync", ("file", "sync log")),
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
             "VOICE_TEXT": "hello",
             "VOICE_ENABLED": True,
             "safe_save_config": lambda: calls.append(("save",)),
+            "log_file_only": lambda message: calls.append(("log", message)),
             "menu_bar": Menu(),
             "voice_menu_index": 3,
         }
@@ -84,6 +85,8 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
             {"voice_enabled": "1"},
             namespace["safe_save_config"],
         ))
+        self.assertIs(save_values.call_args_list[0].kwargs["log_error"], namespace["log_file_only"])
+        self.assertIs(save_values.call_args_list[1].kwargs["log_error"], namespace["log_file_only"])
 
         namespace["update_voice_menu_label"]()
         namespace["VOICE_ENABLED"] = False
@@ -91,6 +94,21 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
 
         self.assertIn(("entryconfig", 3, {"label": "🔊 语音播报"}), namespace["calls"])
         self.assertIn(("entryconfig", 3, {"label": "🔇 语音播报"}), namespace["calls"])
+
+    def test_update_voice_menu_label_logs_failures(self):
+        namespace = self.make_namespace()
+
+        class BrokenMenu:
+            def entryconfig(self, index, **kwargs):
+                raise RuntimeError("menu failed")
+
+        namespace["menu_bar"] = BrokenMenu()
+        bindings.install_settings_namespace_bindings(namespace)
+
+        namespace["update_voice_menu_label"]()
+
+        self.assertEqual(namespace["calls"][0][0], "log")
+        self.assertIn("menu failed", namespace["calls"][0][1])
 
 
 if __name__ == "__main__":

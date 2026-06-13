@@ -23,6 +23,11 @@ class FakePopup:
         self.exists = False
 
 
+class BrokenDestroyPopup(FakePopup):
+    def destroy(self):
+        raise RuntimeError("destroy failed")
+
+
 class CallPopupRuntimeTests(unittest.TestCase):
     def test_popup_exists_handles_missing_and_broken_windows(self):
         class BrokenPopup:
@@ -33,6 +38,17 @@ class CallPopupRuntimeTests(unittest.TestCase):
         self.assertFalse(popup_exists(BrokenPopup()))
         self.assertTrue(popup_exists(FakePopup()))
 
+    def test_popup_exists_logs_broken_windows(self):
+        class BrokenPopup:
+            def winfo_exists(self):
+                raise RuntimeError("window already gone")
+
+        logs = []
+
+        self.assertFalse(popup_exists(BrokenPopup(), log_error=logs.append))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("window already gone", logs[0])
+
     def test_close_call_popup_runtime_destroys_existing_popup_and_clears_state(self):
         popup = FakePopup()
         values = []
@@ -41,6 +57,17 @@ class CallPopupRuntimeTests(unittest.TestCase):
 
         self.assertTrue(popup.destroyed)
         self.assertEqual(values, [None])
+
+    def test_close_call_popup_runtime_logs_destroy_failure_and_clears_state(self):
+        popup = BrokenDestroyPopup()
+        values = []
+        logs = []
+
+        close_call_popup_runtime(popup, values.append, log_error=logs.append)
+
+        self.assertEqual(values, [None])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("destroy failed", logs[0])
 
     def test_close_call_popup_app_runtime_posts_close_to_ui_thread(self):
         calls = []
@@ -55,6 +82,21 @@ class CallPopupRuntimeTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls, [("run", "post"), ("close", "popup"), ("set", None)])
+
+    def test_close_call_popup_app_runtime_forwards_log_error(self):
+        calls = []
+
+        result = close_call_popup_app_runtime(
+            get_popup=lambda: "popup",
+            set_popup=lambda value: calls.append(("set", value)),
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post="post",
+            log_error=lambda message: ("log", message),
+            close_runtime=lambda popup, set_popup, **kwargs: calls.append(("close", popup, kwargs["log_error"]("msg"))),
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, [("close", "popup", ("log", "msg"))])
 
     def test_show_call_popup_runtime_skips_when_popup_exists(self):
         current = FakePopup()

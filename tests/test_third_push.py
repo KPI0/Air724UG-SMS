@@ -24,7 +24,7 @@ from sms_core.third_push_config import (
     update_third_push_settings,
     write_third_push_settings,
 )
-from sms_core.third_push_sender import ALLOWED_PUSH_SCHEMES, http_request
+from sms_core.third_push_sender import ALLOWED_PUSH_SCHEMES, api_ok, http_request, redact_sensitive_text
 
 
 class ThirdPushDispatchTests(unittest.TestCase):
@@ -313,6 +313,29 @@ class HttpRequestSchemeTests(unittest.TestCase):
 
     def test_allowed_schemes_constant(self):
         self.assertEqual(ALLOWED_PUSH_SCHEMES, ("http", "https"))
+
+
+class ThirdPushErrorRedactionTests(unittest.TestCase):
+    def test_redact_sensitive_text_masks_common_secret_fields(self):
+        text = 'token=abc123 password: p@ss sign=deadbeef chat_id=10086 {"secret":"hidden"} ok'
+
+        redacted = redact_sensitive_text(text)
+
+        self.assertNotIn("abc123", redacted)
+        self.assertNotIn("p@ss", redacted)
+        self.assertNotIn("deadbeef", redacted)
+        self.assertNotIn("10086", redacted)
+        self.assertNotIn("hidden", redacted)
+        self.assertIn("token=***", redacted)
+        self.assertIn('"secret":"***"', redacted)
+
+    def test_api_ok_redacts_sensitive_failure_body(self):
+        ok, message = api_ok("custom_post", False, 500, "token=abc123&password=secret")
+
+        self.assertFalse(ok)
+        self.assertIn("HTTP 500", message)
+        self.assertNotIn("abc123", message)
+        self.assertNotIn("secret", message)
 
 
 if __name__ == "__main__":

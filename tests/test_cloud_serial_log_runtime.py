@@ -134,6 +134,36 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         self.assertTrue(state.drain_scheduled)
         self.assertEqual(len(scheduled), 1)
 
+    def test_drain_cloud_serial_log_queue_closes_reschedule_coro_on_failure(self):
+        log_queue = queue.Queue()
+        log_queue.put_nowait({"id": 1})
+        log_queue.put_nowait({"id": 2})
+        state = CloudSerialLogDrainState()
+        state.drain_scheduled = True
+        ws = FakeWs()
+        logs = []
+        created = []
+
+        def create_task(coro):
+            created.append(coro)
+            raise RuntimeError("scheduler down")
+
+        asyncio.run(drain_cloud_serial_log_queue(
+            ws,
+            log_queue=log_queue,
+            batch_size=1,
+            state=state,
+            is_current_connection=lambda current_ws: current_ws is ws,
+            is_connected=lambda: True,
+            create_task=create_task,
+            log_error=logs.append,
+        ))
+
+        self.assertEqual(ws.sent, ['{"id": 1}'])
+        self.assertFalse(state.drain_scheduled)
+        self.assertEqual(created[0].cr_frame, None)
+        self.assertIn("scheduler down", logs[0])
+
     def test_drain_cloud_serial_log_queue_clears_when_connection_stale(self):
         log_queue = queue.Queue()
         log_queue.put_nowait({"id": 1})
@@ -202,6 +232,52 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
             run_coroutine_threadsafe=run_coroutine_threadsafe,
         ))
         self.assertFalse(state.drain_scheduled)
+
+
+    def test_schedule_cloud_serial_log_drain_closes_coro_on_submit_failure(self):
+        state = CloudSerialLogDrainState()
+        created = []
+        logs = []
+
+        async def drain(_ws):
+            pass
+
+        def drain_coro_factory(ws):
+            coro = drain(ws)
+            created.append(coro)
+            return coro
+
+        def run_coroutine_threadsafe(_coro, _loop):
+            raise RuntimeError("loop rejected")
+
+        self.assertFalse(schedule_cloud_serial_log_drain(
+            FakeLoop(),
+            object(),
+            state=state,
+            drain_coro_factory=drain_coro_factory,
+            run_coroutine_threadsafe=run_coroutine_threadsafe,
+            log_error=logs.append,
+        ))
+        self.assertFalse(state.drain_scheduled)
+        self.assertEqual(created[0].cr_frame, None)
+        self.assertIn("loop rejected", logs[0])
+
+    def test_schedule_cloud_serial_log_drain_resets_flag_when_factory_fails(self):
+        state = CloudSerialLogDrainState()
+        logs = []
+
+        def drain_coro_factory(_ws):
+            raise RuntimeError("factory failed")
+
+        self.assertFalse(schedule_cloud_serial_log_drain(
+            FakeLoop(),
+            object(),
+            state=state,
+            drain_coro_factory=drain_coro_factory,
+            log_error=logs.append,
+        ))
+        self.assertFalse(state.drain_scheduled)
+        self.assertIn("factory failed", logs[0])
 
 
 if __name__ == "__main__":

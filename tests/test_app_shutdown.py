@@ -25,6 +25,13 @@ class AppShutdownTests(unittest.TestCase):
         self.assertEqual(safe_set_events(ok, None, failed), 1)
         self.assertEqual(ok.set_count, 1)
 
+    def test_safe_set_events_logs_failed_events(self):
+        logs = []
+
+        self.assertEqual(safe_set_events(FakeEvent(fail=True), log_error=logs.append), 0)
+
+        self.assertTrue(any("set failed" in message for message in logs))
+
     def test_drain_log_queue_groups_lines_by_path(self):
         log_queue = queue.Queue()
         log_queue.put(("a.log", "a1"))
@@ -48,6 +55,14 @@ class AppShutdownTests(unittest.TestCase):
 
             with open(path, encoding="utf-8") as file:
                 self.assertEqual(file.read(), "line1\nline2\n")
+
+    def test_flush_log_queue_logs_write_failures(self):
+        logs = []
+        log_queue = queue.Queue()
+        log_queue.put(("Z:\\missing\\sms.log", "line\n"))
+
+        self.assertEqual(flush_log_queue(log_queue, log_error=logs.append), 0)
+        self.assertTrue(any("sms.log" in message for message in logs))
 
     def test_cleanup_and_exit_runtime_skips_when_already_exiting(self):
         calls = []
@@ -127,6 +142,35 @@ class AppShutdownTests(unittest.TestCase):
             ("destroy",),
             ("events", (tts_event,)),
         ])
+
+    def test_cleanup_and_exit_runtime_logs_and_continues_after_cleanup_errors(self):
+        logs = []
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(FakeEvent(fail=True),),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("cloud")),
+            safe_close_serial=lambda: (_ for _ in ()).throw(RuntimeError("serial")),
+            stop_tray_icon=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("tray")),
+            file_log_queue=queue.Queue(),
+            destroy_root=lambda: (_ for _ in ()).throw(RuntimeError("destroy")),
+            log_error=logs.append,
+        )
+
+        self.assertEqual(result, "exited")
+        self.assertIn(("exiting", True), calls)
+        self.assertIn(("serial", False), calls)
+        self.assertTrue(any("set failed" in message for message in logs))
+        self.assertTrue(any("cloud" in message for message in logs))
+        self.assertTrue(any("serial" in message for message in logs))
+        self.assertTrue(any("tray" in message for message in logs))
+        self.assertTrue(any("destroy" in message for message in logs))
 
 
 if __name__ == "__main__":

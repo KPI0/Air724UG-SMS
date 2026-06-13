@@ -10,10 +10,13 @@ from sms_ui.main_status_runtime import (
 
 
 class FakeVar:
-    def __init__(self):
+    def __init__(self, fail=False):
+        self.fail = fail
         self.value = None
 
     def set(self, value):
+        if self.fail:
+            raise RuntimeError("set failed")
         self.value = value
 
 
@@ -61,6 +64,22 @@ class MainStatusRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, ["post"])
         self.assertEqual(temp_var.value, "🌡️ 31 ℃")
 
+    def test_update_temperature_status_runtime_logs_update_failures(self):
+        logs = []
+
+        result = update_temperature_status_runtime(
+            "31",
+            tk_alive=lambda: True,
+            temp_var=FakeVar(fail=True),
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("set failed", logs[0])
+
     def test_update_signal_status_runtime_skips_when_tk_dead(self):
         signal_var = FakeVar()
 
@@ -74,6 +93,23 @@ class MainStatusRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertIsNone(signal_var.value)
+
+    def test_update_signal_status_runtime_logs_update_and_fallback_failures(self):
+        logs = []
+
+        result = update_signal_status_runtime(
+            100,
+            tk_alive=lambda: True,
+            signal_var=FakeVar(fail=True),
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(logs), 2)
+        self.assertIn("set failed", logs[0])
+        self.assertIn("set failed", logs[1])
 
     def test_update_label_status_runtime_sets_text_and_color(self):
         text_var = FakeVar()
@@ -93,11 +129,36 @@ class MainStatusRuntimeTests(unittest.TestCase):
         self.assertEqual(text_var.value, "ready")
         self.assertEqual(label.config_calls, [{"fg": "green"}])
 
+    def test_update_label_status_runtime_logs_update_failures(self):
+        logs = []
+
+        result = update_label_status_runtime(
+            "ready",
+            "green",
+            tk_alive=lambda: True,
+            text_var=FakeVar(),
+            label=FakeLabel(fail=True),
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("config failed", logs[0])
+
     def test_apply_sms_font_style_runtime_reports_success_and_failure(self):
         text = FakeText()
         self.assertTrue(apply_sms_font_style_runtime(text, 24, "#123456"))
         self.assertEqual(text.tag_calls, [("sms", {"foreground": "#123456", "font": ("微软雅黑", 24)})])
         self.assertFalse(apply_sms_font_style_runtime(FakeText(fail=True), 24, "#123456"))
+
+    def test_apply_sms_font_style_runtime_logs_failures(self):
+        logs = []
+
+        self.assertFalse(apply_sms_font_style_runtime(FakeText(fail=True), 24, "#123456", log_error=logs.append))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("tag failed", logs[0])
 
 
 if __name__ == "__main__":

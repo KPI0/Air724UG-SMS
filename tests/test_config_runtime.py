@@ -115,6 +115,47 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(values.baud, 115200)
         self.assertEqual(values.mode, "Auto")
 
+    def test_read_startup_config_values_logs_invalid_values_and_keeps_starting(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {
+            "popup_enabled": "bad",
+            "call_whitelist": "{bad json",
+        }
+        config["serial"] = {
+            "baud": "bad",
+            "mode": "strange",
+        }
+        logs = []
+
+        values = read_startup_config_values(
+            config,
+            default_voice_text="default",
+            log_error=logs.append,
+        )
+
+        self.assertTrue(values.popup_enabled)
+        self.assertEqual(values.call_whitelist, [])
+        self.assertEqual(values.baud, 115200)
+        self.assertEqual(values.mode, "Auto")
+        self.assertTrue(any("ui.popup_enabled" in message for message in logs))
+        self.assertTrue(any("ui.call_whitelist" in message for message in logs))
+        self.assertTrue(any("serial.baud" in message for message in logs))
+        self.assertTrue(any("serial.mode" in message for message in logs))
+
+    def test_read_startup_config_values_rejects_non_positive_baud(self):
+        config = configparser.ConfigParser()
+        config["serial"] = {"baud": "0"}
+        logs = []
+
+        values = read_startup_config_values(
+            config,
+            default_voice_text="default",
+            log_error=logs.append,
+        )
+
+        self.assertEqual(values.baud, 115200)
+        self.assertTrue(any("must be positive" in message for message in logs))
+
     def test_initialize_config_runtime_creates_defaults_when_missing(self):
         config = configparser.ConfigParser()
         calls = []

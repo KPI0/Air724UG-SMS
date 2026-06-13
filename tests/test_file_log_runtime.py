@@ -224,3 +224,24 @@ class FileLogWorkerResilienceTests(unittest.TestCase):
 
         self.assertEqual(len(captured), 1)
         self.assertIn("file_log_worker", captured[0])
+
+    def test_queue_read_failure_is_reported_and_backed_off(self):
+        class BrokenQueue:
+            def get(self, timeout):
+                raise RuntimeError("queue failed")
+
+        errors = []
+        sleeps = []
+
+        run_file_log_worker(
+            log_queue=BrokenQueue(),
+            stop_event=FakeStopEvent(stop_after=1),
+            poll_timeout=0,
+            queue_error_sleep=0.25,
+            on_error=errors.append,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("queue failed", errors[0])
+        self.assertEqual(sleeps, [0.25])

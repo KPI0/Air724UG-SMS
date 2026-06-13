@@ -24,6 +24,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             "ui_post": "post",
             "close_call_popup": lambda: "closed",
             "run_on_ui_thread": lambda callback, ui_post: callback(),
+            "log_file_only": lambda message: ("log", message),
         }
 
     def test_set_call_popup_namespace_runtime_updates_window(self):
@@ -49,6 +50,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         forwarded["set_popup"](None)
         self.assertIsNone(namespace["current_call_popup"])
         self.assertEqual(forwarded["ui_post"], "post")
+        self.assertEqual(forwarded["log_error"]("close log"), ("log", "close log"))
 
     def test_show_call_popup_namespace_runtime_forwards_dependencies_and_sets_ring_timeout(self):
         namespace = self.base_namespace()
@@ -70,6 +72,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["get_serial"](), "serial")
         forwarded["set_ring_timeout"](-1.0)
         self.assertEqual(namespace["ring_timeout_target"], -1.0)
+        self.assertEqual(forwarded["log_error"]("show log"), ("log", "show log"))
 
     def test_serial_call_state_namespace_runtime_reads_and_writes_state(self):
         namespace = self.base_namespace()

@@ -46,6 +46,25 @@ class AppInstanceRuntimeTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(calls, [("close", "mutex"), ("focus", "title"), ("exit", 0)])
 
+    def test_check_single_instance_logs_close_handle_failure(self):
+        calls = []
+
+        result = check_single_instance_app_runtime(
+            allow_multi_instance=False,
+            window_title="title",
+            acquire_mutex=lambda name: ("mutex", 183),
+            close_handle=lambda handle: (_ for _ in ()).throw(RuntimeError("close failed")),
+            existing_error=lambda code: code == 183,
+            focus_window=lambda title: calls.append(("focus", title)) or True,
+            exit_process=lambda code: calls.append(("exit", code)),
+            log_error=lambda message: calls.append(("log", message)),
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls[0][0], "log")
+        self.assertIn("close failed", calls[0][1])
+        self.assertEqual(calls[1:], [("focus", "title"), ("exit", 0)])
+
     def test_check_single_instance_shows_message_when_existing_window_not_found(self):
         calls = []
 

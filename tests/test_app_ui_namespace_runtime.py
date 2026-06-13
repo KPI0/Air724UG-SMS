@@ -21,6 +21,14 @@ class FakeRoot:
         self.calls.append(("withdraw",))
 
 
+class BrokenRoot:
+    def deiconify(self):
+        raise RuntimeError("cannot show")
+
+    def withdraw(self):
+        raise RuntimeError("cannot hide")
+
+
 class FakeWindow:
     def __init__(self, width=80, height=40, req_width=100, req_height=50):
         self.width = width
@@ -118,6 +126,7 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
             "serial_lock": "lock",
             "serial_obj": "serial",
             "system_ui": lambda *args: calls.append(("system", args)),
+            "log_file_only": lambda message: ("log", message),
         }
 
     def test_tray_and_window_namespace_runtimes_forward_state(self):
@@ -127,6 +136,7 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
             self.assertTrue(runtime.stop_tray_icon_namespace_runtime(namespace, wait_after=0.1))
         self.assertEqual(stop_runtime.call_args.kwargs["tray_icon"], "icon")
         self.assertEqual(stop_runtime.call_args.kwargs["wait_after"], 0.1)
+        self.assertEqual(stop_runtime.call_args.kwargs["log_error"]("tray log"), ("log", "tray log"))
         stop_runtime.call_args.kwargs["clear_tray_icon"]()
         self.assertIsNone(namespace["tray_icon"])
 
@@ -144,8 +154,30 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
         kwargs = create_runtime.call_args.kwargs
         self.assertEqual(kwargs["icon_path"], "res/icon.ico")
         self.assertEqual(kwargs["title"], "SMS")
+        self.assertEqual(kwargs["log_error"]("create log"), ("log", "create log"))
         kwargs["set_tray_icon"]("stored")
         self.assertEqual(namespace["tray_icon"], "stored")
+
+    def test_window_namespace_runtimes_log_root_failures(self):
+        logs = []
+        namespace = self.make_namespace()
+        namespace["root"] = BrokenRoot()
+        namespace["log_file_only"] = logs.append
+
+        self.assertIsNone(runtime.show_window_namespace_runtime(namespace))
+        self.assertIsNone(runtime.hide_window_namespace_runtime(namespace))
+
+        self.assertEqual(len(logs), 2)
+        self.assertIn("cannot show", logs[0])
+        self.assertIn("cannot hide", logs[1])
+
+    def test_window_namespace_runtimes_ignore_logging_failures(self):
+        namespace = self.make_namespace()
+        namespace["root"] = BrokenRoot()
+        namespace["log_file_only"] = lambda _message: (_ for _ in ()).throw(RuntimeError("log down"))
+
+        self.assertIsNone(runtime.show_window_namespace_runtime(namespace))
+        self.assertIsNone(runtime.hide_window_namespace_runtime(namespace))
 
     def test_center_helpers_compute_geometry(self):
         namespace = self.make_namespace()

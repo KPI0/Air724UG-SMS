@@ -121,6 +121,16 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["current_port_mutex"], "new_mutex")
         create_mutex.assert_called_once_with("Air724UG_PORT_COM5")
 
+    def test_unlock_port_mutex_logs_close_failure_and_clears_state(self):
+        namespace = self.make_namespace()
+
+        with patch.object(runtime, "close_windows_handle", side_effect=RuntimeError("close failed")):
+            runtime.unlock_port_mutex_namespace_runtime(namespace)
+
+        self.assertIsNone(namespace["current_port_mutex"])
+        self.assertEqual(namespace["calls"][0][0], "log")
+        self.assertIn("close failed", namespace["calls"][0][1])
+
     def test_check_single_instance_namespace_runtime_stores_mutex(self):
         namespace = self.make_namespace()
 
@@ -130,6 +140,7 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["app_mutex"], "mutex")
         self.assertFalse(check_runtime.call_args.kwargs["allow_multi_instance"])
         self.assertEqual(check_runtime.call_args.kwargs["window_title"], "SMS")
+        self.assertIs(check_runtime.call_args.kwargs["log_error"], namespace["log_file_only"])
 
     def test_show_sms_popup_namespace_runtime_posts_popup(self):
         namespace = self.make_namespace()

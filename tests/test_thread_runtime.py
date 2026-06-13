@@ -126,6 +126,18 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, ["full"])
 
+    def test_ui_post_runtime_logs_unexpected_queue_error(self):
+        logs = []
+
+        class BrokenQueue:
+            def put_nowait(self, _item):
+                raise RuntimeError("queue closed")
+
+        ui_post_runtime(BrokenQueue(), lambda: None, log_error=logs.append)
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("queue closed", logs[0])
+
     def test_ui_pump_runtime_runs_tasks_and_reschedules(self):
         calls = []
         task_queue = queue.Queue()
@@ -160,6 +172,23 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(processed, 2)
         self.assertEqual(calls, ["next"])
+
+    def test_ui_pump_runtime_logs_task_errors(self):
+        logs = []
+        task_queue = queue.Queue()
+        task_queue.put_nowait((lambda: (_ for _ in ()).throw(RuntimeError("boom")), (), {}))
+
+        processed = ui_pump_runtime(
+            task_queue,
+            RootStub(),
+            tk_alive=lambda: False,
+            schedule_self=lambda: None,
+            log_error=logs.append,
+        )
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("boom", logs[0])
 
     def test_schedule_delayed_ui_runtime_schedules_remaining_startup_delay(self):
         calls = []
@@ -199,6 +228,7 @@ class ThreadRuntimeTests(unittest.TestCase):
 
     def test_schedule_delayed_ui_runtime_falls_back_when_after_fails(self):
         calls = []
+        logs = []
 
         result = schedule_delayed_ui_runtime(
             lambda: calls.append("callback") or "done",
@@ -208,10 +238,54 @@ class ThreadRuntimeTests(unittest.TestCase):
             root_after=lambda delay, callback: (_ for _ in ()).throw(RuntimeError("dead tk")),
             run_on_ui_thread=lambda callback, ui_post: callback(),
             ui_post=None,
+            log_error=logs.append,
         )
 
         self.assertEqual(result, "done")
         self.assertEqual(calls, ["callback"])
+        self.assertTrue(any("dead tk" in message for message in logs))
+
+    def test_schedule_delayed_ui_runtime_logs_callback_failure_once(self):
+        calls = []
+        logs = []
+
+        def callback():
+            calls.append("callback")
+            raise RuntimeError("callback failed")
+
+        result = schedule_delayed_ui_runtime(
+            callback,
+            app_start_mono=10.0,
+            start_ui_delay=2.0,
+            monotonic=lambda: 15.0,
+            root_after=lambda delay, callback: None,
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, ["callback"])
+        self.assertTrue(any("callback failed" in message for message in logs))
+
+    def test_schedule_delayed_ui_runtime_logs_time_source_failure(self):
+        calls = []
+        logs = []
+
+        result = schedule_delayed_ui_runtime(
+            lambda: calls.append("callback") or "done",
+            app_start_mono=10.0,
+            start_ui_delay=2.0,
+            monotonic=lambda: (_ for _ in ()).throw(RuntimeError("clock failed")),
+            root_after=lambda delay, callback: None,
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertEqual(result, "done")
+        self.assertEqual(calls, ["callback"])
+        self.assertTrue(any("clock failed" in message for message in logs))
 
     def test_ui_messagebox_runtime_dispatches_known_kinds_on_ui_thread(self):
         messagebox = MessageBoxStub()

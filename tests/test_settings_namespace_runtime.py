@@ -44,6 +44,7 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
             "safe_close_serial": lambda: "close",
             "serial_wakeup_event": FakeWakeEvent(),
             "create_desktop_shortcut": lambda name: ("shortcut", name),
+            "log_file_only": lambda message: ("log", message),
         }
 
     def test_open_sms_font_dialog_namespace_runtime_forwards_and_sets_font(self):
@@ -59,6 +60,7 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         parent, size, color, forwarded = calls[0]
         self.assertEqual((parent, size, color), ("root", 14, "#112233"))
         self.assertEqual(forwarded["open_dialog"], "font_dialog")
+        self.assertEqual(forwarded["log_error"]("font log"), ("log", "font log"))
         forwarded["set_font"](18, "#445566")
         self.assertEqual(namespace["SMS_FONT_SIZE"], 18)
         self.assertEqual(namespace["SMS_FONT_COLOR"], "#445566")
@@ -76,6 +78,7 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         parent, text, forwarded = calls[0]
         self.assertEqual((parent, text), ("root", "hello"))
         self.assertEqual(forwarded["open_dialog"], "voice_dialog")
+        self.assertEqual(forwarded["log_error"]("voice log"), ("log", "voice log"))
         forwarded["set_voice_text"]("next")
         self.assertEqual(namespace["VOICE_TEXT"], "next")
 
@@ -127,6 +130,7 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "keywords")
         self.assertEqual(calls[0][:6], ("root", ["code"], False, "config", namespace["safe_save_config"], namespace["system_ui"]))
         calls[0][6](True)
+        self.assertEqual(calls[0][8]("keyword log"), ("log", "keyword log"))
         self.assertTrue(namespace["LOG_UNMATCHED_SMS"])
 
     def test_open_call_filter_setting_namespace_runtime_forwards_and_sets_mode(self):
@@ -148,6 +152,7 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
             namespace["safe_save_config"],
         ))
         calls[0][7]("Whitelist")
+        self.assertEqual(calls[0][9]("filter log"), ("log", "filter log"))
         self.assertEqual(namespace["CALL_FILTER_MODE"], "Whitelist")
 
 

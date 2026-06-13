@@ -71,14 +71,33 @@ class SettingsRuntimeTests(unittest.TestCase):
 
     def test_save_ui_config_values_reports_save_errors(self):
         config = configparser.ConfigParser()
+        logs = []
 
         ok = save_ui_config_values(
             config,
             {"voice_text": "hello"},
             lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            log_error=logs.append,
         )
 
         self.assertFalse(ok)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("boom", logs[0])
+
+    def test_save_helpers_log_save_errors(self):
+        config = configparser.ConfigParser()
+        logs = []
+
+        def fail_save():
+            raise RuntimeError("disk full")
+
+        save_keywords_config(config, ["otp"], fail_save, log_error=logs.append)
+        save_log_unmatched_config(config, True, fail_save, log_error=logs.append)
+        save_call_filter_mode(config, "Whitelist", fail_save, log_error=logs.append)
+        save_call_filter_list(config, "call_whitelist", ["10086"], fail_save, log_error=logs.append)
+
+        self.assertEqual(len(logs), 4)
+        self.assertTrue(all("disk full" in message for message in logs))
 
     def test_toggle_voice_broadcast_runtime_flips_state_and_saves(self):
         config = configparser.ConfigParser()
@@ -98,6 +117,24 @@ class SettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0], ("enabled", True))
         self.assertEqual(calls[1], "label")
         self.assertIn("语音播报", calls[-1][1][0])
+
+    def test_toggle_voice_broadcast_runtime_logs_save_errors(self):
+        config = configparser.ConfigParser()
+        logs = []
+
+        result = toggle_voice_broadcast_runtime(
+            False,
+            config,
+            lambda: (_ for _ in ()).throw(RuntimeError("save failed")),
+            lambda value: None,
+            lambda: None,
+            lambda *args: None,
+            log_error=logs.append,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("save failed", logs[0])
 
     def test_toggle_popup_runtime_sets_state_and_saves(self):
         config = configparser.ConfigParser()

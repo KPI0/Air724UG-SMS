@@ -18,6 +18,20 @@ class MultiInstanceSettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(config.get("ui", "allow_multi_instance"), "1")
         self.assertEqual(saved, ["saved"])
 
+    def test_save_multi_instance_config_logs_save_errors(self):
+        config = configparser.ConfigParser()
+        logs = []
+
+        save_multi_instance_config(
+            config,
+            True,
+            lambda: (_ for _ in ()).throw(RuntimeError("save failed")),
+            log_error=logs.append,
+        )
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("save failed", logs[0])
+
     def test_multi_instance_status_formats_enabled_state(self):
         self.assertIn("\u5df2\u5f00\u542f", multi_instance_status(True))
         self.assertIn("\u5df2\u5173\u95ed", multi_instance_status(False))

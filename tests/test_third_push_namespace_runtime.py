@@ -32,8 +32,9 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
             "refresh_third_push_settings_from_config": lambda: calls.append(("refresh",)),
             "save_third_push_setting": lambda **kwargs: calls.append(("save_setting", kwargs)),
             "enqueue_third_push": lambda *args, **kwargs: calls.append(("enqueue_push", args, kwargs)),
-            "sync_and_focus_existing_window": lambda win, attr: ("sync", win, attr),
+            "sync_and_focus_existing_window": lambda win, attr, **kwargs: ("sync", win, attr, kwargs["log_error"]("sync log")),
             "center_window": "center",
+            "log_file_only": lambda message: ("log", message),
         }
 
     def test_apply_updates_namespace_state(self):
@@ -162,7 +163,10 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
             kwargs["refresh_settings"]()
             kwargs["save_setting"](enabled=True)
             kwargs["enqueue_push"]("msg", show_result=True)
-            self.assertEqual(kwargs["sync_existing_window"]("win", "_sync"), ("sync", "win", "_sync"))
+            self.assertEqual(
+                kwargs["sync_existing_window"]("win", "_sync"),
+                ("sync", "win", "_sync", ("log", "sync log")),
+            )
             kwargs["set_window"]("new_win")
             self.assertEqual(kwargs["center_window"], "center")
             return "opened"

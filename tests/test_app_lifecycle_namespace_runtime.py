@@ -110,25 +110,25 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
 
         voice = toggle_voice_broadcast_namespace_runtime(
             namespace,
-            toggle_runtime=lambda current, config, save, set_enabled, update_label, system_ui: (
+            toggle_runtime=lambda current, config, save, set_enabled, update_label, system_ui, **kwargs: (
                 set_enabled(False),
-                calls.append(("voice", current, config, save(), update_label(), system_ui("v"))),
+                calls.append(("voice", current, config, save(), update_label(), system_ui("v"), kwargs["log_error"]("voice log"))),
                 "voice-result",
             )[-1],
         )
         multi = toggle_multi_instance_namespace_runtime(
             namespace,
-            toggle_runtime=lambda enabled, config, save, set_multi, system_ui: (
+            toggle_runtime=lambda enabled, config, save, set_multi, system_ui, **kwargs: (
                 set_multi(enabled),
-                calls.append(("multi", enabled, config, save(), system_ui("m"))),
+                calls.append(("multi", enabled, config, save(), system_ui("m"), kwargs["log_error"]("multi log"))),
                 "multi-result",
             )[-1],
         )
         popup = toggle_popup_namespace_runtime(
             namespace,
-            toggle_runtime=lambda enabled, config, save, set_popup, system_ui: (
+            toggle_runtime=lambda enabled, config, save, set_popup, system_ui, **kwargs: (
                 set_popup(enabled),
-                calls.append(("popup", enabled, config, save(), system_ui("p"))),
+                calls.append(("popup", enabled, config, save(), system_ui("p"), kwargs["log_error"]("popup log"))),
                 "popup-result",
             )[-1],
         )
@@ -140,6 +140,9 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "voice")
         self.assertEqual(calls[1][0], "multi")
         self.assertEqual(calls[2][0], "popup")
+        self.assertEqual(calls[0][-1], ("log", "voice log"))
+        self.assertEqual(calls[1][-1], ("log", "multi log"))
+        self.assertEqual(calls[2][-1], ("log", "popup log"))
 
     def test_restart_software_namespace_runtime_forwards_shutdown_dependencies(self):
         namespace = self.base_namespace()

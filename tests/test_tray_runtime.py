@@ -85,6 +85,16 @@ class TrayRuntimeTests(unittest.TestCase):
         self.assertEqual(load_tray_image("missing.ico", image_module=image_module), "fallback")
         self.assertEqual(image_module.new_calls, [("RGB", (16, 16), (200, 30, 30))])
 
+    def test_load_tray_image_logs_open_and_fallback_failures(self):
+        logs = []
+        image_module = FakeImageModule(open_error=RuntimeError("missing"), new_error=RuntimeError("fallback failed"))
+
+        self.assertIsNone(load_tray_image("missing.ico", image_module=image_module, log_error=logs.append))
+
+        self.assertEqual(len(logs), 2)
+        self.assertIn("missing", logs[0])
+        self.assertIn("fallback failed", logs[1])
+
     def test_create_tray_icon_runtime_wires_menu_callbacks(self):
         calls = []
         icons = []
@@ -146,16 +156,36 @@ class TrayRuntimeTests(unittest.TestCase):
     def test_stop_tray_icon_runtime_tolerates_icon_errors(self):
         calls = []
         icon = FakeIcon(fail_visible=True, fail_stop=True)
+        logs = []
 
         result = stop_tray_icon_runtime(
             tray_icon=icon,
             clear_tray_icon=lambda: calls.append("clear"),
             wait_after=0,
+            log_error=logs.append,
         )
 
         self.assertTrue(result)
         self.assertEqual(calls, ["clear"])
         self.assertEqual(icon.stop_calls, 1)
+        self.assertEqual(len(logs), 2)
+        self.assertIn("visible failed", logs[0])
+        self.assertIn("stop failed", logs[1])
+
+    def test_stop_tray_icon_runtime_logs_sleep_failures(self):
+        calls = []
+
+        result = stop_tray_icon_runtime(
+            tray_icon=FakeIcon(),
+            clear_tray_icon=lambda: None,
+            wait_after=0.25,
+            sleep=lambda _seconds: (_ for _ in ()).throw(RuntimeError("sleep failed")),
+            log_error=calls.append,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("sleep failed", calls[0])
 
 
 if __name__ == "__main__":
