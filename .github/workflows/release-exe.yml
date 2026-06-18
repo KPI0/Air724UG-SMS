@@ -45,7 +45,7 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
-          Write-Host "Running 719 unit tests (70.5% coverage)..." -ForegroundColor Cyan
+          Write-Host "Running unit tests..." -ForegroundColor Cyan
           $env:PYTHONPATH = (Resolve-Path "sms").Path
           python -m unittest discover -s tests -v
           if ($LASTEXITCODE -ne 0) {

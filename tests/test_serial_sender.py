@@ -4,6 +4,7 @@ import unittest
 from sms_core.serial_sender import (
     SerialCommandResult,
     send_command_with_result_async,
+    write_text_sms_pdu,
     write_serial_command_result,
 )
 
@@ -63,6 +64,33 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertTrue(done.is_set())
         self.assertEqual(results, [SerialCommandResult(True)])
         self.assertEqual(serial_obj.writes, [b"ATH\r\n"])
+
+    def test_write_text_sms_pdu_sends_long_message_segments(self):
+        serial_obj = FakeSerial()
+        debug = []
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "A" * 100,
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(serial_obj.writes[0], b"AT+CMGF=0\r\n")
+        cmgs_commands = [
+            payload for payload in serial_obj.writes
+            if payload.startswith(b"AT+CMGS=")
+        ]
+        pdu_payloads = [
+            payload for payload in serial_obj.writes
+            if payload.endswith(b"\x1a")
+        ]
+        self.assertEqual(len(cmgs_commands), 2)
+        self.assertEqual(len(pdu_payloads), 2)
+        self.assertTrue(any("(1/2)" in line for line in debug))
+        self.assertTrue(any("(2/2)" in line for line in debug))
 
 
 if __name__ == "__main__":

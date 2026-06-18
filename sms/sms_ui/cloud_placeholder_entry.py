@@ -1,7 +1,7 @@
 import secrets
 import string
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 
 PLACEHOLDER_STYLE = "CloudPlaceholder.TEntry"
@@ -13,6 +13,16 @@ def configure_placeholder_style(master):
         style.configure(PLACEHOLDER_STYLE, foreground="#777777")
     except Exception:
         pass
+
+
+def confirm_secret_reset(parent):
+    return messagebox.askyesno(
+        "重置控制密码",
+        "生成随机密码会替换当前控制密码。\n\n"
+        "保存或连接后，网页端也需要重新填写这个新密码；否则设备授权和云端控制可能会失败。\n\n"
+        "是否继续生成新密码？",
+        parent=parent,
+    )
 
 
 class CloudPlaceholderEntry:
@@ -115,6 +125,8 @@ class CloudPlaceholderEntry:
             pass
 
     def generate_secret(self):
+        if not confirm_secret_reset(self.parent):
+            return
         chars = string.ascii_letters + string.digits
         self.placeholder_active = False
         self.variable.set("".join(secrets.choice(chars) for _ in range(16)))

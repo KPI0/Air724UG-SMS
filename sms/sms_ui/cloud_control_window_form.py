@@ -17,6 +17,16 @@ def show_url_reference(parent):
     )
 
 
+def confirm_public_device(parent):
+    return messagebox.askyesno(
+        "公开设备提醒",
+        "勾选“主动公开设备”后，本设备会主动向云端广播，并出现在公开设备列表中。\n\n"
+        "所有可以访问该云端服务的人都可能看到这台设备。\n\n"
+        "是否确认公开此设备？",
+        parent=parent,
+    )
+
+
 class CloudControlFormController:
     def __init__(self, win, frame, state, state_provider, status_var, on_auto_upload_changed):
         self.win = win
@@ -92,7 +102,11 @@ class CloudControlFormController:
         ttk.Label(frame, textvariable=status_var).grid(row=4, column=1, sticky="w", pady=(0, 10))
 
     def _auto_upload_toggled(self):
-        self.on_auto_upload_changed(bool(self.auto_upload_var.get()), self.win)
+        auto_upload = bool(self.auto_upload_var.get())
+        if auto_upload and not confirm_public_device(self.win):
+            self.auto_upload_var.set(False)
+            return
+        self.on_auto_upload_changed(auto_upload, self.win)
 
     def sync_from_state(self):
         latest = self.state_provider()

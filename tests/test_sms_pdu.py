@@ -1,6 +1,6 @@
 import unittest
 
-from sms_core.sms_pdu import encode_text_sms_pdu
+from sms_core.sms_pdu import encode_text_sms_pdu, encode_text_sms_pdus
 
 
 class SmsPduTests(unittest.TestCase):
@@ -108,13 +108,32 @@ class SmsPduTests(unittest.TestCase):
         # Data Coding Scheme (DCS) should be 08 for UCS2
         self.assertIn("0008", pdu)
 
-    def test_encode_text_sms_pdu_long_message(self):
-        """Should encode long messages."""
-        long_msg = "A" * 100
+    def test_encode_text_sms_pdu_max_single_segment_message(self):
+        """Should encode messages that fit a single UCS2 segment."""
+        long_msg = "A" * 70
         pdu, length = encode_text_sms_pdu("+1234", long_msg)
 
-        self.assertGreater(len(pdu), 200)
+        self.assertGreater(len(pdu), 140)
         self.assertGreater(length, 50)
+
+    def test_encode_text_sms_pdu_rejects_too_long_single_segment_message(self):
+        with self.assertRaises(ValueError):
+            encode_text_sms_pdu("+1234", "A" * 71)
+
+    def test_encode_text_sms_pdus_splits_long_ucs2_message(self):
+        pdus = encode_text_sms_pdus("+1234", "A" * 100, reference=0x2A)
+
+        self.assertEqual(len(pdus), 2)
+        for index, (pdu, length) in enumerate(pdus, start=1):
+            self.assertIn("0500032A02" + f"{index:02X}", pdu)
+            self.assertEqual(length, (len(pdu) - 2) // 2)
+            self.assertLessEqual(int(pdu[20:22], 16), 140)
+
+    def test_encode_text_sms_pdus_keeps_surrogate_pairs_together(self):
+        pdus = encode_text_sms_pdus("+1234", "😀" * 40, reference=0x01)
+
+        self.assertEqual(len(pdus), 2)
+        self.assertTrue(all("D83DDE00" in pdu for pdu, _length in pdus))
 
     def test_encode_text_sms_pdu_special_characters(self):
         """Should handle special characters."""

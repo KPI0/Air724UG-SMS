@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import time
 
 from sms_core.serial_debug import build_serial_command_payload
-from sms_core.sms_pdu import encode_text_sms_pdu
+from sms_core.sms_pdu import encode_text_sms_pdus
 from sms_core.threading_runtime import start_daemon_thread
 
 
@@ -83,7 +83,7 @@ def write_text_sms_pdu(
         return False
 
     try:
-        pdu_str, cmgs_len = encode_text_sms_pdu(phone, message)
+        pdus = encode_text_sms_pdus(phone, message)
         if port_ui:
             port_ui(f"📤 发送短信至 {phone}：", "normal")
             port_ui(message, "sms")
@@ -95,17 +95,22 @@ def write_text_sms_pdu(
             push_debug(f">>> 发送: {command}\\r\\n")
         sleep_func(0.3)
 
-        command = f"AT+CMGS={cmgs_len}"
-        serial_obj.write((command + "\r\n").encode("utf-8"))
-        serial_obj.flush()
-        if push_debug:
-            push_debug(f">>> 发送: {command}\\r\\n")
-        sleep_func(1.0)
+        for index, (pdu_str, cmgs_len) in enumerate(pdus, start=1):
+            command = f"AT+CMGS={cmgs_len}"
+            serial_obj.write((command + "\r\n").encode("utf-8"))
+            serial_obj.flush()
+            if push_debug:
+                suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""
+                push_debug(f">>> 发送: {command}{suffix}\\r\\n")
+            sleep_func(1.0)
 
-        serial_obj.write(pdu_str.encode("utf-8") + b"\x1a")
-        serial_obj.flush()
-        if push_debug:
-            push_debug(">>> 发送 PDU 正文及 Ctrl+Z，等待模组响应...")
+            serial_obj.write(pdu_str.encode("utf-8") + b"\x1a")
+            serial_obj.flush()
+            if push_debug:
+                suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""
+                push_debug(f">>> 发送 PDU 正文及 Ctrl+Z{suffix}，等待模组响应...")
+            if index < len(pdus):
+                sleep_func(1.5)
         return True
     except Exception as exc:
         if push_debug:

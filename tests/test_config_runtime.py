@@ -224,6 +224,35 @@ class ConfigRuntimeTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertEqual(config.get("ui", "voice_enabled"), "1")
 
+    def test_initialize_config_runtime_recovers_corrupt_config_with_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.ini")
+            backup_file = os.path.join(tmp, "config.ini.broken.123.bak")
+            with open(config_file, "w", encoding="utf-8") as file:
+                file.write("this is not an ini file")
+
+            config = configparser.ConfigParser(interpolation=None)
+            logs = []
+
+            def save_config():
+                with open(config_file, "w", encoding="utf-8") as file:
+                    config.write(file)
+
+            result = initialize_config_runtime(
+                config=config,
+                config_file=config_file,
+                defaults_by_section={"ui": {"voice_enabled": "1"}},
+                save_config=save_config,
+                backup_file=lambda src, dst: os.replace(src, backup_file),
+                time_func=lambda: 123,
+                log_error=logs.append,
+            )
+
+            self.assertTrue(result)
+            self.assertTrue(os.path.exists(backup_file))
+            self.assertEqual(config.get("ui", "voice_enabled"), "1")
+            self.assertTrue(any("Config file invalid" in message for message in logs))
+
     def test_safe_save_config_runtime_writes_temp_and_replaces_target(self):
         config = configparser.ConfigParser()
         config["ui"] = {"voice_enabled": "1"}

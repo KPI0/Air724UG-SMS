@@ -1,6 +1,8 @@
+import configparser
 import os
 import threading
 import json
+import time
 from dataclasses import dataclass
 
 
@@ -32,15 +34,35 @@ def initialize_config_runtime(
     save_config,
     path_exists=os.path.exists,
     encoding="utf-8-sig",
+    backup_file=os.replace,
+    time_func=time.time,
+    log_error=None,
 ):
     created = False
-    if not path_exists(config_file):
+
+    def load_defaults():
+        config.clear()
         for section, values in defaults_by_section.items():
             config[section] = dict(values)
+
+    if not path_exists(config_file):
+        load_defaults()
         save_config()
         created = True
 
-    config.read(config_file, encoding=encoding)
+    try:
+        config.read(config_file, encoding=encoding)
+    except configparser.Error as exc:
+        backup_path = f"{config_file}.broken.{int(time_func())}.bak"
+        try:
+            if path_exists(config_file):
+                backup_file(config_file, backup_path)
+                _safe_log(log_error, f"Config file invalid; moved to {backup_path!r}: {exc!r}")
+        except Exception as backup_exc:
+            _safe_log(log_error, f"Config file invalid and backup failed; recreating defaults: {backup_exc!r}")
+        load_defaults()
+        save_config()
+        created = True
     return created
 
 
