@@ -290,6 +290,51 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(app_state, [(7.0, "10086"), (0.0, ""), (9.0, "10010")])
         self.assertEqual(calls, [("RING", 123.0, "COM9", True, "COM9", {"seen": 1})])
 
+    def test_run_serial_runtime_thread_refreshes_config_after_connect(self):
+        app_state = [(0.0, "")]
+        config_prefix = ["system"]
+        log_unmatched = [True]
+        seen_prefixes = []
+        seen_log_flags = []
+
+        def fake_loop(**kwargs):
+            kwargs["on_connected_port"]("COM8")
+            kwargs["handle_line"]("SMS")
+            log_unmatched[0] = False
+            kwargs["handle_line"]("SMS2")
+
+        def fake_handle_line(state, line, now, current_port, popup_active, config, callbacks, ignore_repeat_state):
+            seen_prefixes.append(config.log_prefix)
+            seen_log_flags.append(config.log_unmatched_sms)
+
+        run_serial_runtime_thread(
+            parse_callback_head=parse_head,
+            get_runtime_config=lambda: runtime_config(
+                log_prefix=config_prefix[0],
+                log_unmatched_sms=log_unmatched[0],
+            ),
+            callbacks=runtime_callbacks([]),
+            get_call_state=lambda: app_state[-1],
+            set_call_state=lambda ring_timeout, dial_num: app_state.append((ring_timeout, dial_num)),
+            popup_active=lambda: False,
+            ignore_repeat_state={},
+            should_continue=lambda: True,
+            get_target_port=lambda: "COM8",
+            resolve_target_port=lambda: "COM8",
+            set_connecting_status=lambda *_: None,
+            open_and_initialize_serial=lambda *_: None,
+            on_connected_port=lambda port: config_prefix.__setitem__(0, port),
+            read_serial_line=lambda: b"",
+            handle_disconnect=lambda *_: False,
+            wait_before_retry=lambda: None,
+            safe_close_serial=lambda: None,
+            run_loop=fake_loop,
+            handle_runtime_line=fake_handle_line,
+        )
+
+        self.assertEqual(seen_prefixes, ["COM8", "COM8"])
+        self.assertEqual(seen_log_flags, [True, False])
+
     def test_run_serial_runtime_thread_resets_call_state_before_disconnect_callback(self):
         app_state = []
         disconnects = []

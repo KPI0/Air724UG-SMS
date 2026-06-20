@@ -218,10 +218,12 @@ def run_serial_runtime_thread(
     state = SerialRuntimeState.create(parse_callback_head)
     now = clock or time.monotonic
     set_call_state(0.0, "")
-    # Cache config at startup: keywords, log dir, call filters rarely change
-    # during runtime (user edits require app restart), so rebuilding the config
-    # object on every serial line (hot path) wastes CPU. Fetch once here.
     config = get_runtime_config()
+
+    def handle_connected_port(target_port):
+        nonlocal config
+        on_connected_port(target_port)
+        config = get_runtime_config()
 
     def sync_app_call_state():
         set_call_state(
@@ -230,6 +232,8 @@ def run_serial_runtime_thread(
         )
 
     def handle_line(line):
+        nonlocal config
+        config = get_runtime_config()
         ring_timeout_target, current_dial_num = get_call_state()
         state.sync_call_state(ring_timeout_target, current_dial_num)
         handle_runtime_line(
@@ -255,7 +259,7 @@ def run_serial_runtime_thread(
         resolve_target_port=resolve_target_port,
         set_connecting_status=set_connecting_status,
         open_and_initialize_serial=open_and_initialize_serial,
-        on_connected_port=on_connected_port,
+        on_connected_port=handle_connected_port,
         read_serial_line=read_serial_line,
         handle_line=handle_line,
         handle_error=handle_error,
