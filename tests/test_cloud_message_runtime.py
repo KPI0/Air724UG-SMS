@@ -68,8 +68,8 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             replay_checks.append(mark_seen)
             return replay_ok
 
-        async def send_serial_command(command):
-            calls.append(("send", command))
+        async def send_serial_command(command, command_data=None):
+            calls.append(("send", command, command_data))
             return True, f"sent {command}"
 
         await handle_cloud_message_runtime(
@@ -136,7 +136,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertTrue(state["authorized"])
         self.assertEqual(replay_checks, [False, True])
-        self.assertIn(("send", "ATI"), calls)
+        self.assertIn(("send", "ATI", {"cmd": "ATI", "task_id": "task-1"}), calls)
         self.assertEqual(replies[0]["type"], "send_at_result")
         self.assertEqual(replies[0]["task_id"], "task-1")
         self.assertTrue(replies[0]["ok"])
@@ -367,6 +367,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
                 calls.append(("write", next_serial, command)) or SimpleResult(True)
             ),
             push_serial_debug=lambda message: calls.append(("debug", message)),
+            port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
             log=lambda message: calls.append(("log", message)),
         )
 
@@ -374,7 +375,8 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(info, "已发送：ATI")
         self.assertEqual(calls[0], ("write", serial_obj, "ATI"))
         self.assertIn("ATI", calls[1][1])
-        self.assertIn("ATI", calls[2][1])
+        self.assertEqual(calls[2], ("port_ui", "云端发送：ATI", "normal"))
+        self.assertIn("ATI", calls[3][1])
 
     def test_send_cloud_serial_command_runtime_returns_write_failure(self):
         ok, info = send_cloud_serial_command_runtime(
@@ -388,6 +390,47 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(info, "closed")
+
+    def test_send_cloud_serial_command_runtime_logs_readable_sms_summary(self):
+        calls = []
+
+        ok, _info = send_cloud_serial_command_runtime(
+            "AT+CMGF=0",
+            command_meta={
+                "sms_log": "summary",
+                "sms_phone": "+8613888888888",
+                "sms_message": "验证码 1234",
+            },
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
+            log=lambda *_args: None,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [
+            ("port_ui", "云端发送短信至 +8613888888888：", "normal"),
+            ("port_ui", "验证码 1234", "sms"),
+        ])
+
+    def test_send_cloud_serial_command_runtime_suppresses_sms_pdu_noise(self):
+        calls = []
+
+        ok, _info = send_cloud_serial_command_runtime(
+            "0011000D9168...",
+            command_meta={"sms_log": "suppress"},
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
+            log=lambda *_args: None,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

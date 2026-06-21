@@ -86,8 +86,8 @@ class CloudMessageTests(unittest.TestCase):
     async def _dispatch(self, action, data=None, calls=None):
         calls = calls if calls is not None else []
 
-        async def send_serial(command):
-            calls.append(("send", command))
+        async def send_serial(command, command_data=None):
+            calls.append(("send", command, command_data))
             return True, f"sent {command}"
 
         return await dispatch_cloud_action(
@@ -121,7 +121,7 @@ class CloudMessageTests(unittest.TestCase):
         payload = asyncio.run(self._dispatch("send_at", {"cmd": "ATI"}, calls))
         self.assertEqual(payload, {"type": "send_at_result", "ok": True, "message": "sent ATI"})
         self.assertIn(("log", "云端下发指令：ATI"), calls)
-        self.assertIn(("send", "ATI"), calls)
+        self.assertIn(("send", "ATI", {"cmd": "ATI"}), calls)
 
         calls = []
         self.assertEqual(asyncio.run(self._dispatch("show_window", calls=calls)), {

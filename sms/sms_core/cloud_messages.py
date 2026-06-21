@@ -161,7 +161,7 @@ async def dispatch_cloud_action(
     if action_kind == "send_at":
         command = command_text(data)
         log(f"云端下发指令：{command}")
-        ok, info = await send_serial_command(command)
+        ok, info = await send_serial_command(command, data)
         return cloud_send_at_result_payload(ok, info)
 
     if action_kind == "show_window":

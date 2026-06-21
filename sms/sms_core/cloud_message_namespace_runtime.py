@@ -118,15 +118,18 @@ def send_cloud_sms_event_namespace_runtime(
 def send_cloud_serial_command_namespace_runtime(
     namespace,
     command,
+    command_data=None,
     *,
     send_runtime=send_cloud_serial_command_runtime,
 ):
     return send_runtime(
         command,
+        command_meta=command_data,
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: namespace["serial_obj"],
         write_command_result=namespace["write_serial_command_result"],
         push_serial_debug=namespace.get("_push_serial_debug"),
+        port_ui=namespace.get("port_ui"),
         log=namespace["_cloud_log"],
     )
 
@@ -156,10 +159,11 @@ async def handle_cloud_message_namespace_runtime(
         time_text=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         timestamp=namespace["_cloud_now_ts"],
         status_payload=namespace["_cloud_send_status_payload"],
-        send_serial_command=lambda command: loop.run_in_executor(
+        send_serial_command=lambda command, command_data=None: loop.run_in_executor(
             None,
             namespace["_cloud_send_serial_command"],
             command,
+            command_data,
         ),
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],

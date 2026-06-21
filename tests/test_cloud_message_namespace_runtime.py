@@ -64,7 +64,11 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_check_replay_window": lambda ws, data, mark_seen=True: ("replay", ws, data, mark_seen),
             "_cloud_auth_matches": lambda data: True,
             "_cloud_send_status_payload": lambda: {"status": "ok"},
-            "_cloud_send_serial_command": lambda command: ("serial_command", command),
+            "_cloud_send_serial_command": lambda command, command_data=None: (
+                "serial_command",
+                command,
+                command_data,
+            ),
             "show_window": lambda: "show",
             "hide_window": lambda: "hide",
             "_cloud_reply": _async_reply,
@@ -172,7 +176,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             handle_runtime=handle_runtime,
         ))
 
-        self.assertEqual(result, ("serial_command", "ATI"))
+        self.assertEqual(result, ("serial_command", "ATI", None))
         self.assertFalse(namespace["cloud_device_authorized"])
         message, forwarded = calls[0]
         self.assertEqual(message, "message")

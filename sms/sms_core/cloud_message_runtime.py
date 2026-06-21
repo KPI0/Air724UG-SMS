@@ -86,10 +86,12 @@ async def send_cloud_unregister_runtime(
 def send_cloud_serial_command_runtime(
     command,
     *,
+    command_meta=None,
     serial_lock,
     get_serial,
     write_command_result,
     push_serial_debug,
+    port_ui=None,
     log,
 ):
     cmd = str(command or "").strip()
@@ -108,10 +110,34 @@ def send_cloud_serial_command_runtime(
         except Exception:
             pass
 
+        try:
+            if port_ui:
+                _log_cloud_command_to_port(port_ui, cmd, command_meta)
+        except Exception:
+            pass
+
         log(f"已向串口发送：{cmd}")
         return True, f"已发送：{cmd}"
     except Exception as exc:
         return False, f"发送失败：{exc}"
+
+
+def _log_cloud_command_to_port(port_ui, cmd, command_meta):
+    meta = command_meta if isinstance(command_meta, dict) else {}
+    sms_log = str(meta.get("sms_log") or "").strip().lower()
+    if sms_log == "suppress":
+        return
+    if sms_log == "summary":
+        phone = str(meta.get("sms_phone") or "").strip()
+        message = str(meta.get("sms_message") or "")
+        if phone:
+            port_ui(f"云端发送短信至 {phone}：", "normal")
+        else:
+            port_ui("云端发送短信：", "normal")
+        if message:
+            port_ui(message, "sms")
+        return
+    port_ui(f"云端发送：{cmd}", "normal")
 
 
 def send_cloud_sms_event_runtime(
