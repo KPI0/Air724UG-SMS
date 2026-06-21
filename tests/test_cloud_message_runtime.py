@@ -355,7 +355,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("不能为空", info)
 
-    def test_send_cloud_serial_command_runtime_writes_and_logs(self):
+    def test_send_cloud_serial_command_runtime_writes_without_port_log_for_generic_at(self):
         calls = []
         serial_obj = object()
 
@@ -375,8 +375,8 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(info, "已发送：ATI")
         self.assertEqual(calls[0], ("write", serial_obj, "ATI"))
         self.assertIn("ATI", calls[1][1])
-        self.assertEqual(calls[2], ("port_ui", "云端发送：ATI", "normal"))
-        self.assertIn("ATI", calls[3][1])
+        self.assertEqual(calls[2][0], "log")
+        self.assertFalse(any(call[0] == "port_ui" for call in calls))
 
     def test_send_cloud_serial_command_runtime_returns_write_failure(self):
         ok, info = send_cloud_serial_command_runtime(

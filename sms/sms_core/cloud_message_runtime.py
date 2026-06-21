@@ -137,7 +137,6 @@ def _log_cloud_command_to_port(port_ui, cmd, command_meta):
         if message:
             port_ui(message, "sms")
         return
-    port_ui(f"云端发送：{cmd}", "normal")
 
 
 def send_cloud_sms_event_runtime(
