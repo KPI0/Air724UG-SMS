@@ -76,6 +76,22 @@ def multi_instance_status(enabled):
     return "✅️ 程序多开：已开启" if enabled else "❌ 程序多开：已关闭"
 
 
+MULTI_INSTANCE_NOTICE_TITLE = "程序多开提醒"
+MULTI_INSTANCE_NOTICE_MESSAGE = (
+    "开启程序多开后，通过当前程序目录启动的多个程序实例会读取同一个 config.ini 配置文件。\n\n"
+    "短信关键词、云端控制、三方推送等配置都会共享；如需独立配置，请复制到不同目录分别使用。"
+)
+
+
+def show_multi_instance_notice(show_notice, *, log_error=None):
+    if show_notice is None:
+        return
+    try:
+        show_notice(MULTI_INSTANCE_NOTICE_TITLE, MULTI_INSTANCE_NOTICE_MESSAGE)
+    except Exception as exc:
+        _safe_log(log_error, f"Show multi-instance notice failed: {exc!r}")
+
+
 def voice_broadcast_status(enabled):
     return "🔊 语音播报：已开启" if enabled else "🔇 语音播报：已关闭"
 
@@ -101,11 +117,22 @@ def toggle_popup_runtime(enabled, config, safe_save, set_enabled, system_ui, *, 
     return enabled
 
 
-def toggle_multi_instance_runtime(enabled, config, safe_save, set_multi_instance, system_ui, *, log_error=None):
+def toggle_multi_instance_runtime(
+    enabled,
+    config,
+    safe_save,
+    set_multi_instance,
+    system_ui,
+    *,
+    show_notice=None,
+    log_error=None,
+):
     enabled = bool(enabled)
     set_multi_instance(enabled)
     save_multi_instance_config(config, enabled, safe_save, log_error=log_error)
     system_ui(multi_instance_status(enabled), "normal")
+    if enabled:
+        show_multi_instance_notice(show_notice, log_error=log_error)
 
 
 def open_voice_text_dialog_runtime(

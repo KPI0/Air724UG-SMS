@@ -73,6 +73,7 @@ def check_single_instance_namespace_runtime(namespace):
     mutex = check_single_instance_app_runtime(
         allow_multi_instance=namespace["ALLOW_MULTI_INSTANCE"],
         window_title=namespace["APP_WINDOW_TITLE"],
+        app_dir=namespace["APP_DIR"],
         log_error=namespace.get("log_file_only"),
     )
     namespace.__setitem__("app_mutex", mutex)

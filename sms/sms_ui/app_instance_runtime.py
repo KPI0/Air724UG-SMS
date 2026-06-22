@@ -1,3 +1,5 @@
+import hashlib
+import os
 import sys
 
 from sms_core.windows_runtime import (
@@ -10,6 +12,14 @@ from sms_core.windows_runtime import (
 
 
 APP_MUTEX_NAME = "Air724UG_SMS_Monitor_Mutex_V3"
+
+
+def app_dir_mutex_name(app_dir, *, prefix=APP_MUTEX_NAME):
+    if not app_dir:
+        return prefix
+    normalized = os.path.normcase(os.path.abspath(str(app_dir)))
+    digest = hashlib.sha256(normalized.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return f"{prefix}_{digest}"
 
 
 def _safe_log(log_error, message):
@@ -25,7 +35,8 @@ def check_single_instance_app_runtime(
     *,
     allow_multi_instance,
     window_title,
-    mutex_name=APP_MUTEX_NAME,
+    app_dir=None,
+    mutex_name=None,
     acquire_mutex=acquire_mutex_with_error,
     close_handle=close_windows_handle,
     existing_error=is_existing_instance_error,
@@ -36,6 +47,9 @@ def check_single_instance_app_runtime(
 ):
     if allow_multi_instance:
         return None
+
+    if mutex_name is None:
+        mutex_name = app_dir_mutex_name(app_dir)
 
     app_mutex, last_error = acquire_mutex(mutex_name)
 

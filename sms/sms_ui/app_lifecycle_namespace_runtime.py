@@ -74,6 +74,7 @@ def toggle_multi_instance_namespace_runtime(
         namespace["safe_save_config"],
         lambda value: namespace.__setitem__("ALLOW_MULTI_INSTANCE", bool(value)),
         namespace["system_ui"],
+        show_notice=lambda title, message: namespace["ui_messagebox"]("info", title, message),
         log_error=namespace.get("log_file_only"),
     )
 
