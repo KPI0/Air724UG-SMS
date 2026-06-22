@@ -235,6 +235,10 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertIn(("message", ws, "hello"), calls)
         self.assertIn(("reset",), calls)
         self.assertTrue(calls[-1][0] == "log")
+        self.assertGreaterEqual(
+            sum(1 for item in calls if item[0] == "log" and item[2].get("show_main")),
+            2,
+        )
         self.assertTrue(any(item[0] == "state" and item[2] == {"connected": True, "authorized": False} for item in calls))
         self.assertTrue(any(item[0] == "state" and item[2] == {"connected": False, "authorized": False} for item in calls))
 

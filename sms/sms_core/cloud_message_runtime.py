@@ -40,9 +40,9 @@ async def send_cloud_register_runtime(
     try:
         await ws.send(serialize_payload(payload))
         if auto_upload:
-            log(f"已上报设备IMEI：{runtime_imei()}")
+            log(f"已上报设备IMEI：{runtime_imei()}", show_main=True)
         else:
-            log(f"隐身模式：已注册路由IMEI（不公开设备列表，日志继续上传）：{runtime_imei()}")
+            log(f"隐身模式：已注册路由IMEI（不公开设备列表，日志继续上传）：{runtime_imei()}", show_main=True)
         return "sent"
     except Exception as exc:
         log(f"上报设备身份失败：{exc}")
@@ -241,7 +241,7 @@ async def handle_cloud_message_runtime(
         if auth_status == "authorized":
             set_authorized(True)
             set_auth_status_from_ack(data)
-            log(str(data.get("message") or "服务端已确认设备密码"))
+            log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return
 
         set_authorized(False)

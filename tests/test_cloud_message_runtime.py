@@ -102,6 +102,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(replies, [])
         self.assertEqual(replay_checks, [])
         self.assertTrue(any(item[0] == "ack" for item in calls))
+        self.assertTrue(any(item[0] == "log" and item[2].get("show_main") for item in calls))
 
     def test_unauthorized_command_replies_with_task_ids(self):
         state, calls, replies, replay_checks = run(self._handle(json.dumps({
@@ -268,12 +269,13 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             serial_baud=115200,
             serial_mode="Auto",
             runtime_imei=lambda: "imei",
-            log=lambda message: calls.append(message),
+            log=lambda message, **kwargs: calls.append((message, kwargs)),
         ))
 
         self.assertEqual(result, "sent")
         self.assertEqual(json.loads(ws.sent[0])["imei"], "imei")
-        self.assertIn("IMEI", calls[0])
+        self.assertIn("IMEI", calls[0][0])
+        self.assertTrue(calls[0][1].get("show_main"))
 
     def test_send_cloud_register_runtime_logs_hidden_mode(self):
         calls = []
@@ -290,11 +292,12 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             serial_baud=115200,
             serial_mode="Auto",
             runtime_imei=lambda: "imei",
-            log=lambda message: calls.append(message),
+            log=lambda message, **kwargs: calls.append((message, kwargs)),
         ))
 
         self.assertEqual(result, "sent")
-        self.assertIn("隐身模式", calls[0])
+        self.assertIn("隐身模式", calls[0][0])
+        self.assertTrue(calls[0][1].get("show_main"))
 
     def test_send_cloud_register_runtime_logs_send_error(self):
         calls = []

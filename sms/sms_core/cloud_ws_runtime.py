@@ -163,7 +163,7 @@ async def cloud_ws_main_runtime(
                 break
 
             set_cloud_status("🌐 连接中", "#b26a00")
-            log(f"正在连接：{url}")
+            log(f"正在连接：{url}", show_main=True)
 
             async with connect(url, ping_interval=30, ping_timeout=30) as ws:
                 set_connection_state(ws, connected=True, authorized=False)
