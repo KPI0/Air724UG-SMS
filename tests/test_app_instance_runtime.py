@@ -1,6 +1,7 @@
+import os
 import unittest
 
-from sms_ui.app_instance_runtime import APP_MUTEX_NAME, check_single_instance_app_runtime
+from sms_ui.app_instance_runtime import APP_MUTEX_NAME, app_dir_mutex_name, check_single_instance_app_runtime
 
 
 class AppInstanceRuntimeTests(unittest.TestCase):
@@ -28,6 +29,31 @@ class AppInstanceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, "mutex")
         self.assertEqual(calls, [("acquire", APP_MUTEX_NAME)])
+
+    def test_app_dir_mutex_name_is_stable_per_directory(self):
+        base_dir = os.path.join(os.getcwd(), "sms-client")
+        first = app_dir_mutex_name(base_dir)
+        same = app_dir_mutex_name(os.path.join(base_dir, "."))
+        other = app_dir_mutex_name(os.path.join(os.getcwd(), "sms-client-2"))
+
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, other)
+        self.assertTrue(first.startswith(APP_MUTEX_NAME + "_"))
+
+    def test_check_single_instance_uses_app_dir_mutex_name(self):
+        calls = []
+        app_dir = os.path.join(os.getcwd(), "sms-client")
+
+        result = check_single_instance_app_runtime(
+            allow_multi_instance=False,
+            window_title="title",
+            app_dir=app_dir,
+            acquire_mutex=lambda name: calls.append(("acquire", name)) or ("mutex", 0),
+            existing_error=lambda code: False,
+        )
+
+        self.assertEqual(result, "mutex")
+        self.assertEqual(calls, [("acquire", app_dir_mutex_name(app_dir))])
 
     def test_check_single_instance_exits_existing_instance_and_focuses_window(self):
         calls = []

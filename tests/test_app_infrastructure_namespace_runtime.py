@@ -42,6 +42,7 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
             "config": "config",
             "CONFIG_FILE": "config.ini",
             "CONFIG_LOCK": "lock",
+            "APP_DIR": "E:\\sms-client",
             "log_file_only": lambda message: calls.append(("log", message)),
             "serial_lock": "serial_lock",
             "serial_obj": "serial",
@@ -140,6 +141,7 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["app_mutex"], "mutex")
         self.assertFalse(check_runtime.call_args.kwargs["allow_multi_instance"])
         self.assertEqual(check_runtime.call_args.kwargs["window_title"], "SMS")
+        self.assertEqual(check_runtime.call_args.kwargs["app_dir"], "E:\\sms-client")
         self.assertIs(check_runtime.call_args.kwargs["log_error"], namespace["log_file_only"])
 
     def test_show_sms_popup_namespace_runtime_posts_popup(self):

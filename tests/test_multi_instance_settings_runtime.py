@@ -55,6 +55,40 @@ class MultiInstanceSettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(state, [True])
         self.assertEqual(messages[0][1], "normal")
 
+    def test_toggle_multi_instance_runtime_shows_notice_when_enabled(self):
+        config = configparser.ConfigParser()
+        notices = []
+
+        toggle_multi_instance_runtime(
+            True,
+            config,
+            lambda: None,
+            lambda _value: None,
+            lambda *_args: None,
+            show_notice=lambda title, message: notices.append((title, message)),
+        )
+
+        self.assertEqual(len(notices), 1)
+        self.assertIn("程序多开", notices[0][0])
+        self.assertIn("config.ini", notices[0][1])
+        self.assertIn("短信关键词", notices[0][1])
+        self.assertIn("云端控制", notices[0][1])
+        self.assertIn("三方推送", notices[0][1])
+
+    def test_toggle_multi_instance_runtime_skips_notice_when_disabled(self):
+        notices = []
+
+        toggle_multi_instance_runtime(
+            False,
+            configparser.ConfigParser(),
+            lambda: None,
+            lambda _value: None,
+            lambda *_args: None,
+            show_notice=lambda title, message: notices.append((title, message)),
+        )
+
+        self.assertEqual(notices, [])
+
 
 if __name__ == "__main__":
     unittest.main()
