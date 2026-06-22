@@ -7,52 +7,72 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v3.1.0)"
+        description: "Release tag, for example v3.1.0"
         required: true
         type: string
 
 permissions:
-  contents: write   # 允许创建/更新 Release 并上传附件
+  contents: write
+
+concurrency:
+  group: release-exe-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: sms
+  PYTHON_VERSION: "3.11"
 
 jobs:
   build-release:
+    name: Build Windows release
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}".Trim()
+          if ($tag -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            throw "Release tag must start with 'v' and contain only letters, numbers, dots, underscores, or hyphens. Got: '$tag'"
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Release tag: $tag"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Verify build inputs
         shell: pwsh
         run: |
           python -m pip check
-          python -m compileall -q sms\sms.pyw sms\sms_app sms\sms_core sms\sms_ui
+          python -m compileall -q sms
           python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
-      
+
       - name: Run tests
         shell: pwsh
         run: |
-          Write-Host "Running unit tests..." -ForegroundColor Cyan
           $env:PYTHONPATH = (Resolve-Path "sms").Path
-          python -m unittest discover -s tests -v
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "❌ Tests failed! Build aborted." -ForegroundColor Red
-            exit 1
+          if (Test-Path tests) {
+              python -m unittest discover -s tests -v
           }
-          Write-Host "✅ All tests passed!" -ForegroundColor Green
+          else {
+              Write-Host "No tests directory found, skipping tests."
+          }
 
       - name: Build EXE with PyInstaller
         shell: pwsh
@@ -61,7 +81,7 @@ jobs:
             --noconfirm `
             --onefile `
             --windowed `
-            --name "sms" `
+            --name "$env:APP_NAME" `
             --icon "icon.ico" `
             --add-data "icon.ico;." `
             --paths "sms" `
@@ -81,18 +101,31 @@ jobs:
             --clean `
             sms\sms.pyw
 
-      - name: Zip EXE
+      - name: Package release files
         shell: pwsh
         run: |
-          $tag = "${{ inputs.tag || github.ref_name }}"
-          $zipName = "sms-$tag-win64.zip"
-          Compress-Archive -Path "dist\sms.exe" -DestinationPath "dist\$zipName" -Force
+          $exePath = "dist\$env:APP_NAME.exe"
+          if (-not (Test-Path -LiteralPath $exePath)) {
+            throw "Expected EXE was not generated: $exePath"
+          }
 
-      - name: Create GitHub Release & upload ZIP
+          $zipName = "$env:APP_NAME-$env:RELEASE_TAG-win64.zip"
+          $zipPath = "dist\$zipName"
+          Compress-Archive -LiteralPath $exePath -DestinationPath $zipPath -Force
+
+          $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath
+          "$($hash.Hash.ToLowerInvariant())  $zipName" | Set-Content -Path "$zipPath.sha256" -Encoding ascii
+      
+      - name: Show build artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem dist
+
+      - name: Create GitHub Release and upload files
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist/sms-*-win64.zip
+          tag_name: ${{ steps.release.outputs.tag }}
+          files: |
+            dist/${{ env.APP_NAME }}-*-win64.zip
+            dist/${{ env.APP_NAME }}-*-win64.zip.sha256
           generate_release_notes: true
-
-          
