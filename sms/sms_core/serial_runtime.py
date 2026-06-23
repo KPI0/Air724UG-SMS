@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import codecs
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
@@ -62,6 +63,49 @@ class SerialRuntimeCallbacks:
     close_call_popup: object
     send_call_hangup: object
     show_call_popup: object
+
+
+class SerialLineDecoder:
+    def __init__(self, encoding="utf-8"):
+        self.encoding = encoding
+        self.decoder = codecs.getincrementaldecoder(encoding)("replace")
+        self.text_buffer = ""
+
+    def _ends_with_incomplete_character(self, raw):
+        if not raw:
+            return False
+        try:
+            raw.decode(self.encoding, "strict")
+            return False
+        except UnicodeDecodeError as exc:
+            return exc.reason == "unexpected end of data" and exc.end == len(raw)
+
+    def _drop_artificial_newline_after_incomplete_character(self, raw):
+        for suffix in (b"\r\n", b"\n", b"\r"):
+            if raw.endswith(suffix):
+                body = raw[:-len(suffix)]
+                if self._ends_with_incomplete_character(body):
+                    return body
+                break
+        return raw
+
+    def feed(self, raw):
+        if not raw:
+            if self.text_buffer or self.decoder.getstate()[0]:
+                return []
+            return [""]
+
+        raw = self._drop_artificial_newline_after_incomplete_character(bytes(raw))
+        self.text_buffer += self.decoder.decode(raw, final=False)
+        lines = []
+        pending = []
+        for part in self.text_buffer.splitlines(keepends=True):
+            if part.endswith(("\r", "\n")):
+                lines.append(part.rstrip("\r\n").strip())
+            else:
+                pending.append(part)
+        self.text_buffer = "".join(pending)
+        return lines
 
 
 def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state):
@@ -153,7 +197,7 @@ def handle_serial_runtime_line(
 
 
 def decode_serial_line(raw):
-    return raw.decode("utf-8", "ignore").strip()
+    return raw.decode("utf-8", "replace").strip()
 
 
 def run_serial_thread_loop(
@@ -180,9 +224,11 @@ def run_serial_thread_loop(
             set_connecting_status(target_port)
             open_and_initialize_serial(target_port)
             on_connected_port(target_port)
+            line_decoder = SerialLineDecoder()
 
             while should_continue():
-                handle_line(decode_serial_line(read_serial_line()))
+                for line in line_decoder.feed(read_serial_line()):
+                    handle_line(line)
 
         except Exception as e:
             if handle_error(e, target_port):

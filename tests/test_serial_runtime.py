@@ -1,6 +1,7 @@
 import unittest
 
 from sms_core.serial_runtime import (
+    SerialLineDecoder,
     SerialRuntimeCallbacks,
     SerialRuntimeConfig,
     SerialRuntimeState,
@@ -52,6 +53,31 @@ def runtime_callbacks(calls):
 
 
 class SerialRuntimeTests(unittest.TestCase):
+    def test_serial_line_decoder_keeps_split_utf8_character(self):
+        decoder = SerialLineDecoder()
+        text = "[I]-[handler_sms.smsCallback] +10086 您正在中国电信APP\r\n"
+        raw = text.encode("utf-8")
+        split_at = raw.index("中".encode("utf-8")) + 1
+
+        self.assertEqual(decoder.feed(raw[:split_at]), [])
+        self.assertEqual(decoder.feed(raw[split_at:]), [text.strip()])
+
+    def test_serial_line_decoder_joins_newline_inserted_inside_utf8_character(self):
+        decoder = SerialLineDecoder()
+        text = "[I]-[handler_sms.smsCallback] +10086 您正在中国电信APP\r\n"
+        raw = text.encode("utf-8")
+        split_at = raw.index("中".encode("utf-8")) + 1
+
+        self.assertEqual(decoder.feed(raw[:split_at] + b"\r\n"), [])
+        self.assertEqual(decoder.feed(raw[split_at:]), [text.strip()])
+
+    def test_serial_line_decoder_keeps_timeout_from_flushing_partial_line(self):
+        decoder = SerialLineDecoder()
+
+        self.assertEqual(decoder.feed("您正在".encode("utf-8")), [])
+        self.assertEqual(decoder.feed(b""), [])
+        self.assertEqual(decoder.feed("中国电信APP\r\n".encode("utf-8")), ["您正在中国电信APP"])
+
     def test_blank_line_flushes_expired_sms(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)
@@ -180,6 +206,56 @@ class SerialRuntimeTests(unittest.TestCase):
             ("line", "first"),
             ("close",),
         ])
+
+    def test_run_serial_thread_loop_combines_split_utf8_line(self):
+        calls = []
+        text = "[I]-[handler_sms.smsCallback] +10086 您正在中国电信APP\r\n"
+        raw = text.encode("utf-8")
+        split_at = raw.index("中".encode("utf-8")) + 1
+        raw_lines = [raw[:split_at], raw[split_at:]]
+        keep_running = [True, True, True, False, False]
+
+        run_serial_thread_loop(
+            should_continue=lambda: keep_running.pop(0),
+            get_target_port=lambda: "COM5",
+            resolve_target_port=lambda: "COM5",
+            set_connecting_status=lambda port: calls.append(("connecting", port)),
+            open_and_initialize_serial=lambda port: calls.append(("open", port)),
+            on_connected_port=lambda port: calls.append(("connected", port)),
+            read_serial_line=lambda: raw_lines.pop(0),
+            handle_line=lambda line: calls.append(("line", line)),
+            handle_error=lambda error, port: calls.append(("error", str(error), port)) or False,
+            wait_before_retry=lambda: calls.append(("wait",)),
+            safe_close_serial=lambda: calls.append(("close",)),
+        )
+
+        self.assertIn(("line", text.strip()), calls)
+        self.assertNotIn(("line", "[I]-[handler_sms.smsCallback] +10086 您正在"), calls)
+
+    def test_run_serial_thread_loop_combines_utf8_split_by_inserted_newline(self):
+        calls = []
+        text = "[I]-[handler_sms.smsCallback] +10086 您正在中国电信APP\r\n"
+        raw = text.encode("utf-8")
+        split_at = raw.index("中".encode("utf-8")) + 1
+        raw_lines = [raw[:split_at] + b"\r\n", raw[split_at:]]
+        keep_running = [True, True, True, False, False]
+
+        run_serial_thread_loop(
+            should_continue=lambda: keep_running.pop(0),
+            get_target_port=lambda: "COM5",
+            resolve_target_port=lambda: "COM5",
+            set_connecting_status=lambda port: calls.append(("connecting", port)),
+            open_and_initialize_serial=lambda port: calls.append(("open", port)),
+            on_connected_port=lambda port: calls.append(("connected", port)),
+            read_serial_line=lambda: raw_lines.pop(0),
+            handle_line=lambda line: calls.append(("line", line)),
+            handle_error=lambda error, port: calls.append(("error", str(error), port)) or False,
+            wait_before_retry=lambda: calls.append(("wait",)),
+            safe_close_serial=lambda: calls.append(("close",)),
+        )
+
+        self.assertIn(("line", text.strip()), calls)
+        self.assertFalse(any("�" in item[1] for item in calls if item[0] == "line"))
 
     def test_run_serial_thread_loop_skips_missing_target_port(self):
         calls = []
