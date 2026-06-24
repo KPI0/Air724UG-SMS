@@ -63,6 +63,7 @@ class SerialRuntimeCallbacks:
     close_call_popup: object
     send_call_hangup: object
     show_call_popup: object
+    set_local_number: object = lambda *_args: None
 
 
 class SerialLineDecoder:
@@ -159,6 +160,7 @@ def handle_serial_runtime_line(
         callbacks.capture_cloud_device_imei,
         callbacks.set_temperature,
         callbacks.set_signal,
+        callbacks.set_local_number,
     )
 
     call_decision = handle_call_line(

@@ -134,10 +134,14 @@ def dispatch_push_item(item, send_channel_func, format_message_func=None, label_
     channels = item.get("channels") or []
     settings = item.get("settings") or {}
     template = item.get("template")
+    variables = item.get("variables") or {}
     show_success = bool(item.get("show_success"))
     show_result = bool(item.get("show_result"))
     formatter = format_message if format_message_func is None else format_message_func
-    message = formatter(raw_msg, template)
+    try:
+        message = formatter(raw_msg, template, variables=variables)
+    except TypeError:
+        message = formatter(raw_msg, template)
 
     ok_channels = []
     fail_infos = []

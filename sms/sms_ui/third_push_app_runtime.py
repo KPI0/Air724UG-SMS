@@ -91,8 +91,18 @@ def open_third_push_app_runtime(
     )
 
 
-def format_third_push_message_runtime(raw_msg, template, *, get_log_prefix, format_message=format_third_push_message):
-    return format_message(raw_msg, template, port=get_log_prefix())
+def format_third_push_message_runtime(
+    raw_msg,
+    template,
+    *,
+    get_log_prefix,
+    variables=None,
+    format_message=format_third_push_message,
+):
+    try:
+        return format_message(raw_msg, template, port=get_log_prefix(), variables=variables)
+    except TypeError:
+        return format_message(raw_msg, template, port=get_log_prefix())
 
 
 def send_third_push_channel_runtime(
@@ -135,10 +145,11 @@ def third_push_worker_app_runtime(
         ),
         system_ui=system_ui,
         show_result=show_result,
-        format_message_func=lambda raw_msg, template=None: format_third_push_message_runtime(
+        format_message_func=lambda raw_msg, template=None, variables=None: format_third_push_message_runtime(
             raw_msg,
             template,
             get_log_prefix=get_log_prefix,
+            variables=variables,
         ),
     )
 
@@ -176,6 +187,7 @@ def enqueue_third_push_app_runtime(
     channels=None,
     settings=None,
     template=None,
+    variables=None,
     event_type="sms",
     show_success=False,
     show_result=False,
@@ -192,6 +204,7 @@ def enqueue_third_push_app_runtime(
         channels=channels,
         settings=settings,
         template=template,
+        variables=variables,
         event_type=event_type,
         show_success=show_success,
         show_result=show_result,

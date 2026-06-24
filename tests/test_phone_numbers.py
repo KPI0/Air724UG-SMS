@@ -6,11 +6,11 @@ from sms_core.phone_numbers import normalize_call_number
 class PhoneNumbersTests(unittest.TestCase):
     def test_normalize_call_number_removes_plus86_prefix(self):
         """Should remove +86 prefix from Chinese numbers."""
-        self.assertEqual(normalize_call_number("+8613800138000"), "13800138000")
+        self.assertEqual(normalize_call_number("+8613812345678"), "13812345678")
 
     def test_normalize_call_number_removes_86_prefix_for_long_numbers(self):
         """Should remove 86 prefix from numbers longer than 11 digits."""
-        self.assertEqual(normalize_call_number("8613800138000"), "13800138000")
+        self.assertEqual(normalize_call_number("8613812345678"), "13812345678")
 
     def test_normalize_call_number_preserves_86_for_short_numbers(self):
         """Should keep 86 prefix if total length <= 11 (likely not country code)."""
@@ -19,7 +19,7 @@ class PhoneNumbersTests(unittest.TestCase):
 
     def test_normalize_call_number_preserves_local_numbers(self):
         """Should keep local numbers unchanged."""
-        self.assertEqual(normalize_call_number("13800138000"), "13800138000")
+        self.assertEqual(normalize_call_number("13812345678"), "13812345678")
         self.assertEqual(normalize_call_number("02012345678"), "02012345678")
 
     def test_normalize_call_number_handles_international_non_china(self):
@@ -29,8 +29,8 @@ class PhoneNumbersTests(unittest.TestCase):
 
     def test_normalize_call_number_strips_whitespace(self):
         """Should strip leading/trailing whitespace."""
-        self.assertEqual(normalize_call_number("  13800138000  "), "13800138000")
-        self.assertEqual(normalize_call_number("\t+8613800138000\n"), "13800138000")
+        self.assertEqual(normalize_call_number("  13812345678  "), "13812345678")
+        self.assertEqual(normalize_call_number("\t+8613812345678\n"), "13812345678")
 
     def test_normalize_call_number_handles_empty_input(self):
         """Should return empty string for empty input."""
@@ -43,8 +43,8 @@ class PhoneNumbersTests(unittest.TestCase):
 
     def test_normalize_call_number_distinguishes_by_length(self):
         """Should use length to distinguish country code from local prefix."""
-        # 8612345678901 (13 digits) -> remove 86
-        self.assertEqual(normalize_call_number("8612345678901"), "12345678901")
+        # 8613812345678 (13 digits) -> remove 86
+        self.assertEqual(normalize_call_number("8613812345678"), "13812345678")
 
         # 8612345678 (10 digits) -> keep 86 (not long enough to be +86)
         self.assertEqual(normalize_call_number("8612345678"), "8612345678")
@@ -61,14 +61,14 @@ class PhoneNumbersTests(unittest.TestCase):
 
     def test_normalize_call_number_consistency(self):
         """Should produce consistent results for same input."""
-        number = "+8613800138000"
+        number = "+8613812345678"
         result1 = normalize_call_number(number)
         result2 = normalize_call_number(number)
         self.assertEqual(result1, result2)
 
     def test_normalize_call_number_idempotent(self):
         """Should be idempotent (normalizing twice = normalizing once)."""
-        number = "+8613800138000"
+        number = "+8613812345678"
         once = normalize_call_number(number)
         twice = normalize_call_number(once)
         self.assertEqual(once, twice)

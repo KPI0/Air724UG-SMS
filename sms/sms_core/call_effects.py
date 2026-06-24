@@ -8,6 +8,13 @@ class CallEffectResult:
     stop_processing: bool = False
 
 
+def enqueue_call_push(enqueue_push, message, variables):
+    try:
+        return enqueue_push(message, event_type="call", variables=variables)
+    except TypeError:
+        return enqueue_push(message, event_type="call")
+
+
 def apply_ring_timeout_expired(current_port, port_ui, set_status, close_call_popup):
     port_ui("📞 呼叫已取消或未接听", "normal")
     set_status(format_connected_status(current_port), "green")
@@ -64,7 +71,16 @@ def apply_call_decision(
     close_call_popup,
 ):
     if decision.push_message:
-        enqueue_push(decision.push_message, event_type="call")
+        caller = decision.incoming_number or decision.blocked_number or decision.show_popup_number
+        enqueue_call_push(
+            enqueue_push,
+            decision.push_message,
+            {
+                "caller": caller,
+                "from": caller,
+                "phone": caller,
+            },
+        )
 
     if decision.blocked_number:
         port_ui(

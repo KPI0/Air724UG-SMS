@@ -58,14 +58,14 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
 
         result = show_call_popup_namespace_runtime(
             namespace,
-            "13800138000",
+            "13812345678",
             show_app_runtime=lambda **kwargs: calls.append(kwargs) or "shown",
         )
 
         self.assertEqual(result, "shown")
         forwarded = calls[0]
         self.assertEqual(forwarded["parent"], "root")
-        self.assertEqual(forwarded["caller_num"], "13800138000")
+        self.assertEqual(forwarded["caller_num"], "13812345678")
         self.assertEqual(forwarded["get_popup"](), "popup")
         forwarded["set_popup"]("next_popup")
         self.assertEqual(namespace["current_call_popup"], "next_popup")

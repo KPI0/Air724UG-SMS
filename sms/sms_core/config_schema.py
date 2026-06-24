@@ -36,8 +36,8 @@ DEFAULT_CLOUD_CONTROL_CONFIG = {
     "auto_upload": "0",
 }
 
-THIRD_PUSH_SMS_TEMPLATE = "收到短信：\n{msg}"
-THIRD_PUSH_CALL_TEMPLATE = "{msg}"
+THIRD_PUSH_SMS_TEMPLATE = "{msg}\n\n发件号码：{sender}\n本机号码：{local_number}\n时间：{sms_time}"
+THIRD_PUSH_CALL_TEMPLATE = "收到来电：{caller}\n\n本机号码：{local_number}\n时间：{call_time}"
 THIRD_PUSH_DEFAULTS = {
     "enabled": "0",
     "sms_enabled": "1",
@@ -75,4 +75,3 @@ THIRD_PUSH_DEFAULTS = {
     "serverchan_title": "来自 Air724UG 的通知",
     "serverchan_api": "",
 }
-

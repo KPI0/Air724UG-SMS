@@ -173,10 +173,10 @@ def send_dingtalk(message: str, settings: dict, user_agent="Air724UG-SMS", port:
     url, err = required(settings, "dingtalk_webhook", "DINGTALK_WEBHOOK")
     if err:
         return False, err
-    keyword = str(settings.get("dingtalk_keyword", "")).strip()
-    if keyword and keyword not in message:
-        message = f"{keyword}\n{message}"
     secret = str(settings.get("dingtalk_secret", "")).strip()
+    keyword = str(settings.get("dingtalk_keyword", "")).strip()
+    if keyword and not secret and keyword not in message:
+        message = f"{keyword}\n{message}"
     if secret:
         timestamp = str(int(time.time() * 1000))
         sign_raw = f"{timestamp}\n{secret}".encode("utf-8")

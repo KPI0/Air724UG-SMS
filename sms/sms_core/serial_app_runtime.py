@@ -37,6 +37,7 @@ def build_serial_runtime_callbacks(callbacks):
         close_call_popup=callbacks["close_call_popup"],
         send_call_hangup=callbacks["send_call_hangup"],
         show_call_popup=callbacks["show_call_popup"],
+        set_local_number=callbacks.get("set_local_number", lambda *_args: None),
     )
 
 
@@ -58,10 +59,12 @@ def run_serial_app_runtime(
 
     def on_connected_port(target_port):
         state["set_log_prefix"](target_port.replace(":", "_"))
+        callbacks.get("set_local_number", lambda *_args: None)("")
         callbacks["schedule_connected_log"](state["port"](), state["baud"]())
 
     def handle_disconnect(error, target_port):
         state["set_log_prefix"]("system")
+        callbacks.get("set_local_number", lambda *_args: None)("")
         callbacks["close_call_popup"]()
         apply_disconnect_effects(
             error,
@@ -134,6 +137,7 @@ def build_serial_app_wiring(
         "capture_cloud_device_imei": callbacks["capture_cloud_device_imei"],
         "set_temperature": callbacks["set_temperature"],
         "set_signal": callbacks["set_signal"],
+        "set_local_number": callbacks.get("set_local_number", lambda *_args: None),
         "set_status": callbacks["set_status"],
         "close_call_popup": callbacks["close_call_popup"],
         "send_call_hangup": callbacks["send_call_hangup"],
@@ -229,6 +233,7 @@ def run_serial_reader_namespace_runtime(
             "capture_cloud_device_imei": namespace["_maybe_capture_cloud_device_imei"],
             "set_temperature": namespace["set_temperature"],
             "set_signal": namespace["set_signal"],
+            "set_local_number": lambda value: namespace.__setitem__("LOCAL_NUMBER", value),
             "set_status": namespace["set_status"],
             "close_call_popup": namespace["close_call_popup"],
             "send_call_hangup": namespace["send_call_hangup_command"],

@@ -83,6 +83,10 @@ def open_and_initialize_serial_runtime(
             write_command(serial_obj, "AT+CGSN")
         except Exception:
             pass
+        try:
+            write_command(serial_obj, "AT+CNUM")
+        except Exception:
+            pass
 
         if mode == "Auto":
             set_port(target_port)

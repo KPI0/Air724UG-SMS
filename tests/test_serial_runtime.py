@@ -140,7 +140,12 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(state.call_state.last_clip_num, "+8613812345678")
         self.assertEqual(state.call_state.ring_timeout_target, 22.0)
         self.assertIn(("call_popup", ("+8613812345678",)), calls)
-        self.assertTrue(any(item[0] == "push" and item[2] == {"event_type": "call"} for item in calls))
+        self.assertTrue(any(
+            item[0] == "push"
+            and item[2].get("event_type") == "call"
+            and item[2].get("variables", {}).get("caller") == "+8613812345678"
+            for item in calls
+        ))
 
     def test_blocked_call_hangs_up_and_stops_processing(self):
         calls = []

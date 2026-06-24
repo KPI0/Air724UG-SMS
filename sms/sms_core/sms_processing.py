@@ -1,5 +1,13 @@
 import os
+import re
 from datetime import datetime
+
+
+SMS_CALLBACK_META_RE = re.compile(
+    r"^\s*(?P<sender>\+?\d+)\s+"
+    r"(?P<year>\d{2})/(?P<month>\d{2})/(?P<day>\d{2}),"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\+\d+"
+)
 
 
 def sms_keyword_hit(full_msg: str, keywords) -> bool:
@@ -44,6 +52,55 @@ def repeat_count_message(state: dict, key: str, message: str, limit: int, suppre
     return None
 
 
+def sms_year_from_short_year(value: str) -> int:
+    year = int(value)
+    return 1900 + year if year >= 70 else 2000 + year
+
+
+def parse_sms_callback_metadata(callback_head: str, now=None):
+    text = str(callback_head or "").strip()
+    match = SMS_CALLBACK_META_RE.search(text)
+    fallback_time = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    if not match:
+        return {
+            "sender": "",
+            "from": "",
+            "phone": "",
+            "local_number": "",
+            "self_number": "",
+            "sms_time": fallback_time,
+        }
+
+    sender = match.group("sender")
+    try:
+        sms_time = datetime(
+            sms_year_from_short_year(match.group("year")),
+            int(match.group("month")),
+            int(match.group("day")),
+            int(match.group("hour")),
+            int(match.group("minute")),
+            int(match.group("second")),
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        sms_time = fallback_time
+
+    return {
+        "sender": sender,
+        "from": sender,
+        "phone": sender,
+        "local_number": "",
+        "self_number": "",
+        "sms_time": sms_time,
+    }
+
+
+def enqueue_third_push_with_variables(enqueue_third_push, full_msg, variables):
+    try:
+        return enqueue_third_push(full_msg, variables=variables)
+    except TypeError:
+        return enqueue_third_push(full_msg)
+
+
 def process_pending_sms(
     pending,
     keywords,
@@ -66,7 +123,11 @@ def process_pending_sms(
     full_msg = pending.full_msg
 
     if full_msg:
-        enqueue_third_push(full_msg)
+        enqueue_third_push_with_variables(
+            enqueue_third_push,
+            full_msg,
+            parse_sms_callback_metadata(pending.callback_head),
+        )
         send_cloud_sms_event(pending.callback_head, full_msg)
 
     if full_msg and sms_keyword_hit(full_msg, keywords):

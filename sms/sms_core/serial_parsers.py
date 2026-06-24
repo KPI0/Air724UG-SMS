@@ -4,6 +4,7 @@ from sms_core.phone_numbers import normalize_call_number
 
 
 CLIP_NUMBER_RE = re.compile(r'\+CLIP:\s*"?(\+?\d+)"?')
+LOCAL_NUMBER_RE = re.compile(r"\+?\d{5,}")
 
 
 def parse_temperature(line: str):
@@ -25,6 +26,24 @@ def parse_cesq_rsrp(line: str):
     except Exception:
         return None
     return None
+
+
+def parse_cnum_number(line: str):
+    text = str(line or "")
+    if "+CNUM:" not in text:
+        return None
+    try:
+        body = text.split("+CNUM:", 1)[1]
+    except Exception:
+        return None
+    matches = LOCAL_NUMBER_RE.findall(body)
+    if not matches:
+        return None
+    return max(matches, key=lambda item: len(item.lstrip("+"))).strip()
+
+
+def parse_local_number(line: str):
+    return parse_cnum_number(line)
 
 
 def parse_operator_message(line: str):

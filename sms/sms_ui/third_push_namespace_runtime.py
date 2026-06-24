@@ -99,8 +99,16 @@ def enqueue_third_push_namespace_runtime(
     channels=None,
     settings=None,
     template=None,
+    variables=None,
     event_type="sms",
 ):
+    merged_variables = dict(variables or {})
+    local_number = str(namespace.get("LOCAL_NUMBER") or "").strip()
+    if local_number:
+        if not str(merged_variables.get("local_number") or "").strip():
+            merged_variables["local_number"] = local_number
+        if not str(merged_variables.get("self_number") or "").strip():
+            merged_variables["self_number"] = local_number
     return enqueue_third_push_app_runtime(
         raw_msg,
         push_queue=namespace["THIRD_PUSH_Q"],
@@ -112,6 +120,7 @@ def enqueue_third_push_namespace_runtime(
         channels=channels,
         settings=settings,
         template=template,
+        variables=merged_variables,
         event_type=event_type,
         show_success=show_success,
         show_result=show_result,

@@ -24,6 +24,8 @@ from sms_core.third_push_config import (
     update_third_push_settings,
     write_third_push_settings,
 )
+from sms_core.third_push_format import format_message
+import sms_core.third_push_sender as third_push_sender
 from sms_core.third_push_sender import ALLOWED_PUSH_SCHEMES, api_ok, http_request, redact_sensitive_text
 
 
@@ -76,6 +78,42 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(result.ok_channels, ["钉钉"])
         self.assertEqual(result.fail_infos, ["企业微信: bad config"])
         self.assertEqual(sent[0], ("dingtalk", "hello raw", "t"))
+
+    def test_format_message_uses_sms_metadata_variables(self):
+        message = format_message(
+            "【中国电信】验证码461582，3分钟内有效。",
+            variables={
+                "sender": "106598731",
+                "local_number": "",
+                "sms_time": "2026-06-24 13:44:15",
+            },
+        )
+
+        self.assertEqual(
+            message,
+            "【中国电信】验证码461582，3分钟内有效。\n\n"
+            "发件号码：106598731\n"
+            "本机号码：\n"
+            "时间：2026-06-24 13:44:15",
+        )
+
+    def test_format_message_uses_call_metadata_variables(self):
+        message = format_message(
+            "收到来电：来自 +8613912345678",
+            template="收到来电：{caller}\n\n本机号码：{local_number}\n时间：{call_time}",
+            variables={
+                "caller": "+8613912345678",
+                "local_number": "+8613812345678",
+                "call_time": "2026-06-24 13:52:55",
+            },
+        )
+
+        self.assertEqual(
+            message,
+            "收到来电：+8613912345678\n\n"
+            "本机号码：+8613812345678\n"
+            "时间：2026-06-24 13:52:55",
+        )
 
     def test_dispatch_push_item_converts_sender_exception_to_failure(self):
         result = dispatch_push_item(
@@ -180,6 +218,40 @@ class ThirdPushDispatchTests(unittest.TestCase):
             valid_channels={"dingtalk": "Ding"},
         ))
         self.assertEqual(messages[0][1], "normal")
+
+    def test_dingtalk_keyword_is_prepended_only_without_secret(self):
+        sent = []
+
+        def fake_http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
+            sent.append(json.loads(data))
+            return True, 200, '{"errcode":0}'
+
+        original = third_push_sender.http_request
+        third_push_sender.http_request = fake_http_request
+        try:
+            ok, _info = third_push_sender.send_dingtalk(
+                "body",
+                {
+                    "dingtalk_webhook": "https://example.test/ding",
+                    "dingtalk_keyword": "#",
+                    "dingtalk_secret": "",
+                },
+            )
+            self.assertTrue(ok)
+            self.assertEqual(sent[-1]["text"]["content"], "#\nbody")
+
+            ok, _info = third_push_sender.send_dingtalk(
+                "body",
+                {
+                    "dingtalk_webhook": "https://example.test/ding",
+                    "dingtalk_keyword": "#",
+                    "dingtalk_secret": "secret",
+                },
+            )
+            self.assertTrue(ok)
+            self.assertEqual(sent[-1]["text"]["content"], "body")
+        finally:
+            third_push_sender.http_request = original
 
     def test_third_push_worker_runtime_dispatches_and_marks_done(self):
         class StopAfterOne:

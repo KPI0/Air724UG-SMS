@@ -6,6 +6,7 @@ from datetime import datetime
 from sms_core.sms_processing import (
     sms_keyword_hit,
     build_unmatched_sms_log_entries,
+    parse_sms_callback_metadata,
     repeat_count_message,
     process_pending_sms,
 )
@@ -151,6 +152,17 @@ class SmsProcessingTests(unittest.TestCase):
         msg = repeat_count_message(state, "key2", "Message B", limit=3)
         self.assertEqual(msg, "Message B")
 
+    def test_parse_sms_callback_metadata_extracts_sender_and_time(self):
+        metadata = parse_sms_callback_metadata(
+            "106598731 26/06/24,13:44:15+32 【中国电信】验证码461582"
+        )
+
+        self.assertEqual(metadata["sender"], "106598731")
+        self.assertEqual(metadata["from"], "106598731")
+        self.assertEqual(metadata["phone"], "106598731")
+        self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
+        self.assertEqual(metadata["local_number"], "")
+
     def test_process_pending_sms_returns_empty_for_none(self):
         """Should return 'empty' when pending is None."""
         result = process_pending_sms(
@@ -166,7 +178,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "Verification code: 123456"
-            callback_head = "+8613800138000"
+            callback_head = "+8613812345678"
             display_lines = []
 
         def port_ui(text, style):
@@ -196,6 +208,31 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(calls["alert"], 1)
         self.assertEqual(calls["popup"], 1)
         self.assertGreater(len(calls["ui"]), 0)
+
+    def test_process_pending_sms_passes_push_template_variables(self):
+        calls = []
+
+        class MockPending:
+            full_msg = "验证码461582"
+            callback_head = "106598731 26/06/24,13:44:15+32 验证码461582"
+            display_lines = []
+
+        process_pending_sms(
+            MockPending(),
+            [], False, "", "",
+            {}, 5,
+            lambda msg, **kwargs: calls.append((msg, kwargs)),
+            lambda x, y: None,
+            lambda x, y: None,
+            lambda: None,
+            lambda x: None,
+            lambda x: None,
+            lambda x, y: None
+        )
+
+        self.assertEqual(calls[0][0], "验证码461582")
+        self.assertEqual(calls[0][1]["variables"]["sender"], "106598731")
+        self.assertEqual(calls[0][1]["variables"]["sms_time"], "2026-06-24 13:44:15")
 
     def test_process_pending_sms_ignores_unmatched_message(self):
         """Should return 'ignored' for messages not matching keywords."""
@@ -229,7 +266,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "Any message"
-            callback_head = "+8613800138000"
+            callback_head = "+8613812345678"
             display_lines = []
 
         def enqueue_push(msg):

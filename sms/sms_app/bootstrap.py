@@ -156,7 +156,7 @@ def _initialize_paths_and_constants():
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.7.1"
+    APP_VERSION = "3.7.2"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
@@ -292,13 +292,14 @@ def _initialize_notice_state():
 
 
 def _initialize_ui_state():
-    global PENDING_UI_LOGS, LOG_PREFIX
+    global PENDING_UI_LOGS, LOG_PREFIX, LOCAL_NUMBER
     global AUTO_CLEANUP_INTERVAL_HOURS, AUTO_LOG_CLEANUP_STATE, SERIAL_DEBUG_ENABLED
     global serial_debug_queue, serial_debug_win, serial_debug_text, serial_debug_drop_count
     global cloud_control_win, third_push_win
 
     PENDING_UI_LOGS = queue.Queue(maxsize=20000)
     LOG_PREFIX = "system"
+    LOCAL_NUMBER = ""
     AUTO_CLEANUP_INTERVAL_HOURS = 24
     AUTO_LOG_CLEANUP_STATE = AutoLogCleanupState()
     SERIAL_DEBUG_ENABLED = False
@@ -517,4 +518,3 @@ def main():
     _build_main_menu()
     _start_services()
     root.mainloop()
-

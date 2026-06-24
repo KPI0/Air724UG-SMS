@@ -126,6 +126,33 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("popup", "+8613812345678"), calls)
         self.assertNotIn(("hangup",), calls)
 
+    def test_apply_call_decision_passes_call_template_variables(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            push_message="incoming",
+            incoming_number="+8613912345678",
+            show_popup_number="+8613912345678",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: calls.append(("hangup",)),
+            lambda message, **kwargs: calls.append(("push", message, kwargs)),
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda number: calls.append(("popup", number)),
+            lambda: calls.append(("close",)),
+        )
+
+        push = calls[0]
+        self.assertEqual(push[0], "push")
+        self.assertEqual(push[1], "incoming")
+        self.assertEqual(push[2]["event_type"], "call")
+        self.assertEqual(push[2]["variables"]["caller"], "+8613912345678")
+        self.assertEqual(push[2]["variables"]["phone"], "+8613912345678")
+
     def test_apply_call_decision_blocks_and_stops_processing(self):
         calls = []
         decision = CallLineDecision(

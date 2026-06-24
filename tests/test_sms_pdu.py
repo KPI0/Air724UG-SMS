@@ -6,7 +6,7 @@ from sms_core.sms_pdu import encode_text_sms_pdu, encode_text_sms_pdus
 class SmsPduTests(unittest.TestCase):
     def test_encode_text_sms_pdu_basic_message(self):
         """Should encode simple SMS with international number."""
-        pdu, length = encode_text_sms_pdu("+8613800138000", "Hello")
+        pdu, length = encode_text_sms_pdu("+8613812345678", "Hello")
 
         self.assertIsInstance(pdu, str)
         self.assertGreater(len(pdu), 0)
@@ -15,14 +15,14 @@ class SmsPduTests(unittest.TestCase):
 
     def test_encode_text_sms_pdu_uses_international_format(self):
         """Should use type 91 for + prefix."""
-        pdu, _ = encode_text_sms_pdu("+8613800138000", "Test")
+        pdu, _ = encode_text_sms_pdu("+8613812345678", "Test")
 
         # Type 91 indicates international format
         self.assertIn("91", pdu)
 
     def test_encode_text_sms_pdu_uses_national_format(self):
         """Should use type 81 for numbers without + prefix."""
-        pdu, _ = encode_text_sms_pdu("13800138000", "Test")
+        pdu, _ = encode_text_sms_pdu("13812345678", "Test")
 
         # Type 81 indicates national format
         self.assertIn("81", pdu)
@@ -54,7 +54,7 @@ class SmsPduTests(unittest.TestCase):
 
     def test_encode_text_sms_pdu_handles_unicode(self):
         """Should handle Unicode characters (Chinese, emoji, etc)."""
-        pdu, length = encode_text_sms_pdu("+8613800138000", "你好")
+        pdu, length = encode_text_sms_pdu("+8613812345678", "你好")
 
         self.assertIsInstance(pdu, str)
         self.assertGreater(length, 0)
@@ -152,7 +152,7 @@ class SmsPduTests(unittest.TestCase):
 
     def test_encode_text_sms_pdu_format_consistency(self):
         """PDU should be valid hex string."""
-        pdu, _ = encode_text_sms_pdu("+8613800138000", "Test")
+        pdu, _ = encode_text_sms_pdu("+8613812345678", "Test")
 
         # Should be valid hex (all uppercase recommended)
         try:

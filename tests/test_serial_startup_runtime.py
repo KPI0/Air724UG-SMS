@@ -135,6 +135,7 @@ class SerialStartupRuntimeTests(unittest.TestCase):
         self.assertIn(("write", "serial", "AT+CLIP=1"), calls)
         self.assertIn(("deadline", 16.0), calls)
         self.assertIn(("write", "serial", "AT+CGSN"), calls)
+        self.assertIn(("write", "serial", "AT+CNUM"), calls)
         self.assertIn(("port", "COM7"), calls)
 
     def test_open_and_initialize_serial_runtime_reports_denied_port(self):
