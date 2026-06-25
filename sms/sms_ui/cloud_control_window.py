@@ -26,8 +26,8 @@ def open_cloud_control_window_dialog(
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("云端控制")
-    win.minsize(480, 260)
-    win.resizable(False, False)
+    win.minsize(540, 260)
+    win.resizable(True, False)
     win.transient(parent)
 
     frame = ttk.Frame(win, padding=12)

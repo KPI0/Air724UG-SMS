@@ -386,7 +386,7 @@ def _create_root_window():
 
     root = tk.Tk()
     root.withdraw()
-    root.minsize(500, 200)
+    root.minsize(520, 200)
     popup_var = tk.BooleanVar(value=POPUP_ENABLED)
     generate_alert_voice(force=False)
     install_window_icon_runtime(

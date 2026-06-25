@@ -66,7 +66,7 @@ def normalize_own_number(phone: str) -> str:
 
 def build_own_number_commands(phone: str):
     normalized = normalize_own_number(phone)
-    return 'AT+CPBS="ON"', f'AT+CPBW=1,"{normalized}",145'
+    return 'AT+CPBS="ON"', f'AT+CPBW=1,"{normalized}",145', "AT+CNUM"
 
 
 def build_sn_command(sn: str) -> str:

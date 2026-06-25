@@ -422,7 +422,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(build_pin_lock_command("1234", enable=False), 'AT+CLCK="SC",0,"1234"')
         self.assertEqual(build_pin_change_command("1234", "5678"), 'AT+CPWD="SC","1234","5678"')
         self.assertEqual(normalize_own_number("13812345678"), "+8613812345678")
-        self.assertEqual(build_own_number_commands("13812345678"), ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613812345678",145'))
+        self.assertEqual(
+            build_own_number_commands("13812345678"),
+            ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613812345678",145', "AT+CNUM"),
+        )
         self.assertEqual(build_sn_command("ABC123"), "AT+WISN=ABC123")
         self.assertEqual(normalize_dial_number("+8613812345678"), "13812345678")
         self.assertEqual(build_dial_command("8613812345678"), "ATD13812345678;")

@@ -21,8 +21,9 @@ def open_third_push_window_dialog(
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("三方推送")
-    win.geometry("780x640")
-    win.resizable(False, False)
+    win.geometry("780x580")
+    win.minsize(680, 520)
+    win.resizable(True, True)
 
     frame = ttk.Frame(win, padding=12)
     frame.pack(fill="both", expand=True)
