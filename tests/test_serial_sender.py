@@ -4,7 +4,9 @@ import unittest
 from sms_core.serial_sender import (
     SerialCommandResult,
     send_command_with_result_async,
+    write_serial_command_sequence_locked,
     write_text_sms_pdu,
+    write_text_sms_pdu_locked,
     write_serial_command_result,
 )
 
@@ -23,6 +25,22 @@ class FakeSerial:
 
     def flush(self):
         self.flush_count += 1
+
+
+class TrackingLock:
+    def __init__(self):
+        self.depth = 0
+
+    def __enter__(self):
+        self.depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.depth -= 1
+
+    @property
+    def locked(self):
+        return self.depth > 0
 
 
 class SerialSenderResultTests(unittest.TestCase):
@@ -91,6 +109,48 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual(len(pdu_payloads), 2)
         self.assertTrue(any("(1/2)" in line for line in debug))
         self.assertTrue(any("(2/2)" in line for line in debug))
+
+    def test_write_serial_command_sequence_locked_releases_lock_while_waiting(self):
+        serial_obj = FakeSerial()
+        lock = TrackingLock()
+        debug = []
+        sleep_locked_states = []
+
+        result = write_serial_command_sequence_locked(
+            lock,
+            lambda: serial_obj,
+            ["AT", "ATI"],
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: sleep_locked_states.append(lock.locked),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(serial_obj.writes, [b"AT\r\n", b"ATI\r\n"])
+        self.assertEqual(sleep_locked_states, [False])
+        self.assertIn(">>> 发送: ATI\\r\\n", debug)
+
+    def test_write_text_sms_pdu_locked_releases_lock_while_waiting(self):
+        serial_obj = FakeSerial()
+        lock = TrackingLock()
+        debug = []
+        ui_lines = []
+        sleep_calls = []
+
+        result = write_text_sms_pdu_locked(
+            lock,
+            lambda: serial_obj,
+            "+1234",
+            "A" * 100,
+            push_debug=debug.append,
+            port_ui=lambda *args: ui_lines.append(args),
+            sleep_func=lambda seconds: sleep_calls.append((seconds, lock.locked)),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual([locked for _seconds, locked in sleep_calls], [False, False, False, False])
+        self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.0, 1.5, 1.0])
+        self.assertEqual(ui_lines[0], ("📤 发送短信至 +1234：", "normal"))
+        self.assertIn(">>> 发送: AT+CMGF=0\\r\\n", debug)
 
 
 if __name__ == "__main__":

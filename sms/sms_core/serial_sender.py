@@ -120,6 +120,146 @@ def write_text_sms_pdu(
         return False
 
 
+def _serial_available_locked(serial_lock, get_serial, push_debug=None, port_ui=None):
+    with serial_lock:
+        serial_obj = get_serial()
+        ok = _is_serial_open(serial_obj)
+    if ok:
+        return True
+
+    error = "串口未连接"
+    if push_debug:
+        push_debug(f">>> 发送失败: {error}")
+    if port_ui:
+        port_ui(f"❌ 发送短信失败：{error}", "normal")
+    return False
+
+
+def _write_bytes_locked(serial_lock, get_serial, payload, debug_message=None, push_debug=None):
+    with serial_lock:
+        serial_obj = get_serial()
+        if not _is_serial_open(serial_obj):
+            error = "串口未连接"
+            if push_debug:
+                push_debug(f">>> 发送失败: {error}")
+            return SerialCommandResult(False, error)
+
+        try:
+            serial_obj.write(payload)
+            serial_obj.flush()
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+            if push_debug:
+                push_debug(f">>> 发送失败: {error}")
+            return SerialCommandResult(False, error)
+
+    if debug_message and push_debug:
+        push_debug(debug_message)
+    return SerialCommandResult(True)
+
+
+def write_serial_command_sequence_locked(
+    serial_lock,
+    get_serial,
+    commands,
+    push_debug=None,
+    delay_sec=0.3,
+    sleep_func=time.sleep,
+):
+    commands = list(commands or [])
+    if not _serial_available_locked(serial_lock, get_serial, push_debug=push_debug):
+        return False
+
+    for index, command in enumerate(commands):
+        result = _write_bytes_locked(
+            serial_lock,
+            get_serial,
+            (command + "\r\n").encode("utf-8"),
+            f">>> 发送: {command}\\r\\n",
+            push_debug,
+        )
+        if not result.ok:
+            return False
+        if index < len(commands) - 1:
+            sleep_func(delay_sec)
+    return True
+
+
+def write_text_sms_pdu_locked(
+    serial_lock,
+    get_serial,
+    phone,
+    message,
+    push_debug=None,
+    port_ui=None,
+    sleep_func=time.sleep,
+):
+    if not _serial_available_locked(
+        serial_lock,
+        get_serial,
+        push_debug=push_debug,
+        port_ui=port_ui,
+    ):
+        return False
+
+    try:
+        pdus = encode_text_sms_pdus(phone, message)
+        if port_ui:
+            port_ui(f"📤 发送短信至 {phone}：", "normal")
+            port_ui(message, "sms")
+
+        command = "AT+CMGF=0"
+        result = _write_bytes_locked(
+            serial_lock,
+            get_serial,
+            (command + "\r\n").encode("utf-8"),
+            f">>> 发送: {command}\\r\\n",
+            push_debug,
+        )
+        if not result.ok:
+            if port_ui:
+                port_ui(f"❌ 发送短信失败：{result.error}", "normal")
+            return False
+        sleep_func(0.3)
+
+        for index, (pdu_str, cmgs_len) in enumerate(pdus, start=1):
+            suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""
+            command = f"AT+CMGS={cmgs_len}"
+            result = _write_bytes_locked(
+                serial_lock,
+                get_serial,
+                (command + "\r\n").encode("utf-8"),
+                f">>> 发送: {command}{suffix}\\r\\n",
+                push_debug,
+            )
+            if not result.ok:
+                if port_ui:
+                    port_ui(f"❌ 发送短信失败：{result.error}", "normal")
+                return False
+            sleep_func(1.0)
+
+            result = _write_bytes_locked(
+                serial_lock,
+                get_serial,
+                pdu_str.encode("utf-8") + b"\x1a",
+                f">>> 发送 PDU 正文及 Ctrl+Z{suffix}，等待模组响应...",
+                push_debug,
+            )
+            if not result.ok:
+                if port_ui:
+                    port_ui(f"❌ 发送短信失败：{result.error}", "normal")
+                return False
+            if index < len(pdus):
+                sleep_func(1.5)
+        return True
+    except Exception as exc:
+        if push_debug:
+            push_debug(f">>> 发送失败: {exc}")
+        if port_ui:
+            port_ui(f"❌ 发送短信失败：{exc}", "normal")
+        return False
+
+
 def _run_with_serial(serial_lock, get_serial, worker):
     with serial_lock:
         worker(get_serial())
@@ -177,36 +317,49 @@ def send_command_with_result_async(
     )
 
 
-def send_command_sequence_async(serial_lock, get_serial, commands, push_debug=None, delay_sec=0.3, log_error=None):
+def send_command_sequence_async(
+    serial_lock,
+    get_serial,
+    commands,
+    push_debug=None,
+    delay_sec=0.3,
+    log_error=None,
+    sleep_func=time.sleep,
+):
     return start_daemon_thread(
         "serial_send_sequence",
-        lambda: _run_with_serial(
+        lambda: write_serial_command_sequence_locked(
             serial_lock,
             get_serial,
-            lambda serial_obj: write_serial_command_sequence(
-                serial_obj,
-                commands,
-                push_debug=push_debug,
-                delay_sec=delay_sec,
-            ),
+            commands,
+            push_debug=push_debug,
+            delay_sec=delay_sec,
+            sleep_func=sleep_func,
         ),
         log_error=log_error,
     )
 
 
-def send_text_sms_pdu_async(serial_lock, get_serial, phone, message, push_debug=None, port_ui=None, log_error=None):
+def send_text_sms_pdu_async(
+    serial_lock,
+    get_serial,
+    phone,
+    message,
+    push_debug=None,
+    port_ui=None,
+    log_error=None,
+    sleep_func=time.sleep,
+):
     return start_daemon_thread(
         "serial_send_sms_pdu",
-        lambda: _run_with_serial(
+        lambda: write_text_sms_pdu_locked(
             serial_lock,
             get_serial,
-            lambda serial_obj: write_text_sms_pdu(
-                serial_obj,
-                phone,
-                message,
-                push_debug=push_debug,
-                port_ui=port_ui,
-            ),
+            phone,
+            message,
+            push_debug=push_debug,
+            port_ui=port_ui,
+            sleep_func=sleep_func,
         ),
         log_error=log_error,
     )

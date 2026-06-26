@@ -1,10 +1,19 @@
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 
 
 SECRET_KEYS = {"secret", "device_secret", "password", "pwd", "token"}
+SECRET_TEXT_RE = re.compile(
+    r"(?i)"
+    r"([\"']?(?:secret|device_secret|password|pwd|token)[\"']?"
+    r"\s*(?:=|:)\s*)"
+    r"([\"']?)"
+    r"([^&\s,;\"'}]+)"
+    r"([\"']?)"
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +42,7 @@ def safe_preview(raw: str, limit: int = 500) -> str:
         data = json.loads(str(raw))
         text = json.dumps(_mask(data), ensure_ascii=False)
     except Exception:
-        text = str(raw)
+        text = SECRET_TEXT_RE.sub(r"\1\2***\4", str(raw))
     return text if len(text) <= limit else text[:limit] + "..."
 
 

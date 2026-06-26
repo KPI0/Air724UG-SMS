@@ -1,4 +1,22 @@
+from dataclasses import dataclass
 import secrets
+
+
+SINGLE_SMS_UCS2_BYTES = 140
+CONCAT_SMS_UCS2_BYTES = 134
+CONCAT_SMS_SEGMENT_LIMIT = 255
+
+
+@dataclass(frozen=True)
+class TextSmsPduInfo:
+    char_count: int
+    ucs2_bytes: int
+    segment_count: int
+    segment_limit: int = CONCAT_SMS_SEGMENT_LIMIT
+
+    @property
+    def too_long(self):
+        return self.segment_count > self.segment_limit
 
 
 def _encode_phone_number(phone: str):
@@ -30,6 +48,34 @@ def _split_ucs2_segments(message: str, max_bytes: int):
     return segments
 
 
+def _count_ucs2_segments(message: str, max_bytes: int):
+    segment_count = 0
+    current_len = 0
+    for char in str(message or ""):
+        char_len = len(char.encode("utf-16-be"))
+        if current_len and current_len + char_len > max_bytes:
+            segment_count += 1
+            current_len = 0
+        current_len += char_len
+    if current_len or not segment_count:
+        segment_count += 1
+    return segment_count
+
+
+def measure_text_sms_pdus(message: str):
+    message_text = str(message or "")
+    message_bytes = message_text.encode("utf-16-be")
+    if len(message_bytes) <= SINGLE_SMS_UCS2_BYTES:
+        segment_count = 1
+    else:
+        segment_count = _count_ucs2_segments(message_text, CONCAT_SMS_UCS2_BYTES)
+    return TextSmsPduInfo(
+        char_count=len(message_text),
+        ucs2_bytes=len(message_bytes),
+        segment_count=segment_count,
+    )
+
+
 def _build_text_sms_pdu(phone, message_bytes, *, first_octet="11", udh=b""):
     number_len, number_type, swapped_number = _encode_phone_number(phone)
     user_data = udh.hex().upper() + message_bytes.hex().upper()
@@ -48,7 +94,7 @@ def encode_text_sms_pdu(phone: str, message: str):
     excluding the SMSC field, as required by AT+CMGS.
     """
     message_bytes = str(message or "").encode("utf-16-be")
-    if len(message_bytes) > 140:
+    if len(message_bytes) > SINGLE_SMS_UCS2_BYTES:
         raise ValueError("短信内容超过单条 UCS2 PDU 容量，请使用 encode_text_sms_pdus 分段编码")
     return _build_text_sms_pdu(phone, message_bytes)
 
@@ -61,13 +107,13 @@ def encode_text_sms_pdus(phone: str, message: str, *, reference=None):
     segment. The reference is one byte, matching common GSM 03.40 UDH format.
     """
     message_bytes = str(message or "").encode("utf-16-be")
-    if len(message_bytes) <= 140:
+    if len(message_bytes) <= SINGLE_SMS_UCS2_BYTES:
         return [encode_text_sms_pdu(phone, message)]
 
     ref = secrets.randbelow(256) if reference is None else int(reference) & 0xFF
-    segments = _split_ucs2_segments(message, 134)
+    segments = _split_ucs2_segments(message, CONCAT_SMS_UCS2_BYTES)
     total = len(segments)
-    if total > 255:
+    if total > CONCAT_SMS_SEGMENT_LIMIT:
         raise ValueError("短信内容过长，超过 255 个分段")
 
     pdus = []

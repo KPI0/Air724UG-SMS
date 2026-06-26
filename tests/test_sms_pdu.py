@@ -1,6 +1,6 @@
 import unittest
 
-from sms_core.sms_pdu import encode_text_sms_pdu, encode_text_sms_pdus
+from sms_core.sms_pdu import encode_text_sms_pdu, encode_text_sms_pdus, measure_text_sms_pdus
 
 
 class SmsPduTests(unittest.TestCase):
@@ -134,6 +134,28 @@ class SmsPduTests(unittest.TestCase):
 
         self.assertEqual(len(pdus), 2)
         self.assertTrue(all("D83DDE00" in pdu for pdu, _length in pdus))
+
+    def test_measure_text_sms_pdus_uses_ucs2_bytes(self):
+        single = measure_text_sms_pdus("A" * 70)
+        split = measure_text_sms_pdus("A" * 71)
+        emoji_single = measure_text_sms_pdus("😀" * 35)
+        emoji_split = measure_text_sms_pdus("😀" * 36)
+
+        self.assertEqual((single.ucs2_bytes, single.segment_count, single.too_long), (140, 1, False))
+        self.assertEqual((split.ucs2_bytes, split.segment_count, split.too_long), (142, 2, False))
+        self.assertEqual((emoji_single.ucs2_bytes, emoji_single.segment_count), (140, 1))
+        self.assertEqual((emoji_split.ucs2_bytes, emoji_split.segment_count), (144, 2))
+
+    def test_measure_text_sms_pdus_reports_segment_limit(self):
+        info = measure_text_sms_pdus("A" * 17086)
+
+        self.assertEqual(info.segment_count, 256)
+        self.assertEqual(info.segment_limit, 255)
+        self.assertTrue(info.too_long)
+
+    def test_encode_text_sms_pdus_rejects_more_than_255_segments(self):
+        with self.assertRaises(ValueError):
+            encode_text_sms_pdus("+1234", "A" * 17086, reference=0x01)
 
     def test_encode_text_sms_pdu_special_characters(self):
         """Should handle special characters."""

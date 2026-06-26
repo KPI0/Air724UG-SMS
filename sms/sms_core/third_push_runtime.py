@@ -8,6 +8,27 @@ from sms_core.third_push import (
 )
 
 
+def _exception_text(prefix, exc):
+    detail = str(exc).strip() or exc.__class__.__name__
+    return f"{prefix}：{detail}"
+
+
+def _safe_system_ui(system_ui, message):
+    try:
+        system_ui(message, "normal")
+        return True
+    except Exception:
+        return False
+
+
+def _safe_show_result(show_result, ok_channels, fail_infos):
+    try:
+        show_result(list(ok_channels or []), list(fail_infos or []))
+        return True
+    except Exception:
+        return False
+
+
 def resolve_push_channels(
     channels,
     *,
@@ -126,16 +147,36 @@ def third_push_worker_runtime(
             continue
 
         try:
-            result = dispatch_func(
-                item,
-                send_channel_func,
-                format_message_func=format_message_func,
-            )
-            status_message = result_status_message(result)
-            if status_message:
-                system_ui(status_message, "normal")
-            if result.show_result:
-                show_result(result.ok_channels, result.fail_infos)
+            try:
+                result = dispatch_func(
+                    item,
+                    send_channel_func,
+                    format_message_func=format_message_func,
+                )
+            except Exception as exc:
+                fail_message = _exception_text("三方推送任务异常", exc)
+                _safe_system_ui(system_ui, fail_message)
+                if isinstance(item, dict) and item.get("show_result"):
+                    _safe_show_result(show_result, [], [fail_message])
+                continue
+
+            try:
+                status_message = result_status_message(result)
+            except Exception as exc:
+                status_message = _exception_text("三方推送结果处理异常", exc)
+
+            try:
+                if status_message:
+                    _safe_system_ui(system_ui, status_message)
+                if getattr(result, "show_result", False):
+                    _safe_show_result(
+                        show_result,
+                        getattr(result, "ok_channels", []),
+                        getattr(result, "fail_infos", []),
+                    )
+            except Exception as exc:
+                fail_message = _exception_text("三方推送结果回调异常", exc)
+                _safe_system_ui(system_ui, fail_message)
         finally:
             try:
                 push_queue.task_done()

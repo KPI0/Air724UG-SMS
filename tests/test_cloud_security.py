@@ -30,6 +30,20 @@ class CloudSecurityTests(unittest.TestCase):
         preview = safe_preview(raw)
         self.assertEqual(preview, raw)
 
+    def test_safe_preview_masks_non_json_secret_pairs(self):
+        raw = "cmd secret=abc token:def password='pw' device_secret=\"dev\" keep=value"
+        preview = safe_preview(raw)
+
+        self.assertIn("secret=***", preview)
+        self.assertIn("token:***", preview)
+        self.assertIn("password='***'", preview)
+        self.assertIn('device_secret="***"', preview)
+        self.assertIn("keep=value", preview)
+        self.assertNotIn("abc", preview)
+        self.assertNotIn("def", preview)
+        self.assertNotIn("pw", preview)
+        self.assertNotIn('"dev"', preview)
+
     def test_safe_preview_truncates_long_text(self):
         """Long previews should be truncated."""
         long_text = "x" * 600

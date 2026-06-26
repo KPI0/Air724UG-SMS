@@ -1,7 +1,19 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from sms_core.sms_pdu import measure_text_sms_pdus
 from sms_ui.serial_debug_dialog_helpers import ensure_debug_enabled
+
+
+def format_sms_pdu_counter(message):
+    message_text = str(message or "")
+    if not message_text:
+        return "0 字 | UCS2 0 字节 | 0 段", False
+    info = measure_text_sms_pdus(message_text)
+    return (
+        f"{info.char_count} 字 | UCS2 {info.ucs2_bytes} 字节 | {info.segment_count}/{info.segment_limit} 段",
+        info.too_long,
+    )
 
 
 def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
@@ -23,24 +35,32 @@ def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
     txt_msg = tk.Text(frm, height=4, width=30, font=("微软雅黑", 9))
     txt_msg.pack(fill="x", pady=(2, 2))
 
-    count_var = tk.StringVar(value="已输入: 0 / 70 字")
-    count_label = tk.Label(frm, textvariable=count_var, fg="gray", font=("微软雅黑", 8))
+    count_var = tk.StringVar(value="0 字 | UCS2 0 字节 | 0 段")
+    count_label = tk.Label(
+        frm,
+        textvariable=count_var,
+        fg="gray",
+        font=("微软雅黑", 8),
+        justify="right",
+        wraplength=320,
+    )
     count_label.pack(anchor="e", pady=(0, 5))
 
     def update_char_count(_event=None):
         content = txt_msg.get("1.0", "end-1c")
-        length = len(content)
-        count_var.set(f"已输入: {length} / 70 字")
-        count_label.config(fg="#d9534f" if length > 70 else "gray")
+        counter_text, too_long = format_sms_pdu_counter(content)
+        count_var.set(counter_text)
+        count_label.config(fg="#d9534f" if too_long else "gray")
 
     txt_msg.bind("<KeyRelease>", update_char_count)
 
     tk.Label(
         frm,
-        text="注意: 当前仅支持单条发送，最大限制 70 字符。\n💡 提示：支持 '+' 国际前缀 (如 +8618888888...)。",
+        text="长短信将按 UCS2 PDU 自动分段发送。\n💡 提示：支持 '+' 国际前缀 (如 +8618888888...)。",
         fg="gray",
         justify="left",
         font=("微软雅黑", 9),
+        wraplength=320,
     ).pack(anchor="w", pady=(5, 10))
 
     def submit():
@@ -52,10 +72,11 @@ def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
         if not phone or not msg:
             messagebox.showerror("错误", "手机号和短信内容不能为空！", parent=win)
             return
-        if len(msg) > 70:
+        info = measure_text_sms_pdus(msg)
+        if info.too_long:
             messagebox.showerror(
-                "字数超限",
-                f"当前输入了 {len(msg)} 个字符，已超过 70 字符最大限制！\n请删减后再发送。",
+                "短信过长",
+                f"当前内容需要 {info.segment_count} 个分段，超过 {info.segment_limit} 段限制。\n请删减后再发送。",
                 parent=win,
             )
             return

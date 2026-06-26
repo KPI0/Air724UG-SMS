@@ -17,12 +17,17 @@
 
 ## 📦 依赖安装
 
-```bash
-pip install -r requirements.txt
+在项目根目录执行：
+
+```powershell
+py -m pip install -r requirements.txt
 ```
 
 ## 🚀 源码运行
-```bash
+
+在项目根目录执行：
+
+```powershell
 py sms\sms.pyw
 ```
 
@@ -57,45 +62,52 @@ GitHub Actions 会在打包 EXE 之前自动执行同样的测试；测试失败
 
 ## 🏗 打包为 EXE
 
-安装 PyInstaller：
-```bash
-pip install pyinstaller
+先安装完整依赖：
+
+```powershell
+py -m pip install -r requirements.txt
 ```
+
 然后在项目目录下执行以下命令：
-```bash
-pyinstaller ^
-  --noconfirm ^
-  --onefile ^
-  --windowed ^
-  --name "sms" ^
-  --icon=icon.ico ^
-  --add-data "icon.ico;." ^
-  --paths "sms" ^
-  --hidden-import "pyttsx3.drivers.sapi5" ^
-  --hidden-import "pythoncom" ^
-  --hidden-import "pywintypes" ^
-  --hidden-import "win32com" ^
-  --hidden-import "win32com.client" ^
-  --hidden-import "sms_app" ^
-  --hidden-import "sms_core" ^
-  --hidden-import "sms_ui" ^
-  --collect-submodules "win32com" ^
-  --collect-submodules "websockets" ^
-  --collect-submodules "sms_app" ^
-  --collect-submodules "sms_core" ^
-  --collect-submodules "sms_ui" ^
-  --clean ^
+
+```powershell
+py -m PyInstaller `
+  --noconfirm `
+  --onefile `
+  --windowed `
+  --name "sms" `
+  --icon "icon.ico" `
+  --add-data "icon.ico;." `
+  --paths "sms" `
+  --hidden-import "pyttsx3.drivers.sapi5" `
+  --hidden-import "pythoncom" `
+  --hidden-import "pywintypes" `
+  --hidden-import "win32com" `
+  --hidden-import "win32com.client" `
+  --hidden-import "sms_app" `
+  --hidden-import "sms_core" `
+  --hidden-import "sms_ui" `
+  --collect-submodules "win32com" `
+  --collect-submodules "websockets" `
+  --collect-submodules "sms_app" `
+  --collect-submodules "sms_core" `
+  --collect-submodules "sms_ui" `
+  --clean `
   sms\sms.pyw
 ```
+
 生成的 exe 文件位于：
-```bash
-dist/sms.exe
+
+```text
+dist\sms.exe
 ```
+
+Release 包默认只需要发布 `sms.exe`。不要把个人使用过的 `config.ini`、`sms_logs/`、`tts/` 打进公开发布包；程序首次启动会在 exe 同级自动创建所需配置和运行目录。
+
 ## 📁 项目结构
 ```
 Air724UG-SMS/
 │
-├── sms.pyw             # 原始整合版/安全备份版，Release 不打包此文件
 ├── sms/                # 重构版源码目录，GitHub Actions 和手动打包均使用此目录
 │   ├── sms.pyw         # 重构版主程序入口
 │   ├── sms_app/        # 启动装配层，负责 main/bootstrap 与跨层绑定

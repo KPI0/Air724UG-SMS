@@ -286,6 +286,79 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertIn("Ding", ui_messages[0][0])
         self.assertEqual(results, [(["Ding"], [])])
 
+    def test_third_push_worker_runtime_continues_after_dispatch_error(self):
+        push_queue = queue.Queue()
+        push_queue.put_nowait({"message": "bad", "show_result": True})
+        push_queue.put_nowait({"message": "good", "show_result": True})
+        handled = []
+        ui_messages = []
+        results = []
+
+        class StopWhenQueueEmpty:
+            def is_set(self):
+                return push_queue.empty()
+
+        def dispatch(item, _send, format_message_func=None):
+            handled.append(item["message"])
+            if item["message"] == "bad":
+                raise RuntimeError("boom")
+            return PushDispatchResult(["Ding"], [], show_success=True, show_result=True)
+
+        third_push_worker_runtime(
+            stop_event=StopWhenQueueEmpty(),
+            push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda msg, tag="normal": ui_messages.append((msg, tag)),
+            show_result=lambda ok, fail: results.append((ok, fail)),
+            dispatch_func=dispatch,
+            poll_timeout=0,
+        )
+
+        self.assertEqual(handled, ["bad", "good"])
+        self.assertTrue(push_queue.empty())
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+        self.assertTrue(any("boom" in message for message, _tag in ui_messages))
+        self.assertEqual(results[0][0], [])
+        self.assertIn("boom", results[0][1][0])
+        self.assertEqual(results[-1], (["Ding"], []))
+
+    def test_third_push_worker_runtime_ignores_result_and_ui_callback_errors(self):
+        push_queue = queue.Queue()
+        push_queue.put_nowait({"message": "first", "show_result": True})
+        push_queue.put_nowait({"message": "second", "show_result": True})
+        handled = []
+        status_calls = []
+
+        class StopWhenQueueEmpty:
+            def is_set(self):
+                return push_queue.empty()
+
+        def dispatch(item, _send, format_message_func=None):
+            handled.append(item["message"])
+            return PushDispatchResult([], [], show_success=True, show_result=True)
+
+        def result_status_message(result):
+            status_calls.append(result)
+            if len(status_calls) == 1:
+                raise RuntimeError("status boom")
+            return "status ok"
+
+        third_push_worker_runtime(
+            stop_event=StopWhenQueueEmpty(),
+            push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda *_args: (_ for _ in ()).throw(RuntimeError("ui boom")),
+            show_result=lambda *_args: (_ for _ in ()).throw(RuntimeError("show boom")),
+            dispatch_func=dispatch,
+            result_status_message=result_status_message,
+            poll_timeout=0,
+        )
+
+        self.assertEqual(handled, ["first", "second"])
+        self.assertEqual(len(status_calls), 2)
+        self.assertTrue(push_queue.empty())
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+
     def test_third_push_config_read_update_and_write(self):
         config = configparser.ConfigParser()
         config["third_push"] = {
