@@ -90,13 +90,14 @@ class SmsPendingCollector:
 
 
 def callback_body_from_line(line: str, prefix: str = SMS_CALLBACK_PREFIX) -> str:
-    if prefix not in str(line or ""):
+    text = str(line or "").lstrip()
+    if not text.startswith(prefix):
         return ""
-    return str(line).split(prefix, 1)[1].strip()
+    return text[len(prefix):].strip()
 
 
 def handle_sms_collector_line(collector, line: str, now: float, flush_callback, prefix: str = SMS_CALLBACK_PREFIX):
-    if prefix in str(line or ""):
+    if str(line or "").lstrip().startswith(prefix):
         flushed = False
         if collector.active:
             flush_callback()

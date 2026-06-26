@@ -167,7 +167,7 @@ def handle_call_line(
     )
     decision = CallLineDecision(state=next_state)
 
-    if "+CLIP:" in str(line or ""):
+    if parse_clip_number(line, default=""):
         clip = handle_clip_line(
             line,
             next_state.last_clip_num,

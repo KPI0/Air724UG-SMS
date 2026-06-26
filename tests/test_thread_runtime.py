@@ -268,6 +268,30 @@ class ThreadRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, ["callback"])
         self.assertTrue(any("callback failed" in message for message in logs))
 
+    def test_schedule_delayed_ui_runtime_logs_scheduled_callback_failure(self):
+        calls = []
+        logs = []
+
+        def callback():
+            calls.append("callback")
+            raise RuntimeError("scheduled callback failed")
+
+        result = schedule_delayed_ui_runtime(
+            callback,
+            app_start_mono=10.0,
+            start_ui_delay=2.0,
+            monotonic=lambda: 11.0,
+            root_after=lambda delay, scheduled: calls.append(("after", delay, scheduled)) or "after-id",
+            run_on_ui_thread=lambda callback, ui_post: callback(),
+            ui_post=None,
+            log_error=logs.append,
+        )
+
+        self.assertEqual(result, "after-id")
+        calls[0][2]()
+        self.assertEqual(calls[:2], [("after", 1000, calls[0][2]), "callback"])
+        self.assertTrue(any("scheduled callback failed" in message for message in logs))
+
     def test_schedule_delayed_ui_runtime_logs_time_source_failure(self):
         calls = []
         logs = []

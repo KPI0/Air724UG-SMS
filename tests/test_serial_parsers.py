@@ -25,11 +25,17 @@ class SerialParsersTests(unittest.TestCase):
         self.assertEqual(parse_cnum_number('[I]-[ril.proatc] +CNUM: "","+8613812345678",145'), "+8613812345678")
         self.assertEqual(parse_cnum_number("+CNUM: 13812345678"), "13812345678")
         self.assertIsNone(parse_cnum_number("OK"))
+        self.assertIsNone(parse_cnum_number('[I]-[websocket] json: {"message":"+CNUM: 13812345678"}'))
 
     def test_parse_temperature_extracts_value(self):
         """Should extract temperature from +RFTEMPERATURE response."""
         result = parse_temperature("+RFTEMPERATURE: 35")
         self.assertEqual(result, "35")
+
+    def test_parse_temperature_ignores_websocket_json_payload(self):
+        """Should not parse forwarded JSON log payloads as live status."""
+        line = '[I]-[websocket] json: {"message":"+RFTEMPERATURE: 40.25","imei":"123456789012345","tag":"serial"}'
+        self.assertIsNone(parse_temperature(line))
 
     def test_parse_temperature_returns_none_for_non_match(self):
         """Should return None when line doesn't contain temperature."""
@@ -40,6 +46,11 @@ class SerialParsersTests(unittest.TestCase):
         """Should extract RSRP (6th field) from +CESQ response."""
         result = parse_cesq_rsrp("+CESQ: 99,99,255,255,20,80")
         self.assertEqual(result, "80")
+
+    def test_parse_cesq_rsrp_ignores_websocket_json_payload(self):
+        """Should not parse forwarded JSON log payloads as live signal."""
+        line = '[I]-[websocket] json: {"message":"+CESQ: 99,99,255,255,20,80","imei":"123456789012345","tag":"serial"}'
+        self.assertIsNone(parse_cesq_rsrp(line))
 
     def test_parse_cesq_rsrp_returns_none_for_insufficient_fields(self):
         """Should return None when less than 6 fields."""
@@ -121,11 +132,16 @@ class SerialParsersTests(unittest.TestCase):
         insights = parse_serial_debug_insights("+CPIN: READY")
         self.assertGreater(len(insights), 0)
         self.assertTrue(any("SIM卡" in msg for msg in insights))
+        self.assertEqual(parse_serial_debug_insights('[I]-[websocket] json: {"message":"+CPIN: READY"}'), [])
 
     def test_parse_clip_number_extracts_caller_id(self):
         """Should extract caller ID from +CLIP."""
         number = parse_clip_number('+CLIP: "13812345678",129')
         self.assertEqual(number, "13812345678")
+
+    def test_parse_clip_number_ignores_websocket_json_payload(self):
+        number = parse_clip_number('[I]-[websocket] json: {"message":"+CLIP: \\"13812345678\\",129"}')
+        self.assertEqual(number, "未知号码")
 
     def test_parse_clip_number_handles_international_format(self):
         """Should handle + prefix in number."""
@@ -216,11 +232,13 @@ class SerialParsersTests(unittest.TestCase):
     def test_is_ring_line_recognizes_ring(self):
         """Should recognize RING lines."""
         self.assertTrue(is_ring_line("RING"))
-        self.assertTrue(is_ring_line("something RING"))
+        self.assertTrue(is_ring_line("[I]-[ril] RING"))
 
     def test_is_ring_line_rejects_non_ring(self):
         """Should return False for non-RING lines."""
         self.assertFalse(is_ring_line("OK"))
+        self.assertFalse(is_ring_line("something RING"))
+        self.assertFalse(is_ring_line('[I]-[websocket] json: {"message":"RING"}'))
         self.assertFalse(is_ring_line("RINGING"))  # Ends with RING, but has suffix
 
     def test_is_hangup_event_recognizes_no_carrier(self):
@@ -234,6 +252,7 @@ class SerialParsersTests(unittest.TestCase):
     def test_is_hangup_event_recognizes_ciev_call_0(self):
         """Should recognize +CIEV CALL,0 as hangup."""
         self.assertTrue(is_hangup_event('+CIEV: "CALL",0'))
+        self.assertFalse(is_hangup_event('[I]-[websocket] json: {"message":"+CIEV: \\"CALL\\",0"}'))
 
     def test_is_call_connected_event_recognizes_connect(self):
         """Should recognize CONNECT."""
@@ -242,6 +261,7 @@ class SerialParsersTests(unittest.TestCase):
     def test_is_call_connected_event_recognizes_ciev_call_1(self):
         """Should recognize +CIEV CALL,1 as connected."""
         self.assertTrue(is_call_connected_event('+CIEV: "CALL",1'))
+        self.assertFalse(is_call_connected_event('[I]-[websocket] json: {"message":"+CIEV: \\"CALL\\",1"}'))
 
     def test_is_sms_collection_boundary_recognizes_log_prefixes(self):
         """Should recognize log prefixes as boundaries."""

@@ -3,38 +3,44 @@ import re
 from sms_core.phone_numbers import normalize_call_number
 
 
-CLIP_NUMBER_RE = re.compile(r'\+CLIP:\s*"?(\+?\d+)"?')
 LOCAL_NUMBER_RE = re.compile(r"\+?\d{5,}")
+SERIAL_AT_PREFIX = r"(?:\[[IWE]\]-\[[^\]]+\]\s*)?"
+CLIP_NUMBER_RE = re.compile(rf'^\s*{SERIAL_AT_PREFIX}\+CLIP:\s*"?(\+?\d+)"?')
+TEMPERATURE_RE = re.compile(
+    rf"^\s*{SERIAL_AT_PREFIX}\+RFTEMPERATURE:\s*(-?\d+(?:\.\d+)?)\s*$"
+)
+CESQ_RE = re.compile(
+    rf"^\s*{SERIAL_AT_PREFIX}\+CESQ:\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*$"
+)
+AT_RESPONSE_RE_TEMPLATE = r"^\s*" + SERIAL_AT_PREFIX + r"{command}:\s*(?P<body>.*?)\s*$"
+SERIAL_PREFIX_RE = re.compile(rf"^\s*{SERIAL_AT_PREFIX}(?P<body>.*?)\s*$")
+CIEV_CALL_RE = re.compile(r'^\+CIEV:\s*"CALL"\s*,\s*(?P<state>[01])$', re.IGNORECASE)
+
+
+def _at_response_body(line: str, command: str):
+    pattern = AT_RESPONSE_RE_TEMPLATE.format(command=re.escape(command))
+    match = re.match(pattern, str(line or ""))
+    return match.group("body").strip() if match else None
+
+
+def _serial_body(line: str):
+    match = SERIAL_PREFIX_RE.match(str(line or ""))
+    return match.group("body").strip() if match else str(line or "").strip()
 
 
 def parse_temperature(line: str):
-    if "+RFTEMPERATURE:" not in str(line or ""):
-        return None
-    try:
-        return str(line).split("+RFTEMPERATURE:", 1)[1].strip()
-    except Exception:
-        return None
+    match = TEMPERATURE_RE.match(str(line or ""))
+    return match.group(1) if match else None
 
 
 def parse_cesq_rsrp(line: str):
-    if "+CESQ:" not in str(line or ""):
-        return None
-    try:
-        parts = str(line).split("+CESQ:", 1)[1].split(",")
-        if len(parts) >= 6:
-            return parts[5].strip()
-    except Exception:
-        return None
-    return None
+    match = CESQ_RE.match(str(line or ""))
+    return match.group(1) if match else None
 
 
 def parse_cnum_number(line: str):
-    text = str(line or "")
-    if "+CNUM:" not in text:
-        return None
-    try:
-        body = text.split("+CNUM:", 1)[1]
-    except Exception:
+    body = _at_response_body(line, "+CNUM")
+    if body is None:
         return None
     matches = LOCAL_NUMBER_RE.findall(body)
     if not matches:
@@ -47,10 +53,11 @@ def parse_local_number(line: str):
 
 
 def parse_operator_message(line: str):
-    if "+COPS:" not in str(line or "") or '"' not in str(line or ""):
+    body = _at_response_body(line, "+COPS")
+    if body is None or '"' not in body:
         return None
     try:
-        plmn = str(line).split("+COPS:", 1)[1].split('"')[1]
+        plmn = body.split('"')[1]
     except Exception:
         return None
 
@@ -74,11 +81,8 @@ def parse_operator_message(line: str):
 
 
 def parse_sim_status_message(line: str):
-    if "+CPIN:" not in str(line or ""):
-        return None
-    try:
-        status = str(line).split("+CPIN:", 1)[1].strip()
-    except Exception:
+    status = _at_response_body(line, "+CPIN")
+    if status is None:
         return None
 
     status_map = {
@@ -93,11 +97,8 @@ def parse_sim_status_message(line: str):
 
 
 def parse_attach_status_message(line: str):
-    if "+CGATT:" not in str(line or ""):
-        return None
-    try:
-        status = str(line).split("+CGATT:", 1)[1].strip()
-    except Exception:
+    status = _at_response_body(line, "+CGATT")
+    if status is None:
         return None
 
     if status == "1":
@@ -110,11 +111,8 @@ def parse_attach_status_message(line: str):
 
 
 def parse_cfun_status_message(line: str):
-    if "+CFUN:" not in str(line or ""):
-        return None
-    try:
-        status = str(line).split("+CFUN:", 1)[1].strip()
-    except Exception:
+    status = _at_response_body(line, "+CFUN")
+    if status is None:
         return None
 
     status_map = {
@@ -126,10 +124,11 @@ def parse_cfun_status_message(line: str):
 
 
 def parse_lte_cell_messages(line: str):
-    if "+EEMLTESVC:" not in str(line or ""):
+    body = _at_response_body(line, "+EEMLTESVC")
+    if body is None:
         return []
     try:
-        parts = str(line).split("+EEMLTESVC:", 1)[1].split(",")
+        parts = body.split(",")
         if len(parts) < 10:
             return []
         raw_mcc = int(parts[0].strip())
@@ -191,25 +190,23 @@ def is_new_clip(caller_num: str, last_clip_num: str, now: float, last_clip_time:
 
 
 def is_ring_line(line: str) -> bool:
-    text = str(line or "")
-    return text == "RING" or text.endswith("RING")
+    return _serial_body(line) == "RING"
 
 
 def is_hangup_event(line: str) -> bool:
-    text = str(line or "")
+    text = _serial_body(line)
     compact = re.sub(r"\s+", "", text).upper()
+    ciev = CIEV_CALL_RE.match(text)
     return (
-        "NO CARRIER" in text
-        or "BUSY" in text
-        or "NO ANSWER" in text
-        or ("+CIEV:" in compact and '"CALL",0' in compact)
+        text in ("NO CARRIER", "BUSY", "NO ANSWER")
+        or bool(ciev and ciev.group("state") == "0")
     )
 
 
 def is_call_connected_event(line: str) -> bool:
-    text = str(line or "")
-    compact = text.replace(" ", "").upper()
-    return text == "CONNECT" or ("+CIEV:" in text and '"CALL",1' in compact)
+    text = _serial_body(line)
+    ciev = CIEV_CALL_RE.match(text)
+    return text == "CONNECT" or bool(ciev and ciev.group("state") == "1")
 
 
 def is_sms_collection_boundary(line: str) -> bool:

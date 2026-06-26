@@ -280,7 +280,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(is_new_clip("10086", "10010", 10.0, 9.0))
         self.assertFalse(is_new_clip("10086", "10086", 10.0, 7.0))
         self.assertTrue(is_ring_line("[I]-[ril] RING"))
-        self.assertTrue(is_hangup_event('noise +CIEV: "CALL",0'))
+        self.assertTrue(is_hangup_event('[I]-[ril] +CIEV: "CALL",0'))
         self.assertTrue(is_call_connected_event(' +CIEV: "CALL",1'))
         self.assertTrue(is_sms_collection_boundary("[I]-[handler] next"))
         self.assertFalse(is_sms_collection_boundary("[\u6e29\u99a8\u63d0\u793a] text"))

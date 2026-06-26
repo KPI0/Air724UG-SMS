@@ -31,6 +31,22 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertTrue(collector.active)
         self.assertEqual(flushed, [])
 
+    def test_handle_sms_collector_line_ignores_websocket_json_payload(self):
+        collector = SmsPendingCollector(parse_head)
+        flushed = []
+
+        decision = handle_sms_collector_line(
+            collector,
+            '[I]-[websocket] json: {"message":"[I]-[handler_sms.smsCallback] +8613812345678 first"}',
+            now=10.0,
+            flush_callback=lambda: flushed.append("flush"),
+        )
+
+        self.assertFalse(decision.started)
+        self.assertEqual(decision.action, "pass")
+        self.assertFalse(collector.active)
+        self.assertEqual(flushed, [])
+
     def test_handle_sms_collector_line_flushes_previous_before_new_callback(self):
         collector = SmsPendingCollector(parse_head)
         collector.start("+8613812345678 first", now=10.0)

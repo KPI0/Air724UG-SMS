@@ -99,7 +99,7 @@ def schedule_delayed_ui_runtime(
 
         if delay_ms > 0:
             try:
-                return root_after(delay_ms, callback)
+                return root_after(delay_ms, run_callback_once)
             except Exception as exc:
                 _safe_log(log_error, f"Schedule delayed UI callback failed: {exc!r}")
 
