@@ -108,6 +108,7 @@ Release 包默认只需要发布 `sms.exe`。不要把个人使用过的 `config
 ```
 Air724UG-SMS/
 │
+├── sms.pyw             # 原始整合版/安全备份版，Release 不打包此文件
 ├── sms/                # 重构版源码目录，GitHub Actions 和手动打包均使用此目录
 │   ├── sms.pyw         # 重构版主程序入口
 │   ├── sms_app/        # 启动装配层，负责 main/bootstrap 与跨层绑定
