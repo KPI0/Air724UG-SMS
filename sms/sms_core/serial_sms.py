@@ -26,11 +26,13 @@ class SmsPendingCollector:
     def __init__(
         self,
         parse_callback_head,
+        correction_cache=None,
         initial_timeout: float = 1.0,
         fragment_timeout: float = 0.4,
         max_follow_lines: int = 40,
     ):
         self.parse_callback_head = parse_callback_head
+        self.correction_cache = correction_cache
         self.initial_timeout = initial_timeout
         self.fragment_timeout = fragment_timeout
         self.max_follow_lines = max_follow_lines
@@ -40,6 +42,7 @@ class SmsPendingCollector:
         self.parts = []
         self.display_lines = []
         self.callback_head = ""
+        self.ignore_follow_lines = False
         self.deadline = 0.0
         self.follow_lines_left = 0
         self.active = False
@@ -53,10 +56,18 @@ class SmsPendingCollector:
             self.reset()
             return False
 
+        original_text = text
+        if self.correction_cache is not None:
+            text = self.correction_cache.correct_callback_text(
+                text,
+                self.parse_callback_head,
+                now,
+            )
         _sender, body = self.parse_callback_head(text)
         self.callback_head = text
         self.parts = [body or text]
         self.display_lines = ["📩 收到短信：", text]
+        self.ignore_follow_lines = text != original_text
         self.deadline = now + self.initial_timeout
         self.follow_lines_left = self.max_follow_lines
         self.active = True
@@ -82,8 +93,9 @@ class SmsPendingCollector:
         if self.follow_lines_left <= 0:
             return "flush"
 
-        self.parts.append(line)
-        self.display_lines.append(line)
+        if not self.ignore_follow_lines:
+            self.parts.append(line)
+            self.display_lines.append(line)
         self.deadline = now + self.fragment_timeout
         self.follow_lines_left -= 1
         return "flush" if self.follow_lines_left <= 0 else "consumed"

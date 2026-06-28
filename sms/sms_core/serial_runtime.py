@@ -6,17 +6,21 @@ from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expire
 from sms_core.call_events import CallState, handle_call_line, ring_timeout_expired
 from sms_core.serial_line_effects import apply_serial_line_effects, push_serial_debug_insights
 from sms_core.serial_sms import SmsPendingCollector, flush_pending_sms, handle_sms_collector_line
+from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
 
 
 @dataclass
 class SerialRuntimeState:
     sms_collector: SmsPendingCollector
+    sms_pdu_cache: SmsPduCorrectionCache
     call_state: CallState
 
     @classmethod
     def create(cls, parse_callback_head):
+        sms_pdu_cache = SmsPduCorrectionCache()
         return cls(
-            sms_collector=SmsPendingCollector(parse_callback_head),
+            sms_collector=SmsPendingCollector(parse_callback_head, correction_cache=sms_pdu_cache),
+            sms_pdu_cache=sms_pdu_cache,
             call_state=CallState(),
         )
 
@@ -147,6 +151,8 @@ def handle_serial_runtime_line(
             callbacks.set_status,
             callbacks.close_call_popup,
         )
+
+    state.sms_pdu_cache.observe_line(line, now)
 
     if not line:
         if state.sms_collector.expired(now):

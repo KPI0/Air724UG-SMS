@@ -156,7 +156,7 @@ def _initialize_paths_and_constants():
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.7.3"
+    APP_VERSION = "3.7.4"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"

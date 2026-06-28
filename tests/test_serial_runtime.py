@@ -1,5 +1,6 @@
 import unittest
 
+from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.serial_runtime import (
     SerialLineDecoder,
     SerialRuntimeCallbacks,
@@ -9,6 +10,36 @@ from sms_core.serial_runtime import (
     run_serial_runtime_thread,
     run_serial_thread_loop,
 )
+
+
+def _swap_number_digits(number):
+    digits = str(number or "").lstrip("+")
+    if len(digits) % 2:
+        digits += "F"
+    return "".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2))
+
+
+def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1):
+    sender_text = str(sender or "")
+    number_type = "91" if sender_text.startswith("+") else "81"
+    sender_digits = sender_text.lstrip("+")
+    first_octet = "40" if total > 1 else "00"
+    payload = str(message or "").encode("utf-16-be")
+    user_data = payload
+    if total > 1:
+        user_data = bytes((0x05, 0x00, 0x03, reference & 0xFF, total & 0xFF, index & 0xFF)) + payload
+    return (
+        "00"
+        + first_octet
+        + f"{len(sender_digits):02X}"
+        + number_type
+        + _swap_number_digits(sender_digits)
+        + "00"
+        + "08"
+        + "62608211510523"
+        + f"{len(user_data):02X}"
+        + user_data.hex().upper()
+    )
 
 
 def parse_head(text):
@@ -184,6 +215,71 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertTrue(result.continue_read)
         self.assertTrue(state.sms_collector.active)
         self.assertEqual(state.sms_collector.callback_head, "+8613812345678 hello")
+
+    def test_sms_callback_uses_cached_pdu_when_long_log_text_is_corrupted(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        body = "中国电信温馨提醒:尊享来电识别【号码百事通】"
+        part1 = body[:12]
+        part2 = body[12:]
+        lines = [
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu("10086", part1, total=2, index=1),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu("10086", part2, total=2, index=2),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[handler_sms.smsCallback] 10086 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电�",
+            "��别【号码百事通】",
+            "[I]-[ril.proatc] OK",
+        ]
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM5",
+                False,
+                runtime_config(),
+                runtime_callbacks(calls),
+                {},
+            )
+
+        self.assertIn(("sms_popup", (body,)), calls)
+        self.assertIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
+        self.assertFalse(any(
+            item[0] == "sms_popup" and "\ufffd" in item[1][0]
+            for item in calls
+        ))
+
+    def test_sms_callback_collects_pdu_split_at_odd_hex_line_length(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        body = "中国电信温馨提醒:尊享来电识别【号码百事通】"
+        pdu = _incoming_ucs2_pdu("10086", body)
+        lines = [
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80",
+            pdu[:127],
+            pdu[127:],
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[handler_sms.smsCallback] 10086 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电�",
+            "[I]-[ril.proatc] OK",
+        ]
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM5",
+                False,
+                runtime_config(),
+                runtime_callbacks(calls),
+                {},
+            )
+
+        self.assertIn(("sms_popup", (body,)), calls)
 
     def test_run_serial_thread_loop_reads_lines_until_stopped(self):
         calls = []
