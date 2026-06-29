@@ -62,6 +62,26 @@ class SerialSettingsRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, ["closed", "ui"])
 
+    def test_apply_serial_setting_runtime_reports_false_save_result(self):
+        calls = []
+
+        result = apply_serial_setting_runtime(
+            "Auto",
+            "",
+            115200,
+            config=configparser.ConfigParser(),
+            save_config=lambda: False,
+            set_serial_state=lambda *_: calls.append("state"),
+            set_status=lambda *_: calls.append("status"),
+            safe_close_serial=lambda: calls.append("close"),
+            wake_serial=lambda: calls.append("wake"),
+            system_ui=lambda message: calls.append(message),
+        )
+
+        self.assertFalse(result)
+        self.assertIn("串口设置保存失败", calls[-1])
+        self.assertNotIn("close", calls)
+
     def test_open_serial_setting_runtime_wires_dialog_apply(self):
         config = configparser.ConfigParser()
         opened = {}

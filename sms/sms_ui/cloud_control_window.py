@@ -110,7 +110,9 @@ def open_cloud_control_window_runtime(
 
     def save_values(values, win):
         kwargs = cloud_control_save_kwargs(values)
-        save_setting(**kwargs)
+        if save_setting(**kwargs) is None:
+            messagebox.showerror("保存失败", "云端控制配置保存失败，请检查配置文件是否可写。", parent=win)
+            return
         messagebox.showinfo("配置已保存", "云端控制配置已成功保存！", parent=win)
         if kwargs["enabled"]:
             restart_control(show_errors=True)
@@ -119,11 +121,13 @@ def open_cloud_control_window_runtime(
         cloud_log("配置已保存")
 
     def connect_values(values, _win):
-        save_setting(**cloud_control_save_kwargs(values, enabled_override=True))
+        if save_setting(**cloud_control_save_kwargs(values, enabled_override=True)) is None:
+            return
         restart_control(show_errors=True)
 
     def disconnect_values(values, _win):
-        save_setting(**cloud_control_save_kwargs(values, enabled_override=False))
+        if save_setting(**cloud_control_save_kwargs(values, enabled_override=False)) is None:
+            return
         stop_control()
         cloud_log("已手动断开")
 

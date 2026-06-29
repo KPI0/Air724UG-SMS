@@ -3,6 +3,7 @@ from sms_core.serial_runtime import (
     SerialRuntimeConfig,
     run_serial_runtime_thread,
 )
+from sms_core.serial_sender import DEFAULT_SMS_PDU_SEND_COORDINATOR
 from sms_core.status_text import format_connecting_status
 
 
@@ -38,6 +39,10 @@ def build_serial_runtime_callbacks(callbacks):
         send_call_hangup=callbacks["send_call_hangup"],
         show_call_popup=callbacks["show_call_popup"],
         set_local_number=callbacks.get("set_local_number", lambda *_args: None),
+        observe_sms_send_line=callbacks.get(
+            "observe_sms_send_line",
+            lambda line: DEFAULT_SMS_PDU_SEND_COORDINATOR.observe_line(line),
+        ),
     )
 
 
@@ -138,6 +143,10 @@ def build_serial_app_wiring(
         "set_temperature": callbacks["set_temperature"],
         "set_signal": callbacks["set_signal"],
         "set_local_number": callbacks.get("set_local_number", lambda *_args: None),
+        "observe_sms_send_line": callbacks.get(
+            "observe_sms_send_line",
+            lambda line: DEFAULT_SMS_PDU_SEND_COORDINATOR.observe_line(line),
+        ),
         "set_status": callbacks["set_status"],
         "close_call_popup": callbacks["close_call_popup"],
         "send_call_hangup": callbacks["send_call_hangup"],
@@ -234,6 +243,10 @@ def run_serial_reader_namespace_runtime(
             "set_temperature": namespace["set_temperature"],
             "set_signal": namespace["set_signal"],
             "set_local_number": lambda value: namespace.__setitem__("LOCAL_NUMBER", value),
+            "observe_sms_send_line": namespace.get(
+                "SMS_SEND_COORDINATOR",
+                DEFAULT_SMS_PDU_SEND_COORDINATOR,
+            ).observe_line,
             "set_status": namespace["set_status"],
             "close_call_popup": namespace["close_call_popup"],
             "send_call_hangup": namespace["send_call_hangup_command"],

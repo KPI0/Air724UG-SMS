@@ -84,6 +84,17 @@ class CloudHelperTests(unittest.TestCase):
         self.assertEqual(sms["content"], "hello world")
         self.assertIn("hello world", sms["message"])
 
+        traced_sms = build_sms_event_payload(
+            "+8613812345678 26/06/08,12:00:00+32 hello",
+            "hello world",
+            103,
+            identity,
+            "now",
+            metadata={"message_trace_id": "abc123def456"},
+        )
+        self.assertEqual(traced_sms["message_trace_id"], "abc123def456")
+        self.assertEqual(traced_sms["trace_id"], "abc123def456")
+
         status = build_status_payload(104, identity, True, False, "COM5", 115200, "Auto", "now")
         self.assertTrue(status["cloud_connected"])
         self.assertFalse(status["serial_connected"])

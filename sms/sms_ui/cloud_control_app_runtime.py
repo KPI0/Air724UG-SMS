@@ -48,9 +48,11 @@ def save_cloud_control_setting_runtime(
 
     try:
         write_settings(config, settings)
-        save_config()
+        if save_config() is False:
+            raise RuntimeError("配置保存失败")
     except Exception as exc:
         system_ui(f"❌ 云端控制配置保存失败：{exc}", "normal")
+        return None
 
     return settings
 

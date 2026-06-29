@@ -219,8 +219,13 @@ def open_desktop_shortcut_dialog(parent, default_name, on_apply, on_save, center
         name = read_name()
         if name is None:
             return
-        on_save(name)
-        messagebox.showinfo("已保存", "名称已保存，下次可直接应用", parent=win)
+        try:
+            result = on_save(name)
+            if result is False:
+                raise RuntimeError("配置保存失败")
+            messagebox.showinfo("已保存", "名称已保存，下次可直接应用", parent=win)
+        except Exception as exc:
+            messagebox.showerror("失败", str(exc), parent=win)
 
     btns = tk.Frame(frame)
     btns.grid(row=2, column=0, sticky="e")

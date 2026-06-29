@@ -3,6 +3,8 @@ import unittest
 
 from sms_core.serial_sender import (
     SerialCommandResult,
+    SmsPduSendCoordinator,
+    SmsPduSendResponse,
     send_command_with_result_async,
     write_serial_command_sequence_locked,
     write_text_sms_pdu,
@@ -41,6 +43,37 @@ class TrackingLock:
     @property
     def locked(self):
         return self.depth > 0
+
+
+class FakeSmsWaiter:
+    def __init__(self, response=None):
+        self.response = response or SmsPduSendResponse(True)
+        self.waits = []
+        self.cancelled = []
+
+    def wait(self, timeout):
+        self.waits.append(timeout)
+        return self.response
+
+    def cancel(self, error):
+        self.cancelled.append(error)
+
+
+class FakeSmsCoordinator:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.waiters = []
+        self.finished = []
+
+    def begin_segment(self, label=""):
+        response = self.responses.pop(0) if self.responses else SmsPduSendResponse(True)
+        waiter = FakeSmsWaiter(response)
+        waiter.label = label
+        self.waiters.append(waiter)
+        return waiter
+
+    def finish(self, waiter):
+        self.finished.append(waiter)
 
 
 class SerialSenderResultTests(unittest.TestCase):
@@ -93,6 +126,7 @@ class SerialSenderResultTests(unittest.TestCase):
             "A" * 100,
             push_debug=debug.append,
             sleep_func=lambda _seconds: None,
+            response_coordinator=FakeSmsCoordinator([SmsPduSendResponse(True), SmsPduSendResponse(True)]),
         )
 
         self.assertTrue(result)
@@ -109,6 +143,74 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual(len(pdu_payloads), 2)
         self.assertTrue(any("(1/2)" in line for line in debug))
         self.assertTrue(any("(2/2)" in line for line in debug))
+
+    def test_write_text_sms_pdu_without_response_coordinator_fails_before_pdu(self):
+        serial_obj = FakeSerial()
+        debug = []
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "hello",
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: None,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(serial_obj.writes, [])
+        self.assertTrue(any("未配置短信发送确认器" in line for line in debug))
+
+    def test_write_text_sms_pdu_times_out_when_modem_does_not_confirm(self):
+        serial_obj = FakeSerial()
+        debug = []
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "hello",
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: None,
+            response_coordinator=SmsPduSendCoordinator(),
+            segment_timeout=0,
+        )
+
+        self.assertFalse(result)
+        self.assertTrue(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
+        self.assertTrue(any("等待短信发送确认超时" in line for line in debug))
+
+    def test_sms_pdu_send_coordinator_waits_for_cmgs_and_ok(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("+CMGS: 17")
+        self.assertFalse(waiter.done())
+        coordinator.observe_line("[I]-[ril.proatc] OK")
+        response = waiter.wait(0)
+        coordinator.finish(waiter)
+
+        self.assertTrue(response.ok)
+
+    def test_sms_pdu_send_coordinator_reports_cms_error(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("+CMS ERROR: 500")
+        response = waiter.wait(0)
+        coordinator.finish(waiter)
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error, "+CMS ERROR: 500")
+
+    def test_sms_pdu_send_coordinator_reports_luat_false_error(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("[I]-[lib_sms rsp] +CMGS AT+CMGS=12 false ERROR")
+        response = waiter.wait(0)
+        coordinator.finish(waiter)
+
+        self.assertFalse(response.ok)
+        self.assertIn("false ERROR", response.error)
 
     def test_write_serial_command_sequence_locked_releases_lock_while_waiting(self):
         serial_obj = FakeSerial()
@@ -144,6 +246,7 @@ class SerialSenderResultTests(unittest.TestCase):
             push_debug=debug.append,
             port_ui=lambda *args: ui_lines.append(args),
             sleep_func=lambda seconds: sleep_calls.append((seconds, lock.locked)),
+            response_coordinator=FakeSmsCoordinator([SmsPduSendResponse(True), SmsPduSendResponse(True)]),
         )
 
         self.assertTrue(result)
@@ -151,6 +254,32 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.0, 1.5, 1.0])
         self.assertEqual(ui_lines[0], ("📤 发送短信至 +1234：", "normal"))
         self.assertIn(">>> 发送: AT+CMGF=0\\r\\n", debug)
+
+    def test_write_text_sms_pdu_locked_fails_on_segment_error_and_stops(self):
+        serial_obj = FakeSerial()
+        lock = TrackingLock()
+        debug = []
+        ui_lines = []
+        coordinator = FakeSmsCoordinator([
+            SmsPduSendResponse(True),
+            SmsPduSendResponse(False, "+CMS ERROR: 500"),
+        ])
+
+        result = write_text_sms_pdu_locked(
+            lock,
+            lambda: serial_obj,
+            "+1234",
+            "A" * 100,
+            push_debug=debug.append,
+            port_ui=lambda *args: ui_lines.append(args),
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(len(coordinator.waiters), 2)
+        self.assertTrue(any("+CMS ERROR: 500" in line for line in debug))
+        self.assertTrue(any("+CMS ERROR: 500" in item[0] for item in ui_lines if item))
 
 
 if __name__ == "__main__":

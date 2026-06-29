@@ -273,6 +273,13 @@ class SerialParsersTests(unittest.TestCase):
         """Should recognize AT commands as boundaries."""
         self.assertTrue(is_sms_collection_boundary("AT+CMGS="))
         self.assertTrue(is_sms_collection_boundary("+CMTI: "))
+        self.assertTrue(is_sms_collection_boundary("+CIEV: \"MESSAGE\",1"))
+        self.assertTrue(is_sms_collection_boundary("+CME ERROR: 10"))
+
+    def test_is_sms_collection_boundary_keeps_numeric_plus_sms_content(self):
+        """Should not treat SMS continuation lines starting with phone-like +digits as AT boundaries."""
+        self.assertFalse(is_sms_collection_boundary("+8613812345678 可联系客服"))
+        self.assertFalse(is_sms_collection_boundary("+100.00 元到账"))
 
     def test_is_sms_collection_boundary_recognizes_debug_marker(self):
         """Should recognize >>> as boundary."""

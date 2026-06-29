@@ -83,13 +83,17 @@ def open_third_push_window_runtime(
 
     def save_values(values, win):
         kwargs = third_push_save_kwargs(values)
-        save_setting(**kwargs)
+        if save_setting(**kwargs) is None:
+            messagebox.showerror("保存失败", "三方推送配置保存失败，请检查配置文件是否可写。", parent=win)
+            return
         messagebox.showinfo("配置已保存", "三方推送配置已成功保存！", parent=win)
         system_ui(third_push_saved_status(kwargs["enabled"], kwargs["notify_type"]), "normal")
 
     def test_values(values, win):
         kwargs = third_push_save_kwargs(values)
-        save_setting(**kwargs)
+        if save_setting(**kwargs) is None:
+            messagebox.showerror("保存失败", "三方推送配置保存失败，请检查配置文件是否可写。", parent=win)
+            return
         queued = enqueue_push(
             THIRD_PUSH_TEST_MESSAGE,
             show_success=True,

@@ -131,6 +131,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             namespace,
             "head",
             "body",
+            {"message_trace_id": "trace-1"},
             send_runtime=lambda head, body, **kwargs: calls.append((head, body, kwargs)) or "scheduled",
         )
 
@@ -138,6 +139,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         head, body, forwarded = calls[0]
         self.assertEqual((head, body), ("head", "body"))
         self.assertTrue(forwarded["authorized"])
+        self.assertEqual(forwarded["metadata"], {"message_trace_id": "trace-1"})
         self.assertEqual(forwarded["timestamp"](), 123)
         self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
         self.assertEqual(forwarded["send_payload"]("ws", {"x": 1}), ("send_payload", "ws", {"x": 1}))

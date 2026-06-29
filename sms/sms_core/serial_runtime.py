@@ -1,26 +1,36 @@
 from dataclasses import dataclass
 import codecs
+from datetime import datetime
+import os
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
 from sms_core.call_events import CallState, handle_call_line, ring_timeout_expired
+from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_line_effects import apply_serial_line_effects, push_serial_debug_insights
 from sms_core.serial_sms import SmsPendingCollector, flush_pending_sms, handle_sms_collector_line
 from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
+from sms_core.sms_receive_pipeline import SmsReceivePipeline
 
 
 @dataclass
 class SerialRuntimeState:
     sms_collector: SmsPendingCollector
     sms_pdu_cache: SmsPduCorrectionCache
+    long_sms_assembler: LongSmsAssembler
+    sms_pipeline: SmsReceivePipeline
     call_state: CallState
 
     @classmethod
     def create(cls, parse_callback_head):
         sms_pdu_cache = SmsPduCorrectionCache()
+        long_sms_assembler = LongSmsAssembler(parse_callback_head)
+        sms_pipeline = SmsReceivePipeline(parse_callback_head, sms_pdu_cache, long_sms_assembler)
         return cls(
-            sms_collector=SmsPendingCollector(parse_callback_head, correction_cache=sms_pdu_cache),
+            sms_collector=SmsPendingCollector(parse_callback_head),
             sms_pdu_cache=sms_pdu_cache,
+            long_sms_assembler=long_sms_assembler,
+            sms_pipeline=sms_pipeline,
             call_state=CallState(),
         )
 
@@ -68,6 +78,35 @@ class SerialRuntimeCallbacks:
     send_call_hangup: object
     show_call_popup: object
     set_local_number: object = lambda *_args: None
+    observe_sms_send_line: object = lambda *_args: None
+
+
+def build_sms_diagnostic_log(config, callbacks, now_func=None):
+    def log(message, tag="normal"):
+        _push_sms_diagnostic_debug(callbacks.push_serial_debug, message)
+        _write_sms_diagnostic_file_log(config, callbacks.file_log, message, now_func=now_func)
+
+    return log
+
+
+def _push_sms_diagnostic_debug(push_serial_debug, message):
+    try:
+        push_serial_debug(message)
+    except Exception:
+        pass
+
+
+def _write_sms_diagnostic_file_log(config, file_log, message, now_func=None):
+    try:
+        current = (now_func or datetime.now)()
+        today = current.strftime("%Y-%m-%d")
+        prefix = str(getattr(config, "log_prefix", "") or "system").replace(":", "_")
+        log_dir = str(getattr(config, "log_dir", "") or ".")
+        path = os.path.join(log_dir, f"sms_{prefix}_{today}.txt")
+        line = f"{current:%Y-%m-%d %H:%M:%S} {message}\n"
+        file_log((path, line))
+    except Exception:
+        pass
 
 
 class SerialLineDecoder:
@@ -113,7 +152,8 @@ class SerialLineDecoder:
         return lines
 
 
-def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state):
+def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=None):
+    sms_diagnostic_log = build_sms_diagnostic_log(config, callbacks)
     return flush_pending_sms(
         state.sms_collector,
         config.keywords,
@@ -129,6 +169,9 @@ def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state):
         callbacks.show_sms_popup,
         callbacks.file_log,
         callbacks.system_ui,
+        assembler=state.sms_pipeline,
+        now=now,
+        concat_log=sms_diagnostic_log,
     )
 
 
@@ -152,11 +195,16 @@ def handle_serial_runtime_line(
             callbacks.close_call_popup,
         )
 
-    state.sms_pdu_cache.observe_line(line, now)
+    sms_diagnostic_log = build_sms_diagnostic_log(config, callbacks)
+    state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
+    try:
+        callbacks.observe_sms_send_line(line)
+    except Exception:
+        pass
 
     if not line:
         if state.sms_collector.expired(now):
-            flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state)
+            flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now)
         return SerialRuntimeResult(continue_read=True)
 
     apply_serial_line_effects(
@@ -199,7 +247,7 @@ def handle_serial_runtime_line(
         state.sms_collector,
         line,
         now,
-        lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state),
+        lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now),
     )
     return SerialRuntimeResult(continue_read=sms_decision.continue_read)
 
@@ -221,12 +269,21 @@ def run_serial_thread_loop(
     handle_error,
     wait_before_retry,
     safe_close_serial,
+    monotonic=time.monotonic,
+    empty_target_min_delay=0.05,
 ):
     while should_continue():
         target_port = get_target_port()
         try:
+            resolve_started = monotonic()
             target_port = resolve_target_port()
             if not target_port:
+                try:
+                    resolve_elapsed = monotonic() - resolve_started
+                except Exception:
+                    resolve_elapsed = 0.0
+                if resolve_elapsed < float(empty_target_min_delay):
+                    wait_before_retry()
                 continue
 
             set_connecting_status(target_port)

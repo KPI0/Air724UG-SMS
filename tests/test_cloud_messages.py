@@ -137,6 +137,21 @@ class CloudMessageTests(unittest.TestCase):
         })
         self.assertEqual(calls, [("hide",)])
 
+    def test_dispatch_cloud_action_hides_suppressed_sms_pdu_from_log(self):
+        import asyncio
+
+        calls = []
+        pdu = "0011000D916831..."
+        payload = asyncio.run(self._dispatch(
+            "send_at",
+            {"cmd": pdu, "sms_log": "suppress"},
+            calls,
+        ))
+
+        self.assertIn(("send", pdu, {"cmd": pdu, "sms_log": "suppress"}), calls)
+        self.assertFalse(any(call[0] == "log" and pdu in call[1] for call in calls))
+        self.assertEqual(payload["type"], "send_at_result")
+
 
 if __name__ == "__main__":
     unittest.main()

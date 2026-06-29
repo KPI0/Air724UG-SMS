@@ -103,10 +103,12 @@ def request_cloud_device_imei_worker(
 ):
     try:
         with serial_lock:
-            result = write_command_result(get_serial(), IMEI_READ_COMMAND)
-            if not result.ok:
-                cloud_log(f"读取IMEI失败：{result.error}")
-                return False
+            serial_obj = get_serial()
+        result = write_command_result(serial_obj, IMEI_READ_COMMAND)
+        if not result.ok:
+            cloud_log(f"读取IMEI失败：{result.error}")
+            return False
+        with serial_lock:
             set_query_deadline(monotonic() + IMEI_QUERY_WINDOW_SECONDS)
 
         if push_serial_debug is not None:

@@ -33,9 +33,10 @@ def save_third_push_setting_runtime(
 
     try:
         write_settings(config, next_settings)
-        save_config()
+        if save_config() is False:
+            raise RuntimeError("配置保存失败")
     except Exception:
-        pass
+        return None
 
     return next_settings
 

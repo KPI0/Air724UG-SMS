@@ -41,6 +41,7 @@ from sms_core.serial_parsers import (
     parse_temperature,
 )
 from sms_core.serial_sender import (
+    SmsPduSendResponse,
     write_serial_command,
     write_serial_command_sequence,
     write_text_sms_pdu,
@@ -86,6 +87,23 @@ class CoreHelperTests(unittest.TestCase):
 
         def flush(self):
             self.flush_count += 1
+
+    class FakeSmsWaiter:
+        def wait(self, _timeout):
+            return SmsPduSendResponse(True)
+
+        def cancel(self, _error):
+            pass
+
+    class FakeSmsCoordinator:
+        def __init__(self):
+            self.wait_count = 0
+
+        def begin_segment(self, label=""):
+            return CoreHelperTests.FakeSmsWaiter()
+
+        def finish(self, waiter):
+            self.wait_count += 1
 
     def test_normalize_call_number_strips_china_prefix(self):
         self.assertEqual(normalize_call_number("+8613812345678"), "13812345678")
@@ -299,12 +317,12 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(collector.expired(11.1))
 
         self.assertEqual(collector.consume_line("second", now=11.2), "consumed")
-        self.assertEqual(collector.consume_line("third", now=11.3), "flush")
-        pending = collector.flush()
+        self.assertEqual(collector.consume_line("third", now=11.3), "consumed")
+        self.assertEqual(collector.consume_line("[I]-[ril] next", now=11.4), "boundary")
+        collected = collector.flush()
 
-        self.assertEqual(pending.callback_head, "+8613812345678 26/06/08,12:00:00+32 first")
-        self.assertEqual(pending.full_msg, "26/06/08,12:00:00+32 firstsecondthird")
-        self.assertEqual(pending.display_lines[0], "\U0001f4e9 \u6536\u5230\u77ed\u4fe1\uff1a")
+        self.assertEqual(collected.callback_text, "+8613812345678 26/06/08,12:00:00+32 first")
+        self.assertEqual(collected.follow_lines, ["second", "third"])
         self.assertFalse(collector.active)
 
     def test_sms_processing_helpers(self):
@@ -355,8 +373,10 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(result, "shown")
         self.assertIn(("push", "hello keyword", "sms"), events)
         self.assertIn(("cloud", "head", "hello keyword"), events)
-        self.assertIn(("ui", "header", "normal"), events)
-        self.assertIn(("ui", "hello keyword", "sms"), events)
+        self.assertIn(("ui", "📩 收到短信：", "normal"), events)
+        self.assertIn(("ui", "号码：未知号码", "sms"), events)
+        self.assertIn(("ui", "时间：未知时间", "sms"), events)
+        self.assertIn(("ui", "内容：hello keyword", "sms"), events)
         self.assertIn(("sound",), events)
         self.assertIn(("popup", "hello keyword"), events)
         self.assertFalse([event for event in events if event[0] == "file"])
@@ -464,6 +484,7 @@ class CoreHelperTests(unittest.TestCase):
                 push_debug=debug_lines.append,
                 port_ui=lambda *args: ui_lines.append(args),
                 sleep_func=lambda _seconds: None,
+                response_coordinator=self.FakeSmsCoordinator(),
             )
         )
         self.assertEqual(debug_lines, [">>> 发送失败: 串口未连接", ">>> 发送失败: 串口未连接"])
@@ -482,6 +503,7 @@ class CoreHelperTests(unittest.TestCase):
                 push_debug=debug_lines.append,
                 port_ui=lambda *args: ui_lines.append(args),
                 sleep_func=lambda _seconds: None,
+                response_coordinator=self.FakeSmsCoordinator(),
             )
         )
 

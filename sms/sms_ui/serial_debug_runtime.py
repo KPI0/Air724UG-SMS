@@ -96,9 +96,10 @@ class SerialDebugPauseController:
 
     def _append_banner(self, text):
         try:
+            view_position = _capture_text_view_position(self.text_widget)
             self.text_widget.config(state="normal")
             self.text_widget.insert("end", text)
-            self.text_widget.see("end")
+            _restore_text_view_position(self.text_widget, view_position)
             self.text_widget.config(state="disabled")
         except Exception:
             pass
@@ -203,3 +204,34 @@ def _update_drop_label(drop_label, drop_count):
         drop_label.config(text=f"队列满丢弃：{drop_count} 行")
     else:
         drop_label.config(text="")
+
+
+def _capture_text_view_position(text_widget):
+    try:
+        if text_widget.yview()[1] >= 0.98:
+            return ("bottom", None)
+    except Exception:
+        pass
+    try:
+        return ("index", text_widget.index("@0,0"))
+    except Exception:
+        pass
+    try:
+        return ("fraction", text_widget.yview()[0])
+    except Exception:
+        return None
+
+
+def _restore_text_view_position(text_widget, position):
+    if not position:
+        return
+    kind, value = position
+    try:
+        if kind == "bottom":
+            text_widget.see("end")
+        elif kind == "index":
+            text_widget.yview(value)
+        else:
+            text_widget.yview_moveto(value)
+    except Exception:
+        pass

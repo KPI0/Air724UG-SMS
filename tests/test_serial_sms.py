@@ -6,8 +6,6 @@ from sms_core.serial_sms import (
     flush_pending_sms,
     handle_sms_collector_line,
 )
-
-
 def parse_head(text):
     return ("+8613812345678", text.split(" ", 1)[1])
 
@@ -88,6 +86,66 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertEqual(boundary.action, "boundary")
         self.assertFalse(boundary.continue_read)
         self.assertEqual(flushed, ["flush"])
+
+    def test_handle_sms_collector_line_keeps_plus_digit_continuation(self):
+        collector = SmsPendingCollector(parse_head)
+        collector.start("+8613812345678 first", now=10.0)
+        flushed = []
+
+        consumed = handle_sms_collector_line(
+            collector,
+            "+100.00 元到账",
+            now=10.1,
+            flush_callback=lambda: flushed.append("flush"),
+        )
+
+        self.assertEqual(consumed.action, "consumed")
+        self.assertEqual(collector.follow_lines, ["+100.00 元到账"])
+        self.assertEqual(flushed, [])
+
+        boundary = handle_sms_collector_line(
+            collector,
+            "+CMTI: \"SM\",1",
+            now=10.2,
+            flush_callback=lambda: flushed.append("flush"),
+        )
+
+        self.assertEqual(boundary.action, "boundary")
+        self.assertEqual(flushed, ["flush"])
+
+    def test_collector_flush_returns_raw_callback_output(self):
+        collector = SmsPendingCollector(parse_head)
+        collector.start("+8613812345678 first", now=10.0)
+
+        self.assertEqual(collector.consume_line("follow line", now=10.1), "consumed")
+        collected = collector.flush()
+
+        self.assertEqual(collected.callback_text, "+8613812345678 first")
+        self.assertEqual(collected.follow_lines, ["follow line"])
+
+    def test_collector_does_not_parse_sms_content_while_buffering(self):
+        def fail_parse(_text):
+            raise AssertionError("collector must not parse SMS content")
+
+        collector = SmsPendingCollector(fail_parse)
+
+        self.assertTrue(collector.start("+8613812345678 first", now=10.0))
+        self.assertEqual(collector.consume_line("follow line", now=10.1), "consumed")
+        collected = collector.flush()
+
+        self.assertEqual(collected.callback_text, "+8613812345678 first")
+        self.assertEqual(collected.follow_lines, ["follow line"])
+
+    def test_collector_respects_max_follow_lines(self):
+        collector = SmsPendingCollector(parse_head, max_follow_lines=2)
+        collector.start("+8613812345678 first", now=10.0)
+
+        self.assertEqual(collector.consume_line("line1", now=10.1), "consumed")
+        self.assertEqual(collector.consume_line("line2", now=10.2), "consumed")
+        self.assertEqual(collector.consume_line("line3", now=10.3), "flush")
+        collected = collector.flush()
+
+        self.assertEqual(collected.follow_lines, ["line1", "line2"])
 
     def test_flush_pending_sms_delegates_to_sms_processing(self):
         collector = SmsPendingCollector(parse_head)

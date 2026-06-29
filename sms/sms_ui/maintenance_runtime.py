@@ -15,6 +15,13 @@ def log_cleanup_status(days, interval_hours):
     return f"✅ 已启用自动日志清理：保留 {days} 天（每 {interval_hours} 小时执行一次）"
 
 
+def _save_config_or_raise(save_config):
+    result = save_config()
+    if result is False:
+        raise RuntimeError("配置保存失败")
+    return True
+
+
 @dataclass
 class AutoLogCleanupState:
     after_id: object = None
@@ -129,18 +136,20 @@ def apply_log_cleanup_runtime(
     schedule_cleanup,
     interval_hours,
 ):
-    set_cleanup_state(days, True)
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
         config.set("ui", "auto_log_cleanup", "1")
         config.set("ui", "log_retention_days", str(days))
-        save_config()
-    except Exception:
-        pass
+        _save_config_or_raise(save_config)
+    except Exception as exc:
+        system_ui(f"❌ 自动日志清理配置保存失败：{exc}", "normal")
+        return False
 
+    set_cleanup_state(days, True)
     system_ui(log_cleanup_status(days, interval_hours), "normal")
     schedule_cleanup(restart=True, first_delay_sec=60)
+    return True
 
 
 def open_log_cleanup_dialog_runtime(
@@ -266,7 +275,7 @@ def save_update_proxy_config(config, api_proxy_base, proxy_base, save_config):
     ensure_update_config(config)
     config.set("update", "proxy_base", normalize_proxy_base(proxy_base))
     config.set("update", "api_proxy_base", normalize_proxy_base(api_proxy_base))
-    save_config()
+    return _save_config_or_raise(save_config)
 
 
 def test_update_proxy_async(
@@ -314,7 +323,7 @@ def open_update_proxy_dialog_runtime(
     ensure_update_config(config)
 
     def save(api_proxy_base, proxy_base, _win):
-        save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
+        return save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
 
     def test_connection(api_proxy_base, proxy_base, on_success, on_error):
         if log_error is None:

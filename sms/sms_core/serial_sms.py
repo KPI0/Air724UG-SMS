@@ -12,6 +12,20 @@ class PendingSms:
     callback_head: str
     full_msg: str
     display_lines: list
+    concat_info: object = None
+    concat_body: object = None
+    concat_sender: object = None
+    concat_timestamp: object = None
+    concat_reference: object = None
+    concat_reference_bits: object = None
+    concat_total: object = None
+    message_trace_id: object = None
+
+
+@dataclass
+class CollectedSmsCallback:
+    callback_text: str
+    follow_lines: list
 
 
 @dataclass
@@ -23,28 +37,26 @@ class SmsLineDecision:
 
 
 class SmsPendingCollector:
+    """Collect raw smsCallback frame lines; long-SMS semantics live in LongSmsAssembler."""
+
     def __init__(
         self,
-        parse_callback_head,
+        parse_callback_head=None,
         correction_cache=None,
         initial_timeout: float = 1.0,
         fragment_timeout: float = 0.4,
-        max_follow_lines: int = 40,
+        max_follow_lines=None,
     ):
         self.parse_callback_head = parse_callback_head
-        self.correction_cache = correction_cache
         self.initial_timeout = initial_timeout
         self.fragment_timeout = fragment_timeout
         self.max_follow_lines = max_follow_lines
         self.reset()
 
     def reset(self):
-        self.parts = []
-        self.display_lines = []
         self.callback_head = ""
-        self.ignore_follow_lines = False
+        self.follow_lines = []
         self.deadline = 0.0
-        self.follow_lines_left = 0
         self.active = False
 
     def expired(self, now: float) -> bool:
@@ -56,20 +68,9 @@ class SmsPendingCollector:
             self.reset()
             return False
 
-        original_text = text
-        if self.correction_cache is not None:
-            text = self.correction_cache.correct_callback_text(
-                text,
-                self.parse_callback_head,
-                now,
-            )
-        _sender, body = self.parse_callback_head(text)
         self.callback_head = text
-        self.parts = [body or text]
-        self.display_lines = ["📩 收到短信：", text]
-        self.ignore_follow_lines = text != original_text
+        self.follow_lines = []
         self.deadline = now + self.initial_timeout
-        self.follow_lines_left = self.max_follow_lines
         self.active = True
         return True
 
@@ -77,28 +78,33 @@ class SmsPendingCollector:
         if not self.active:
             return None
 
-        pending = PendingSms(
-            callback_head=self.callback_head,
-            full_msg="".join([part for part in self.parts if part]).strip(),
-            display_lines=list(self.display_lines),
+        collected = CollectedSmsCallback(
+            callback_text=self.callback_head,
+            follow_lines=list(self.follow_lines),
         )
         self.reset()
-        return pending
+        return collected
 
     def consume_line(self, line: str, now: float) -> str:
         if not self.active:
             return "pass"
         if is_sms_collection_boundary(line):
             return "boundary"
-        if self.follow_lines_left <= 0:
+        if self._follow_line_limit_reached():
             return "flush"
 
-        if not self.ignore_follow_lines:
-            self.parts.append(line)
-            self.display_lines.append(line)
+        self.follow_lines.append(line)
         self.deadline = now + self.fragment_timeout
-        self.follow_lines_left -= 1
-        return "flush" if self.follow_lines_left <= 0 else "consumed"
+        return "consumed"
+
+    def _follow_line_limit_reached(self) -> bool:
+        if self.max_follow_lines is None:
+            return False
+        try:
+            limit = int(self.max_follow_lines)
+        except Exception:
+            return False
+        return limit >= 0 and len(self.follow_lines) >= limit
 
 
 def callback_body_from_line(line: str, prefix: str = SMS_CALLBACK_PREFIX) -> str:
@@ -152,9 +158,32 @@ def flush_pending_sms(
     show_sms_popup,
     file_log,
     system_ui,
+    assembler=None,
+    now=None,
+    concat_log=None,
 ):
+    collected = collector.flush()
+    if collected is None:
+        pending = None
+    elif hasattr(assembler, "add_collected"):
+        pending = assembler.add_collected(collected, now=now, log=concat_log)
+        if pending is None:
+            return "pending"
+    else:
+        callback_head = collected.callback_text
+        _sender, body = collector.parse_callback_head(callback_head) if getattr(collector, "parse_callback_head", None) else ("", callback_head)
+        full_msg = "".join([body or callback_head] + list(collected.follow_lines or [])).strip()
+        pending = PendingSms(
+            callback_head=callback_head,
+            full_msg=full_msg,
+            display_lines=["📩 收到短信：", callback_head] + list(collected.follow_lines or []),
+        )
+    if assembler is not None and not hasattr(assembler, "add_collected"):
+        pending = assembler.add_message(pending, now=now, log=concat_log)
+        if pending is None:
+            return "pending"
     return process_pending_sms(
-        collector.flush(),
+        pending,
         keywords,
         log_unmatched_sms,
         log_dir,

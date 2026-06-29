@@ -20,10 +20,17 @@ class DesktopShortcutRuntimeTests(unittest.TestCase):
         config = configparser.ConfigParser()
         calls = []
 
-        save_desktop_shortcut_name_runtime(config, "My SMS", lambda: calls.append("save"))
+        result = save_desktop_shortcut_name_runtime(config, "My SMS", lambda: calls.append("save"))
 
         self.assertEqual(config.get("ui", "desktop_shortcut_name"), "My SMS")
         self.assertEqual(calls, ["save"])
+        self.assertTrue(result)
+
+    def test_save_desktop_shortcut_name_runtime_rejects_save_failure(self):
+        config = configparser.ConfigParser()
+
+        with self.assertRaises(RuntimeError):
+            save_desktop_shortcut_name_runtime(config, "My SMS", lambda: False)
 
     def test_open_desktop_shortcut_dialog_runtime_applies_create_now(self):
         config = configparser.ConfigParser()
@@ -72,6 +79,23 @@ class DesktopShortcutRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[1], ("save",))
         self.assertIn("New", calls[2][1][0])
         self.assertEqual(config.get("ui", "desktop_shortcut_name"), "New")
+
+    def test_open_desktop_shortcut_dialog_runtime_propagates_save_failure(self):
+        config = configparser.ConfigParser()
+
+        def open_dialog(_parent, _default_name, _on_apply, on_save, _center_window):
+            on_save("New")
+
+        with self.assertRaises(RuntimeError):
+            open_desktop_shortcut_dialog_runtime(
+                "root",
+                config=config,
+                save_config=lambda: False,
+                create_shortcut=lambda name: None,
+                system_ui=lambda *args: None,
+                center_window="center",
+                open_dialog=open_dialog,
+            )
 
 
 if __name__ == "__main__":

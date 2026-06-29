@@ -205,6 +205,7 @@ def append_serial_debug_lines_once(
     if not lines:
         return False
 
+    was_at_bottom = _text_view_is_at_bottom(text_widget)
     all_lines.extend(lines)
     if len(all_lines) > max_store_lines:
         all_lines[:] = all_lines[-max_store_lines:]
@@ -233,9 +234,17 @@ def append_serial_debug_lines_once(
     except Exception:
         pass
 
-    text_widget.see("end")
+    if was_at_bottom:
+        text_widget.see("end")
     text_widget.config(state="disabled")
     return True
+
+
+def _text_view_is_at_bottom(text_widget, threshold=0.98):
+    try:
+        return text_widget.yview()[1] >= threshold
+    except Exception:
+        return True
 
 
 def reset_serial_debug_window_state(

@@ -18,7 +18,16 @@ except ImportError:
         @staticmethod
         def Beep(frequency, duration):
             pass
+        @staticmethod
+        def MessageBeep(*args, **kwargs):
+            pass
+        @staticmethod
+        def PlaySound(*args, **kwargs):
+            pass
         MB_OK = 0
+        MB_ICONASTERISK = 0
+        SND_FILENAME = 0
+        SND_ASYNC = 0
 
 # ---- 第三方库 ----
 import serial
@@ -156,7 +165,7 @@ def _initialize_paths_and_constants():
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.7.4"
+    APP_VERSION = "3.7.5"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"

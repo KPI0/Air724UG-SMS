@@ -1,6 +1,52 @@
 import unittest
 
-from sms_core.sms_pdu import encode_text_sms_pdu, encode_text_sms_pdus, measure_text_sms_pdus
+from sms_core.sms_pdu import (
+    decode_concat_udh,
+    decode_received_pdu,
+    encode_text_sms_pdu,
+    encode_text_sms_pdus,
+    measure_text_sms_pdus,
+)
+
+
+def _swap_number_digits(number):
+    digits = str(number or "").lstrip("+")
+    if len(digits) % 2:
+        digits += "F"
+    return "".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2))
+
+
+def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1, ref_bits=8, force_first_octet=None):
+    sender_text = str(sender or "")
+    number_type = "91" if sender_text.startswith("+") else "81"
+    sender_digits = sender_text.lstrip("+")
+    first_octet = force_first_octet if force_first_octet is not None else ("40" if total > 1 else "00")
+    payload = str(message or "").encode("utf-16-be")
+    user_data = payload
+    if total > 1 and ref_bits == 16:
+        user_data = bytes((
+            0x06,
+            0x08,
+            0x04,
+            (reference >> 8) & 0xFF,
+            reference & 0xFF,
+            total & 0xFF,
+            index & 0xFF,
+        )) + payload
+    elif total > 1:
+        user_data = bytes((0x05, 0x00, 0x03, reference & 0xFF, total & 0xFF, index & 0xFF)) + payload
+    return (
+        "00"
+        + first_octet
+        + f"{len(sender_digits):02X}"
+        + number_type
+        + _swap_number_digits(sender_digits)
+        + "00"
+        + "08"
+        + "62608211510523"
+        + f"{len(user_data):02X}"
+        + user_data.hex().upper()
+    )
 
 
 class SmsPduTests(unittest.TestCase):
@@ -91,6 +137,12 @@ class SmsPduTests(unittest.TestCase):
         pdu2, _ = encode_text_sms_pdu("  +1234  ", "Test")
 
         self.assertEqual(pdu1, pdu2)
+
+    def test_encode_text_sms_pdu_rejects_invalid_phone_characters(self):
+        for phone in ("+12 34", "12-34", "++1234", "+"):
+            with self.subTest(phone=phone):
+                with self.assertRaises(ValueError):
+                    encode_text_sms_pdu(phone, "Test")
 
     def test_encode_text_sms_pdu_includes_udh_marker(self):
         """Should include correct PDU header markers."""
@@ -184,6 +236,72 @@ class SmsPduTests(unittest.TestCase):
             valid_hex = False
 
         self.assertTrue(valid_hex)
+
+    def test_decode_concat_udh_supports_8bit_reference(self):
+        info = decode_concat_udh("0500032A0302")
+
+        self.assertEqual((info.reference, info.total, info.index, info.reference_bits), (0x2A, 3, 2, 8))
+
+    def test_decode_concat_udh_supports_16bit_reference(self):
+        info = decode_concat_udh("06080412340302")
+
+        self.assertEqual((info.reference, info.total, info.index, info.reference_bits), (0x1234, 3, 2, 16))
+
+    def test_decode_received_pdu_extracts_concat_metadata(self):
+        decoded = decode_received_pdu(
+            _incoming_ucs2_pdu(
+                "+8613812345678",
+                "第二段",
+                reference=0x1234,
+                total=3,
+                index=2,
+                ref_bits=16,
+            )
+        )
+
+        self.assertEqual(decoded.sender, "+8613812345678")
+        self.assertEqual(decoded.body, "第二段")
+        self.assertEqual(
+            (decoded.reference, decoded.total, decoded.index, decoded.reference_bits),
+            (0x1234, 3, 2, 16),
+        )
+
+    def test_decode_received_pdu_falls_back_to_concat_header_without_udhi_bit(self):
+        decoded = decode_received_pdu(
+            _incoming_ucs2_pdu(
+                "10086",
+                "第一段",
+                reference=0x2A,
+                total=2,
+                index=1,
+                force_first_octet="00",
+            )
+        )
+
+        self.assertEqual(decoded.body, "第一段")
+        self.assertEqual(
+            (decoded.reference, decoded.total, decoded.index, decoded.reference_bits),
+            (0x2A, 2, 1, 8),
+        )
+
+    def test_decode_received_pdu_falls_back_to_16bit_concat_header_without_udhi_bit(self):
+        decoded = decode_received_pdu(
+            _incoming_ucs2_pdu(
+                "10086",
+                "第二段",
+                reference=0x1234,
+                total=3,
+                index=2,
+                ref_bits=16,
+                force_first_octet="00",
+            )
+        )
+
+        self.assertEqual(decoded.body, "第二段")
+        self.assertEqual(
+            (decoded.reference, decoded.total, decoded.index, decoded.reference_bits),
+            (0x1234, 3, 2, 16),
+        )
 
 
 if __name__ == "__main__":

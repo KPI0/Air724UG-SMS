@@ -5,11 +5,18 @@ def desktop_shortcut_default_name(config, fallback=DEFAULT_DESKTOP_SHORTCUT_NAME
     return config.get("ui", "desktop_shortcut_name", fallback=fallback)
 
 
+def _save_config_or_raise(save_config):
+    result = save_config()
+    if result is False:
+        raise RuntimeError("配置保存失败")
+    return True
+
+
 def save_desktop_shortcut_name_runtime(config, name, save_config):
     if not config.has_section("ui"):
         config["ui"] = {}
     config.set("ui", "desktop_shortcut_name", name)
-    save_config()
+    return _save_config_or_raise(save_config)
 
 
 def open_desktop_shortcut_dialog_runtime(

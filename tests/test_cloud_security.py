@@ -1,5 +1,6 @@
 import unittest
 import time
+import json
 
 from sms_core.cloud_security import (
     CloudReplayCheckResult,
@@ -13,6 +14,10 @@ from sms_core.cloud_security import (
 )
 
 
+def json_text(payload):
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class CloudSecurityTests(unittest.TestCase):
     def test_safe_preview_masks_secret_fields(self):
         """Sensitive fields should be masked in preview output."""
@@ -23,6 +28,39 @@ class CloudSecurityTests(unittest.TestCase):
         self.assertNotIn("abc123", preview)
         self.assertNotIn("xyz", preview)
         self.assertIn("hello", preview)
+
+    def test_safe_preview_keeps_regular_at_command_visible(self):
+        preview = safe_preview('{"cmd":"ATI","type":"cmd"}')
+
+        self.assertIn("ATI", preview)
+
+    def test_safe_preview_masks_suppressed_sms_pdu_command(self):
+        pdu = "0011000D916831..."
+        preview = safe_preview(json_text({
+            "cmd": pdu,
+            "command": pdu,
+            "data": pdu,
+            "sms_log": "suppress",
+        }))
+
+        self.assertNotIn(pdu, preview)
+        self.assertIn("已隐藏", preview)
+
+    def test_safe_preview_masks_sms_summary_metadata(self):
+        phone = "+8613812345678"
+        message = "验证码 1234"
+        preview = safe_preview(json_text({
+            "cmd": "AT+CMGF=0",
+            "command_kind": "send_sms",
+            "sms_log": "summary",
+            "sms_phone": phone,
+            "sms_message": message,
+        }))
+
+        self.assertIn("AT+CMGF=0", preview)
+        self.assertNotIn(phone, preview)
+        self.assertNotIn(message, preview)
+        self.assertIn("短信元数据", preview)
 
     def test_safe_preview_handles_non_json(self):
         """Non-JSON input should be returned as-is."""

@@ -233,6 +233,27 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         self.assertEqual(ui_messages[0][1], "normal")
         self.assertEqual(scheduled, [{"restart": True, "first_delay_sec": 60}])
 
+    def test_apply_log_cleanup_runtime_reports_save_failure(self):
+        config = configparser.ConfigParser()
+        state = []
+        ui_messages = []
+        scheduled = []
+
+        result = apply_log_cleanup_runtime(
+            30,
+            config=config,
+            save_config=lambda: False,
+            set_cleanup_state=lambda days, enabled: state.append((days, enabled)),
+            system_ui=lambda message, tag="normal": ui_messages.append((message, tag)),
+            schedule_cleanup=lambda **kwargs: scheduled.append(kwargs),
+            interval_hours=12,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(state, [])
+        self.assertEqual(scheduled, [])
+        self.assertIn("保存失败", ui_messages[0][0])
+
     def test_open_log_cleanup_dialog_runtime_wires_apply_callback(self):
         config = configparser.ConfigParser()
         applied = []
@@ -338,11 +359,18 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         config = configparser.ConfigParser()
         saved = []
 
-        save_update_proxy_config(config, "api.example.com", "proxy.example.com", lambda: saved.append("saved"))
+        result = save_update_proxy_config(config, "api.example.com", "proxy.example.com", lambda: saved.append("saved"))
 
         self.assertEqual(config.get("update", "api_proxy_base"), "https://api.example.com/")
         self.assertEqual(config.get("update", "proxy_base"), "https://proxy.example.com/")
         self.assertEqual(saved, ["saved"])
+        self.assertTrue(result)
+
+    def test_save_update_proxy_config_rejects_save_failure(self):
+        config = configparser.ConfigParser()
+
+        with self.assertRaises(RuntimeError):
+            save_update_proxy_config(config, "api.example.com", "proxy.example.com", lambda: False)
 
     def test_test_update_proxy_async_posts_success_and_error_results(self):
         success = []
@@ -392,7 +420,7 @@ class MaintenanceRuntimeTests(unittest.TestCase):
                 proxy_base=proxy_base,
                 center_window=center_window,
             )
-            save("api.example.com", "proxy.example.com", "win")
+            opened["save_result"] = save("api.example.com", "proxy.example.com", "win")
             test_connection("api", "proxy", lambda value: None, lambda value: None)
 
         open_update_proxy_dialog_runtime(
@@ -411,10 +439,31 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         self.assertTrue(opened["api_proxy_base"])
         self.assertTrue(opened["proxy_base"])
         self.assertEqual(opened["center_window"], "center")
+        self.assertTrue(opened["save_result"])
         self.assertEqual(config.get("update", "api_proxy_base"), "https://api.example.com/")
         self.assertEqual(config.get("update", "proxy_base"), "https://proxy.example.com/")
         self.assertEqual(saved, ["saved"])
         self.assertEqual(tested[0][:4], ("owner", "repo", "api", "proxy"))
+
+    def test_open_update_proxy_dialog_runtime_propagates_save_failure(self):
+        config = configparser.ConfigParser()
+        opened = {}
+
+        def open_dialog(_parent, _api_proxy_base, _proxy_base, save, _test_connection, _center_window):
+            opened["save_result"] = save("api.example.com", "proxy.example.com", "win")
+
+        with self.assertRaises(RuntimeError):
+            open_update_proxy_dialog_runtime(
+                "root",
+                config=config,
+                owner="owner",
+                repo="repo",
+                save_config=lambda: False,
+                ui_post=lambda callback: callback(),
+                center_window="center",
+                open_dialog=open_dialog,
+                test_async=lambda *args: None,
+            )
 
 
 if __name__ == "__main__":

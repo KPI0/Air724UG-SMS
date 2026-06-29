@@ -109,12 +109,13 @@ def build_sms_event_payload(
     timestamp,
     identity,
     time_text=None,
+    metadata=None,
 ):
     body = str(full_msg or "").strip()
     if not body:
         return None
     sender, first_body = parse_sms_callback_head(callback_head)
-    return {
+    payload = {
         "type": "sms_event",
         "event_type": "sms",
         "tag": "sms",
@@ -128,6 +129,12 @@ def build_sms_event_payload(
         "message": f"收到短信：来自 {sender or '未知号码'}，内容：{body}",
         "raw": (callback_head + "\n" + body).strip() if callback_head and first_body != body else body,
     }
+    meta = metadata if isinstance(metadata, dict) else {}
+    message_trace_id = str(meta.get("message_trace_id") or "").strip()
+    if message_trace_id:
+        payload["message_trace_id"] = message_trace_id
+        payload["trace_id"] = message_trace_id
+    return payload
 
 
 def build_status_payload(

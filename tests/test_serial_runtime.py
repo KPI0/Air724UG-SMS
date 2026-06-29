@@ -19,7 +19,7 @@ def _swap_number_digits(number):
     return "".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2))
 
 
-def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1):
+def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1, timestamp_hex="62608211510523"):
     sender_text = str(sender or "")
     number_type = "91" if sender_text.startswith("+") else "81"
     sender_digits = sender_text.lstrip("+")
@@ -36,7 +36,7 @@ def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1):
         + _swap_number_digits(sender_digits)
         + "00"
         + "08"
-        + "62608211510523"
+        + timestamp_hex
         + f"{len(user_data):02X}"
         + user_data.hex().upper()
     )
@@ -92,6 +92,30 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertEqual(decoder.feed(raw[:split_at]), [])
         self.assertEqual(decoder.feed(raw[split_at:]), [text.strip()])
+
+    def test_serial_runtime_observes_sms_send_response_lines(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "observe_sms_send_line": lambda line: calls.append(("sms_send_line", line)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            "+CMGS: 12",
+            1.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("sms_send_line", "+CMGS: 12"), calls)
 
     def test_serial_line_decoder_joins_newline_inserted_inside_utf8_character(self):
         decoder = SerialLineDecoder()
@@ -216,6 +240,34 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertTrue(state.sms_collector.active)
         self.assertEqual(state.sms_collector.callback_head, "+8613812345678 hello")
 
+    def test_sms_callback_keeps_plus_digit_continuation_until_urc_boundary(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        lines = [
+            "[I]-[handler_sms.smsCallback] +8613812345678 first line",
+            "+100.00 元到账",
+            "+CMTI: \"SM\",1",
+        ]
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM5",
+                False,
+                runtime_config(),
+                runtime_callbacks(calls),
+                {},
+            )
+
+        self.assertFalse(state.sms_collector.active)
+        self.assertIn(("sms_popup", ("first line\n+100.00 元到账",)), calls)
+        self.assertTrue(any(
+            item[0] == "push" and item[1][0] == "first line\n+100.00 元到账"
+            for item in calls
+        ))
+
     def test_sms_callback_uses_cached_pdu_when_long_log_text_is_corrupted(self):
         calls = []
         state = SerialRuntimeState.create(parse_sms_callback_head)
@@ -252,6 +304,149 @@ class SerialRuntimeTests(unittest.TestCase):
             item[0] == "sms_popup" and "\ufffd" in item[1][0]
             for item in calls
         ))
+
+    def test_sms_callback_does_not_assemble_cached_pdu_when_multipart_timestamps_differ(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        body = "中国电信温馨提醒:尊享来电识别【号码百事通】"
+        part1 = body[:12]
+        part2 = body[12:]
+        lines = [
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu("10086", part1, total=2, index=1),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu(
+                "10086",
+                part2,
+                total=2,
+                index=2,
+                timestamp_hex="62608211511523",
+            ),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[handler_sms.smsCallback] 10086 26/06/28,11:15:50+32 " + body[:18] + "\ufffd",
+            "\ufffd\ufffd" + body[18:],
+            "[I]-[ril.proatc] OK",
+        ]
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM5",
+                False,
+                runtime_config(),
+                runtime_callbacks(calls),
+                {},
+            )
+
+        self.assertNotIn(("sms_popup", (body,)), calls)
+        self.assertNotIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
+
+    def test_concat_progress_logs_do_not_go_to_main_system_ui(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        callbacks = runtime_callbacks(calls)
+        body = "截止到2026年06月29日12时21分，您的费用情况如下：更多流量回复9"
+        part1 = body[:24]
+        part2 = body[24:]
+        lines = [
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu("10001", part1, reference=0x8A, total=2, index=1),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[handler_sms.smsCallback] 10001 26/06/28,11:15:50+32 " + part1,
+            "[I]-[ril.proatc] OK",
+            "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80",
+            _incoming_ucs2_pdu("10001", part2, reference=0x8A, total=2, index=2),
+            "[I]-[TP-PID : ] 0 dcs:  8",
+            "[I]-[handler_sms.smsCallback] 10001 26/06/28,11:15:50+32 " + part2,
+            "[I]-[ril.proatc] OK",
+        ]
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM60",
+                False,
+                runtime_config(log_dir="logs", log_prefix="COM60"),
+                callbacks,
+                {},
+            )
+
+        self.assertFalse(any(
+            item[0] == "system" and "SMS CONCAT" in str(item[1])
+            for item in calls
+        ))
+        self.assertTrue(any(
+            item[0] == "debug" and "SMS CONCAT" in str(item[1])
+            for item in calls
+        ))
+        self.assertTrue(any(
+            item[0] == "file_log" and "SMS CONCAT" in str(item[1])
+            for item in calls
+        ))
+        self.assertIn(("sms_popup", (body,)), calls)
+
+    def test_merged_multiline_lua_callback_is_shown_after_concat_pdu_parts(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        callbacks = runtime_callbacks(calls)
+        body = (
+            "截止到2026年06月29日 12时33分，您的费用情况如下：\n"
+            "1、本月已产生话费5.20元，通用话费余额：352.66元，本月已充值8.16元\n"
+            "2、套餐使用情况：\n"
+            "通用流量：本月总量400MB（其中上月结转200MB），已使用5.38MB，剩余394.62MB\n"
+            "3、更多查询方式：\n"
+            "1）关注“湖南电信”微信公众号\n"
+            "2）登录官方链接 t.hn.189.cn/RVVRFzuu\n"
+            "3）拨打查费专线1000111\n"
+            "4）更多流量回复9"
+        )
+        parts = [body[:70], body[70:140], body[140:210], body[210:]]
+        lines = []
+        for index, part in enumerate(parts, start=1):
+            lines.extend([
+                f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,156",
+                _incoming_ucs2_pdu(
+                    "10001",
+                    part,
+                    reference=0x50,
+                    total=4,
+                    index=index,
+                    timestamp_hex="62609221332523",
+                ),
+                "[I]-[TP-PID : ] 0 dcs:  8",
+            ])
+        callback_lines = body.split("\n")
+        lines.extend([
+            "[I]-[handler_sms.smsCallback] 10001 26/06/29,12:33:52+32 " + callback_lines[0],
+            *callback_lines[1:],
+            "[I]-[usbmsc.write] usb storage free size: 12288/82432B",
+        ])
+
+        for index, line in enumerate(lines):
+            handle_serial_runtime_line(
+                state,
+                line,
+                10.0 + index,
+                "COM60",
+                False,
+                runtime_config(log_dir="logs", log_prefix="COM60"),
+                callbacks,
+                {},
+            )
+
+        self.assertTrue(any(
+            item[0] == "sms_popup"
+            and "截止到2026年06月29日" in item[1][0]
+            and "4）更多流量回复9" in item[1][0]
+            for item in calls
+        ))
+        self.assertFalse(state.sms_collector.active)
+        self.assertEqual(state.long_sms_assembler._pending, {})
 
     def test_sms_callback_collects_pdu_split_at_odd_hex_line_length(self):
         calls = []
@@ -361,6 +556,7 @@ class SerialRuntimeTests(unittest.TestCase):
     def test_run_serial_thread_loop_skips_missing_target_port(self):
         calls = []
         keep_running = [True, False]
+        times = [1.0, 1.001]
 
         run_serial_thread_loop(
             should_continue=lambda: keep_running.pop(0),
@@ -374,6 +570,29 @@ class SerialRuntimeTests(unittest.TestCase):
             handle_error=lambda error, port: False,
             wait_before_retry=lambda: calls.append(("wait",)),
             safe_close_serial=lambda: calls.append(("close",)),
+            monotonic=lambda: times.pop(0),
+        )
+
+        self.assertEqual(calls, [("wait",), ("close",)])
+
+    def test_run_serial_thread_loop_does_not_double_wait_when_resolver_waited(self):
+        calls = []
+        keep_running = [True, False]
+        times = [1.0, 2.0]
+
+        run_serial_thread_loop(
+            should_continue=lambda: keep_running.pop(0),
+            get_target_port=lambda: "COM5",
+            resolve_target_port=lambda: None,
+            set_connecting_status=lambda port: calls.append(("connecting", port)),
+            open_and_initialize_serial=lambda port: calls.append(("open", port)),
+            on_connected_port=lambda port: calls.append(("connected", port)),
+            read_serial_line=lambda: b"",
+            handle_line=lambda line: calls.append(("line", line)),
+            handle_error=lambda error, port: False,
+            wait_before_retry=lambda: calls.append(("wait",)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            monotonic=lambda: times.pop(0),
         )
 
         self.assertEqual(calls, [("close",)])

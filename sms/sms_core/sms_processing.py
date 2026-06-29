@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from datetime import datetime
@@ -8,6 +9,7 @@ SMS_CALLBACK_META_RE = re.compile(
     r"(?P<year>\d{2})/(?P<month>\d{2})/(?P<day>\d{2}),"
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\+\d+"
 )
+SMS_CALLBACK_SENDER_RE = re.compile(r"^\s*(?P<sender>\+?\d+)\b")
 
 
 def sms_keyword_hit(full_msg: str, keywords) -> bool:
@@ -94,11 +96,96 @@ def parse_sms_callback_metadata(callback_head: str, now=None):
     }
 
 
+def build_sms_ui_display_lines(callback_head: str, full_msg: str, now=None):
+    text = str(callback_head or "").strip()
+    metadata = parse_sms_callback_metadata(text, now=now)
+    sender = str(metadata.get("sender") or "").strip()
+    sms_time = str(metadata.get("sms_time") or "").strip()
+
+    if not SMS_CALLBACK_META_RE.search(text):
+        sender_match = SMS_CALLBACK_SENDER_RE.search(text)
+        sender = sender_match.group("sender") if sender_match else sender
+        sms_time = ""
+
+    body_lines = _sms_display_body_lines(full_msg)
+    if len(body_lines) <= 1:
+        content_lines = [f"内容：{body_lines[0] if body_lines else ''}"]
+    else:
+        content_lines = ["内容："] + body_lines
+
+    return [
+        f"号码：{sender or '未知号码'}",
+        f"时间：{sms_time or '未知时间'}",
+        *content_lines,
+    ]
+
+
+def _sms_display_body_lines(full_msg: str):
+    text = str(full_msg or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def sms_message_id(
+    sender: str,
+    sms_time: str,
+    body: str,
+    concat_reference=None,
+    concat_reference_bits=None,
+    concat_total=None,
+) -> str:
+    if concat_reference is None:
+        text = "\n".join([str(sender or ""), str(sms_time or ""), str(body or "")])
+    else:
+        concat_key = ":".join([
+            str(concat_reference_bits or 8),
+            str(concat_reference),
+            str(concat_total or ""),
+        ])
+        text = "\n".join([
+            str(sender or ""),
+            str(sms_time or ""),
+            concat_key,
+            str(body or ""),
+        ])
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _mark_sms_message_seen(state: dict, message_id: str, limit: int = 500) -> bool:
+    if not isinstance(state, dict) or not message_id:
+        return False
+
+    seen = state.setdefault("_sms_message_ids", set())
+    order = state.setdefault("_sms_message_id_order", [])
+    if message_id in seen:
+        return True
+
+    seen.add(message_id)
+    order.append(message_id)
+    while len(order) > limit:
+        old = order.pop(0)
+        seen.discard(old)
+    return False
+
+
 def enqueue_third_push_with_variables(enqueue_third_push, full_msg, variables):
     try:
         return enqueue_third_push(full_msg, variables=variables)
     except TypeError:
         return enqueue_third_push(full_msg)
+
+
+def send_cloud_sms_event_with_metadata(send_cloud_sms_event, callback_head, full_msg, metadata):
+    if metadata:
+        try:
+            return send_cloud_sms_event(callback_head, full_msg, metadata=metadata)
+        except TypeError:
+            return send_cloud_sms_event(callback_head, full_msg)
+    return send_cloud_sms_event(callback_head, full_msg)
 
 
 def process_pending_sms(
@@ -123,25 +210,40 @@ def process_pending_sms(
     full_msg = pending.full_msg
 
     if full_msg:
+        variables = parse_sms_callback_metadata(pending.callback_head)
+        message_id = sms_message_id(
+            variables.get("sender"),
+            variables.get("sms_time"),
+            full_msg,
+            getattr(pending, "concat_reference", None),
+            getattr(pending, "concat_reference_bits", None),
+            getattr(pending, "concat_total", None),
+        )
+        if _mark_sms_message_seen(repeat_state, message_id):
+            return "duplicate"
+        variables["message_id"] = message_id
+        message_trace_id = str(getattr(pending, "message_trace_id", "") or "").strip()
+        if message_trace_id:
+            variables["message_trace_id"] = message_trace_id
         enqueue_third_push_with_variables(
             enqueue_third_push,
             full_msg,
-            parse_sms_callback_metadata(pending.callback_head),
+            variables,
         )
-        send_cloud_sms_event(pending.callback_head, full_msg)
+        cloud_metadata = {}
+        if message_trace_id:
+            cloud_metadata["message_trace_id"] = message_trace_id
+        send_cloud_sms_event_with_metadata(
+            send_cloud_sms_event,
+            pending.callback_head,
+            full_msg,
+            cloud_metadata,
+        )
 
     if full_msg and sms_keyword_hit(full_msg, keywords):
-        if pending.display_lines:
-            first = True
-            for line in pending.display_lines:
-                if first:
-                    port_ui(line, "normal")
-                    first = False
-                else:
-                    port_ui(line, "sms")
-        else:
-            port_ui("📩 收到短信：", "normal")
-            port_ui(full_msg, "sms")
+        port_ui("📩 收到短信：", "normal")
+        for line in build_sms_ui_display_lines(pending.callback_head, full_msg):
+            port_ui(line, "sms")
 
         play_alert()
         show_sms_popup(full_msg)

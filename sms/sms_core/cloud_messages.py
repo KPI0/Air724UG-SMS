@@ -138,6 +138,13 @@ def cloud_unknown_command_payload(action):
     }
 
 
+def cloud_command_log_text(command, data):
+    meta = data if isinstance(data, dict) else {}
+    if str(meta.get("sms_log") or "").strip().lower() == "suppress":
+        return "短信PDU命令（已隐藏）"
+    return str(command or "").strip()
+
+
 async def dispatch_cloud_action(
     action,
     data,
@@ -160,7 +167,7 @@ async def dispatch_cloud_action(
 
     if action_kind == "send_at":
         command = command_text(data)
-        log(f"云端下发指令：{command}")
+        log(f"云端下发指令：{cloud_command_log_text(command, data)}")
         ok, info = await send_serial_command(command, data)
         return cloud_send_at_result_payload(ok, info)
 

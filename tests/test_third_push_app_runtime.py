@@ -56,7 +56,7 @@ class ThirdPushAppRuntimeTests(unittest.TestCase):
         self.assertEqual(config.get("third_push", "enabled"), "0")
         self.assertEqual(config.get("third_push", "sms_enabled"), "1")
 
-    def test_save_third_push_setting_runtime_keeps_applied_state_on_save_error(self):
+    def test_save_third_push_setting_runtime_returns_none_on_save_error(self):
         calls = []
 
         result = save_third_push_setting_runtime(
@@ -67,8 +67,22 @@ class ThirdPushAppRuntimeTests(unittest.TestCase):
             enabled=False,
         )
 
-        self.assertFalse(result.enabled)
-        self.assertEqual(calls, [("apply", result)])
+        self.assertIsNone(result)
+        self.assertFalse(calls[0][1].enabled)
+
+    def test_save_third_push_setting_runtime_returns_none_on_false_save_result(self):
+        calls = []
+
+        result = save_third_push_setting_runtime(
+            current_settings=lambda: ThirdPushSettings(True, True, True, [], {}),
+            apply_settings=lambda settings: calls.append(("apply", settings)),
+            config=configparser.ConfigParser(),
+            save_config=lambda: False,
+            enabled=False,
+        )
+
+        self.assertIsNone(result)
+        self.assertFalse(calls[0][1].enabled)
 
     def test_open_third_push_app_runtime_builds_state_and_forwards_callbacks(self):
         calls = []

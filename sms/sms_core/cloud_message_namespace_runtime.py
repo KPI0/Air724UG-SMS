@@ -96,12 +96,14 @@ def send_cloud_sms_event_namespace_runtime(
     namespace,
     callback_head,
     full_msg,
+    metadata=None,
     *,
     send_runtime=send_cloud_sms_event_runtime,
 ):
     return send_runtime(
         callback_head,
         full_msg,
+        metadata=metadata,
         authorized=namespace["cloud_device_authorized"],
         get_loop=lambda: namespace["cloud_ws_loop"],
         get_ws=lambda: namespace["cloud_ws_conn"],

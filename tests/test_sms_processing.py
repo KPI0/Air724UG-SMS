@@ -1,13 +1,16 @@
 import unittest
 import os
 import tempfile
+import hashlib
 from datetime import datetime
 
 from sms_core.sms_processing import (
+    build_sms_ui_display_lines,
     sms_keyword_hit,
     build_unmatched_sms_log_entries,
     parse_sms_callback_metadata,
     repeat_count_message,
+    sms_message_id,
     process_pending_sms,
 )
 
@@ -163,6 +166,123 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
         self.assertEqual(metadata["local_number"], "")
 
+    def test_build_sms_ui_display_lines_formats_three_display_lines(self):
+        lines = build_sms_ui_display_lines(
+            "106598731 26/06/24,13:44:15+32 【中国电信】验证码461582",
+            "【中国电信】\n验证码461582",
+        )
+
+        self.assertEqual(lines, [
+            "号码：106598731",
+            "时间：2026-06-24 13:44:15",
+            "内容：",
+            "【中国电信】",
+            "验证码461582",
+        ])
+
+    def test_build_sms_ui_display_lines_keeps_single_line_compact(self):
+        lines = build_sms_ui_display_lines(
+            "106598731 26/06/24,13:44:15+32 验证码461582",
+            "验证码461582",
+        )
+
+        self.assertEqual(lines, [
+            "号码：106598731",
+            "时间：2026-06-24 13:44:15",
+            "内容：验证码461582",
+        ])
+
+    def test_sms_message_id_keeps_plain_sms_hash_compatible(self):
+        old_id = hashlib.sha1(
+            "10086\n2026-06-28 12:00:00\nhello".encode("utf-8")
+        ).hexdigest()
+        new_plain_id = sms_message_id(
+            "10086",
+            "2026-06-28 12:00:00",
+            "hello",
+            None,
+            None,
+            None,
+        )
+
+        self.assertEqual(new_plain_id, old_id)
+
+    def test_sms_message_id_uses_concat_reference_when_present(self):
+        first = sms_message_id(
+            "10086",
+            "2026-06-28 12:00:00",
+            "same body",
+            0x2A,
+            8,
+            2,
+        )
+        second = sms_message_id(
+            "10086",
+            "2026-06-28 12:00:00",
+            "same body",
+            0x2B,
+            8,
+            2,
+        )
+
+        self.assertNotEqual(first, second)
+
+    def test_process_pending_sms_message_id_uses_concat_metadata(self):
+        calls = []
+
+        class MockPending:
+            full_msg = "same body"
+            callback_head = "10086 26/06/28,12:00:00+32 same body"
+            display_lines = []
+            concat_reference = 0x2A
+            concat_reference_bits = 8
+            concat_total = 2
+            message_trace_id = "abc123def456"
+
+        process_pending_sms(
+            MockPending(),
+            [], False, "", "",
+            {}, 5,
+            lambda msg, **kwargs: calls.append((msg, kwargs)),
+            lambda x, y: None,
+            lambda x, y: None,
+            lambda: None,
+            lambda x: None,
+            lambda x: None,
+            lambda x, y: None
+        )
+
+        variables = calls[0][1]["variables"]
+        self.assertEqual(
+            variables["message_id"],
+            sms_message_id("10086", "2026-06-28 12:00:00", "same body", 0x2A, 8, 2),
+        )
+        self.assertEqual(variables["message_trace_id"], "abc123def456")
+
+    def test_process_pending_sms_passes_trace_id_to_cloud_metadata(self):
+        calls = []
+
+        class MockPending:
+            full_msg = "same body"
+            callback_head = "10086 26/06/28,12:00:00+32 same body"
+            display_lines = []
+            message_trace_id = "abc123def456"
+
+        process_pending_sms(
+            MockPending(),
+            [], False, "", "",
+            {}, 5,
+            lambda msg, **kwargs: None,
+            lambda head, msg, metadata=None: calls.append((head, msg, metadata)),
+            lambda x, y: None,
+            lambda: None,
+            lambda x: None,
+            lambda x: None,
+            lambda x, y: None
+        )
+
+        self.assertEqual(calls[0][2], {"message_trace_id": "abc123def456"})
+
     def test_process_pending_sms_returns_empty_for_none(self):
         """Should return 'empty' when pending is None."""
         result = process_pending_sms(
@@ -174,12 +294,12 @@ class SmsProcessingTests(unittest.TestCase):
 
     def test_process_pending_sms_shows_matched_message(self):
         """Should return 'shown' and trigger UI for matched messages."""
-        calls = {"ui": [], "alert": 0, "popup": 0}
+        calls = {"ui": [], "alert": 0, "popup": []}
 
         class MockPending:
-            full_msg = "Verification code: 123456"
-            callback_head = "+8613812345678"
-            display_lines = []
+            full_msg = "Verification code:\n123456"
+            callback_head = "+8613812345678 26/06/24,13:44:15+32 Verification code:"
+            display_lines = ["old display line"]
 
         def port_ui(text, style):
             calls["ui"].append((text, style))
@@ -188,7 +308,7 @@ class SmsProcessingTests(unittest.TestCase):
             calls["alert"] += 1
 
         def show_popup(msg):
-            calls["popup"] += 1
+            calls["popup"].append(msg)
 
         result = process_pending_sms(
             MockPending(),
@@ -206,8 +326,15 @@ class SmsProcessingTests(unittest.TestCase):
 
         self.assertEqual(result, "shown")
         self.assertEqual(calls["alert"], 1)
-        self.assertEqual(calls["popup"], 1)
-        self.assertGreater(len(calls["ui"]), 0)
+        self.assertEqual(calls["popup"], ["Verification code:\n123456"])
+        self.assertEqual(calls["ui"], [
+            ("📩 收到短信：", "normal"),
+            ("号码：+8613812345678", "sms"),
+            ("时间：2026-06-24 13:44:15", "sms"),
+            ("内容：", "sms"),
+            ("Verification code:", "sms"),
+            ("123456", "sms"),
+        ])
 
     def test_process_pending_sms_passes_push_template_variables(self):
         calls = []
@@ -233,6 +360,29 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "验证码461582")
         self.assertEqual(calls[0][1]["variables"]["sender"], "106598731")
         self.assertEqual(calls[0][1]["variables"]["sms_time"], "2026-06-24 13:44:15")
+
+    def test_process_pending_sms_keeps_multiline_body_for_push(self):
+        calls = []
+
+        class MockPending:
+            full_msg = "第一行\n第二行\n第三行"
+            callback_head = "106598731 26/06/24,13:44:15+32 第一行"
+            display_lines = []
+
+        process_pending_sms(
+            MockPending(),
+            [], False, "", "",
+            {}, 5,
+            lambda msg, **kwargs: calls.append((msg, kwargs)),
+            lambda x, y: None,
+            lambda x, y: None,
+            lambda: None,
+            lambda x: None,
+            lambda x: None,
+            lambda x, y: None
+        )
+
+        self.assertEqual(calls[0][0], "第一行\n第二行\n第三行")
 
     def test_process_pending_sms_ignores_unmatched_message(self):
         """Should return 'ignored' for messages not matching keywords."""

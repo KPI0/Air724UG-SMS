@@ -5,6 +5,10 @@ def serial_settings_status(mode, port, baud):
     return f"⚙️ 串口设置已更新：mode={mode} port={port or '(Auto)'} baud={baud}"
 
 
+def serial_settings_save_failed_status():
+    return "❌ 串口设置保存失败，设置可能不会在重启后保留"
+
+
 def apply_serial_setting_runtime(
     mode,
     port,
@@ -24,7 +28,12 @@ def apply_serial_setting_runtime(
     config.set("serial", "mode", mode)
     config.set("serial", "port", port)
     config.set("serial", "baud", str(baud))
-    save_config()
+    try:
+        if save_config() is False:
+            raise RuntimeError("配置保存失败")
+    except Exception:
+        system_ui(serial_settings_save_failed_status())
+        return False
 
     set_status("🟡 应用中，重连…", "orange")
     safe_close_serial()
@@ -34,6 +43,7 @@ def apply_serial_setting_runtime(
         pass
 
     system_ui(serial_settings_status(mode, port, baud))
+    return True
 
 
 def open_serial_setting_runtime(

@@ -15,6 +15,7 @@ CESQ_RE = re.compile(
 AT_RESPONSE_RE_TEMPLATE = r"^\s*" + SERIAL_AT_PREFIX + r"{command}:\s*(?P<body>.*?)\s*$"
 SERIAL_PREFIX_RE = re.compile(rf"^\s*{SERIAL_AT_PREFIX}(?P<body>.*?)\s*$")
 CIEV_CALL_RE = re.compile(r'^\+CIEV:\s*"CALL"\s*,\s*(?P<state>[01])$', re.IGNORECASE)
+AT_URC_BOUNDARY_RE = re.compile(r"^\+[A-Z][A-Z0-9 ]*(?:[:=]|$)")
 
 
 def _at_response_body(line: str, command: str):
@@ -217,5 +218,5 @@ def is_sms_collection_boundary(line: str) -> bool:
         or text.startswith("[E]-")
         or text.startswith(">>>")
         or text.startswith("AT+")
-        or text.startswith("+")
+        or bool(AT_URC_BOUNDARY_RE.match(text))
     )

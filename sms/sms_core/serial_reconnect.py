@@ -67,7 +67,8 @@ def manual_rebind_runtime(
         config.set("serial", "mode", "Manual")
         config.set("serial", "port", new_port)
         config.set("serial", "baud", str(baud))
-        save_config()
+        if save_config() is False:
+            raise RuntimeError("配置保存失败")
     except Exception as exc:
         # The in-memory port has already switched, so rebinding can still
         # proceed; but a failed save means the new port is lost on restart.

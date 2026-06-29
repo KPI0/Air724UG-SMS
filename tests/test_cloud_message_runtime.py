@@ -154,6 +154,59 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(replies, [])
         self.assertNotIn(("send", "ATI"), calls)
 
+    def test_handle_cloud_message_hides_suppressed_pdu_in_receive_log(self):
+        pdu = "0011000D916831..."
+        state, calls, replies, replay_checks = run(self._handle(
+            json.dumps({
+                "cmd": pdu,
+                "command": pdu,
+                "data": pdu,
+                "sms_log": "suppress",
+                "secret": "device-secret",
+                "task_id": "task-1",
+            }),
+            authorized=True,
+        ))
+
+        receive_logs = [
+            item[1][0]
+            for item in calls
+            if item[0] == "log" and item[1] and str(item[1][0]).startswith("收到：")
+        ]
+
+        self.assertTrue(state["authorized"])
+        self.assertTrue(receive_logs)
+        self.assertFalse(any(pdu in item for item in receive_logs))
+        self.assertFalse(any("device-secret" in item for item in receive_logs))
+        self.assertTrue(any("已隐藏" in item for item in receive_logs))
+
+    def test_handle_cloud_message_hides_sms_summary_metadata_in_receive_log(self):
+        phone = "+8613812345678"
+        message = "验证码 1234"
+        state, calls, replies, replay_checks = run(self._handle(
+            json.dumps({
+                "cmd": "AT+CMGF=0",
+                "command_kind": "send_sms",
+                "sms_log": "summary",
+                "sms_phone": phone,
+                "sms_message": message,
+                "task_id": "task-1",
+            }),
+            authorized=True,
+        ))
+
+        receive_logs = [
+            item[1][0]
+            for item in calls
+            if item[0] == "log" and item[1] and str(item[1][0]).startswith("收到：")
+        ]
+
+        self.assertTrue(state["authorized"])
+        self.assertTrue(receive_logs)
+        self.assertFalse(any(phone in item for item in receive_logs))
+        self.assertFalse(any(message in item for item in receive_logs))
+        self.assertTrue(any("短信元数据" in item for item in receive_logs))
+
     def test_send_cloud_sms_event_runtime_skips_unavailable_states(self):
         base = {
             "authorized": True,
@@ -204,6 +257,35 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, "scheduled")
         self.assertEqual(calls, [(("send", ws, {"head": "head", "body": "body", "ts": 123, "imei": "imei"}), loop)])
+
+    def test_send_cloud_sms_event_runtime_passes_metadata_to_payload(self):
+        calls = []
+        loop = FakeLoop(True)
+        ws = object()
+
+        result = send_cloud_sms_event_runtime(
+            "head",
+            "body",
+            {"message_trace_id": "abc123def456"},
+            authorized=True,
+            get_loop=lambda: loop,
+            get_ws=lambda: ws,
+            is_connected=lambda: True,
+            runtime_imei=lambda: "imei",
+            build_payload=lambda head, body, ts, identity, metadata=None: {
+                "head": head,
+                "body": body,
+                "metadata": metadata,
+                **identity,
+            },
+            send_payload=lambda next_ws, payload: ("send", next_ws, payload),
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "imei"},
+            run_coroutine_threadsafe=lambda coro, next_loop: calls.append((coro, next_loop)),
+        )
+
+        self.assertEqual(result, "scheduled")
+        self.assertEqual(calls[0][0][2]["metadata"], {"message_trace_id": "abc123def456"})
 
     def test_cloud_status_payload_runtime_reports_serial_connection(self):
         payload = cloud_status_payload_runtime(
@@ -420,20 +502,27 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
     def test_send_cloud_serial_command_runtime_suppresses_sms_pdu_noise(self):
         calls = []
+        pdu = "0011000D916831..."
 
-        ok, _info = send_cloud_serial_command_runtime(
-            "0011000D9168...",
+        ok, info = send_cloud_serial_command_runtime(
+            pdu,
             command_meta={"sms_log": "suppress"},
             serial_lock=DummyLock(),
             get_serial=lambda: object(),
-            write_command_result=lambda *_args: SimpleResult(True),
-            push_serial_debug=lambda *_args: None,
+            write_command_result=lambda serial_obj, command: (
+                calls.append(("write", command)) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda message: calls.append(("debug", message)),
             port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
-            log=lambda *_args: None,
+            log=lambda message: calls.append(("log", message)),
         )
 
         self.assertTrue(ok)
-        self.assertEqual(calls, [])
+        self.assertEqual(calls[0], ("write", pdu))
+        self.assertFalse(any(call[0] == "port_ui" for call in calls))
+        self.assertFalse(any(pdu in str(call) for call in calls[1:]))
+        self.assertNotIn(pdu, info)
+        self.assertIn("已隐藏", info)
 
 
 if __name__ == "__main__":

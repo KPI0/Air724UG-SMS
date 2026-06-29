@@ -78,10 +78,28 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
             enabled=True,
         )
 
-        self.assertTrue(result.enabled)
-        self.assertEqual(calls[0], ("apply", result))
+        self.assertIsNone(result)
+        applied = calls[0][1]
+        self.assertTrue(applied.enabled)
+        self.assertEqual(calls[0], ("apply", applied))
         self.assertEqual(calls[1][0], "ui")
         self.assertIn("disk", calls[1][1][0])
+
+    def test_save_cloud_control_setting_runtime_reports_false_save_result(self):
+        calls = []
+
+        result = save_cloud_control_setting_runtime(
+            current_settings=lambda: CloudControlSettings(),
+            apply_settings=lambda settings: calls.append(("apply", settings)),
+            config=configparser.ConfigParser(),
+            save_config=lambda: False,
+            system_ui=lambda *args: calls.append(("ui", args)),
+            enabled=True,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls[1][0], "ui")
+        self.assertIn("配置保存失败", calls[1][1][0])
 
     def test_cloud_window_connection_state_reports_loop_and_socket(self):
         self.assertEqual(

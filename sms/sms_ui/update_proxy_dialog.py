@@ -35,8 +35,13 @@ def open_update_proxy_dialog(
     tk.Entry(frame, textvariable=proxy_var, width=44).grid(row=3, column=0, pady=(4, 10), sticky="w")
 
     def save():
-        on_save(api_var.get(), proxy_var.get(), win)
-        messagebox.showinfo("完成", "代理设置已保存", parent=win)
+        try:
+            result = on_save(api_var.get(), proxy_var.get(), win)
+            if result is False:
+                raise RuntimeError("配置保存失败")
+            messagebox.showinfo("完成", "代理设置已保存", parent=win)
+        except Exception as exc:
+            messagebox.showerror("保存失败", f"代理设置保存失败：{exc}", parent=win)
 
     def test_connection():
         try:

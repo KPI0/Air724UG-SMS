@@ -84,6 +84,21 @@ class SettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertIn("boom", logs[0])
 
+    def test_save_ui_config_values_reports_false_save_result(self):
+        config = configparser.ConfigParser()
+        logs = []
+
+        ok = save_ui_config_values(
+            config,
+            {"voice_text": "hello"},
+            lambda: False,
+            log_error=logs.append,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("配置保存失败", logs[0])
+
     def test_save_helpers_log_save_errors(self):
         config = configparser.ConfigParser()
         logs = []

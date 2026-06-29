@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 
 SECRET_KEYS = {"secret", "device_secret", "password", "pwd", "token"}
+SMS_META_KEYS = {"sms_phone", "sms_message"}
+SMS_COMMAND_KEYS = {"cmd", "command", "data"}
+HIDDEN_SMS_COMMAND = "短信PDU命令（已隐藏）"
+HIDDEN_SMS_META = "短信元数据（已隐藏）"
 SECRET_TEXT_RE = re.compile(
     r"(?i)"
     r"([\"']?(?:secret|device_secret|password|pwd|token)[\"']?"
@@ -27,10 +31,19 @@ def safe_preview(raw: str, limit: int = 500) -> str:
     """Mask common secret fields in JSON text and truncate long previews."""
     def _mask(obj):
         if isinstance(obj, dict):
+            sms_log = str(obj.get("sms_log") or "").strip().lower()
+            command_kind = str(obj.get("command_kind") or "").strip().lower()
+            hide_sms_command = sms_log == "suppress"
+            hide_sms_meta = sms_log in ("summary", "suppress") or command_kind == "send_sms"
             masked = {}
             for key, value in obj.items():
-                if str(key).lower() in SECRET_KEYS:
+                key_lower = str(key).lower()
+                if key_lower in SECRET_KEYS:
                     masked[key] = "***"
+                elif hide_sms_command and key_lower in SMS_COMMAND_KEYS:
+                    masked[key] = HIDDEN_SMS_COMMAND
+                elif hide_sms_meta and key_lower in SMS_META_KEYS:
+                    masked[key] = HIDDEN_SMS_META
                 else:
                     masked[key] = _mask(value)
             return masked

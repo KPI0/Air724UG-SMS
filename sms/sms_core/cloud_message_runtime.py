@@ -9,7 +9,7 @@ from sms_core.cloud_messages import (
     parse_cloud_message,
 )
 from sms_core.cloud_protocol import auth_status_from_ack
-from sms_core.cloud_security import safe_preview
+from sms_core.cloud_security import HIDDEN_SMS_COMMAND, HIDDEN_SMS_META, safe_preview
 
 
 async def send_cloud_register_runtime(
@@ -99,14 +99,16 @@ def send_cloud_serial_command_runtime(
         return False, "AT 指令不能为空"
 
     try:
+        display_cmd = _cloud_command_display_text(cmd, command_meta)
         with serial_lock:
-            result = write_command_result(get_serial(), cmd)
-            if not result.ok:
-                return False, result.error
+            serial_obj = get_serial()
+        result = write_command_result(serial_obj, cmd)
+        if not result.ok:
+            return False, result.error
 
         try:
             if push_serial_debug:
-                push_serial_debug(f">>> 云端发送: {cmd}\\r\\n")
+                push_serial_debug(f">>> 云端发送: {display_cmd}\\r\\n")
         except Exception:
             pass
 
@@ -116,10 +118,37 @@ def send_cloud_serial_command_runtime(
         except Exception:
             pass
 
-        log(f"已向串口发送：{cmd}")
-        return True, f"已发送：{cmd}"
+        log(f"已向串口发送：{display_cmd}")
+        return True, f"已发送：{display_cmd}"
     except Exception as exc:
         return False, f"发送失败：{exc}"
+
+
+def _cloud_command_display_text(cmd, command_meta):
+    meta = command_meta if isinstance(command_meta, dict) else {}
+    if str(meta.get("sms_log") or "").strip().lower() == "suppress":
+        return HIDDEN_SMS_COMMAND
+    return str(cmd or "").strip()
+
+
+def cloud_incoming_preview(incoming):
+    data = getattr(incoming, "data", None)
+    if not isinstance(data, dict):
+        return safe_preview(getattr(incoming, "raw", ""))
+
+    masked = dict(data)
+    sms_log = str(masked.get("sms_log") or "").strip().lower()
+    if sms_log == "suppress":
+        for key in ("cmd", "command", "data"):
+            if key in masked:
+                masked[key] = HIDDEN_SMS_COMMAND
+
+    if sms_log in ("summary", "suppress") or str(masked.get("command_kind") or "") == "send_sms":
+        for key in ("sms_phone", "sms_message"):
+            if key in masked:
+                masked[key] = HIDDEN_SMS_META
+
+    return safe_preview(json.dumps(masked, ensure_ascii=False))
 
 
 def _log_cloud_command_to_port(port_ui, cmd, command_meta):
@@ -142,6 +171,7 @@ def _log_cloud_command_to_port(port_ui, cmd, command_meta):
 def send_cloud_sms_event_runtime(
     callback_head,
     full_msg,
+    metadata=None,
     *,
     authorized,
     get_loop,
@@ -166,7 +196,16 @@ def send_cloud_sms_event_runtime(
             return "not_connected"
         if not runtime_imei():
             return "missing_imei"
-        payload = build_payload(callback_head, body, timestamp(), identity_payload())
+        try:
+            payload = build_payload(
+                callback_head,
+                body,
+                timestamp(),
+                identity_payload(),
+                metadata=metadata,
+            )
+        except TypeError:
+            payload = build_payload(callback_head, body, timestamp(), identity_payload())
         if payload is None:
             return "empty_payload"
         run_coroutine_threadsafe(send_payload(ws, payload), loop)
@@ -225,7 +264,7 @@ async def handle_cloud_message_runtime(
     hide_window,
 ):
     incoming, error_payload = parse_cloud_message(message)
-    log(f"收到：{safe_preview(incoming.raw)}")
+    log(f"收到：{cloud_incoming_preview(incoming)}")
     if error_payload is not None:
         await reply(error_payload)
         return

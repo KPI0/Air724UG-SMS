@@ -13,7 +13,8 @@ def read_serial_line_safely_runtime(serial_lock, get_serial, exception_cls):
 
 def send_call_hangup_runtime(serial_lock, get_serial, write_command_result):
     with serial_lock:
-        return write_command_result(get_serial(), "ATH")
+        serial_obj = get_serial()
+    return write_command_result(serial_obj, "ATH")
 
 
 def safe_close_serial_runtime(serial_lock, get_serial, set_serial, unlock_port_mutex):
