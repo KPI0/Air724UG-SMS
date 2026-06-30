@@ -54,7 +54,9 @@ tts/
 仓库已包含 `tests/` 回归测试。源码修改或打包发布前建议执行：
 
 ```powershell
-$env:PYTHONPATH = (Resolve-Path "sms").Path
+$repoRoot = (Resolve-Path ".").Path
+$smsSrc = (Resolve-Path "sms").Path
+$env:PYTHONPATH = "$repoRoot;$smsSrc"
 py -m unittest discover -s tests -q
 ```
 
@@ -115,6 +117,7 @@ Air724UG-SMS/
 │   ├── sms_core/       # 串口、短信、云控、推送、配置等核心逻辑
 │   └── sms_ui/         # Tkinter 窗口、菜单、设置页、托盘等 UI 逻辑
 ├── tests/              # 回归测试，Actions 打包前会自动运行
+├── tools/              # 测试与维护辅助工具，例如短信串口日志 replay
 ├── requirements.txt    # Python 依赖
 ├── icon.ico   # 应用图标
 ├── config.ini # 软件配置文件（首次运行自动创建）
