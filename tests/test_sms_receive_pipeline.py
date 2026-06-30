@@ -79,8 +79,40 @@ class ConcatCache(NoopCorrectionCache):
         return CachedPart()
 
 
+class FailingSemanticCache(NoopCorrectionCache):
+    def correct_callback_text(self, *_args):
+        raise AssertionError("pipeline must not correct SMS content")
+
+    def concat_part_for_callback(self, *_args):
+        raise AssertionError("pipeline must not inspect concat metadata")
+
+
+class CapturingAssembler:
+    def __init__(self):
+        self.calls = []
+
+    def add_collected(self, collected, correction_cache=None, now=None, log=None):
+        self.calls.append((collected, correction_cache, now, log))
+        return "forwarded"
+
+    def reset(self):
+        pass
+
+
 class SmsReceivePipelineTests(unittest.TestCase):
-    def test_normal_callback_keeps_follow_lines(self):
+    def test_pipeline_add_collected_is_blind_forwarder(self):
+        assembler = CapturingAssembler()
+        cache = FailingSemanticCache()
+        pipeline = SmsReceivePipeline(parse_head, cache, assembler)
+        collected = CollectedSmsCallback("+10086 first", ["second"])
+        log = object()
+
+        result = pipeline.add_collected(collected, now=1.0, log=log)
+
+        self.assertEqual(result, "forwarded")
+        self.assertEqual(assembler.calls, [(collected, cache, 1.0, log)])
+
+    def test_normal_callback_keeps_raw_continuation_lines(self):
         pipeline = SmsReceivePipeline(
             parse_head,
             NoopCorrectionCache(),
@@ -96,7 +128,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         self.assertEqual(pending.full_msg, "first\nsecond\nthird")
         self.assertEqual(pending.display_lines, ["📩 收到短信：", "+10086 first", "second", "third"])
 
-    def test_corrected_callback_ignores_follow_lines(self):
+    def test_corrected_callback_ignores_raw_continuation_lines(self):
         pipeline = SmsReceivePipeline(
             parse_head,
             CorrectingCache(),
@@ -112,7 +144,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         self.assertEqual(pending.full_msg, "corrected body")
         self.assertEqual(pending.display_lines, ["📩 收到短信：", "+10086 corrected body"])
 
-    def test_concat_part_uses_pdu_body_and_ignores_follow_lines(self):
+    def test_concat_part_uses_pdu_body_and_ignores_raw_continuation_lines(self):
         pipeline = SmsReceivePipeline(
             parse_head,
             ConcatCache(),
@@ -328,7 +360,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         self.assertEqual(result.concat_total, 4)
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 
-    def test_merged_lua_callback_falls_back_to_lua_text_when_pdu_body_mismatch(self):
+    def test_merged_lua_callback_uses_pdu_segments_when_concat_metadata_matches(self):
         cache = SmsPduCorrectionCache()
         body = "PART1-body-PART2-body-PART3-body-PART4-body"
         parts = [body[:10], body[10:20], body[20:30], body[30:]]
@@ -358,8 +390,8 @@ class SmsReceivePipelineTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(result.full_msg, parts[0] + "\nunrelated continuation")
-        self.assertEqual(result.concat_reference, None)
+        self.assertEqual(result.full_msg, body)
+        self.assertEqual(result.concat_reference, 0xB1)
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 
     def test_merged_lua_callback_from_10001_is_shown_when_parts_are_out_of_order(self):
@@ -422,7 +454,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(result.full_msg, body)
+        self.assertEqual(result.full_msg, "".join(parts))
         self.assertIn("4）更多流量回复9", result.full_msg)
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 

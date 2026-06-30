@@ -305,7 +305,7 @@ class SerialRuntimeTests(unittest.TestCase):
             for item in calls
         ))
 
-    def test_sms_callback_does_not_assemble_cached_pdu_when_multipart_timestamps_differ(self):
+    def test_sms_callback_assembles_cached_pdu_when_multipart_timestamps_match_assembler_window(self):
         calls = []
         state = SerialRuntimeState.create(parse_sms_callback_head)
         body = "中国电信温馨提醒:尊享来电识别【号码百事通】"
@@ -341,8 +341,8 @@ class SerialRuntimeTests(unittest.TestCase):
                 {},
             )
 
-        self.assertNotIn(("sms_popup", (body,)), calls)
-        self.assertNotIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
+        self.assertIn(("sms_popup", (body,)), calls)
+        self.assertIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
 
     def test_concat_progress_logs_do_not_go_to_main_system_ui(self):
         calls = []

@@ -1,9 +1,16 @@
+"""
+PDU cache contract:
+- store decoded single-PDU bodies for corruption correction;
+- store decoded concat PDU segments with UDH metadata;
+- correct only single-PDU callback corruption/truncation;
+- never join concat bodies, infer completion, or emit complete multipart SMS.
+LongSmsAssembler is the only multipart completion state machine.
+"""
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
-from sms_core.long_sms_assembler import message_trace_id
 from sms_core.sms_pdu import ConcatSmsInfo, decode_received_pdu
 
 
@@ -16,20 +23,8 @@ SMS_CALLBACK_HEAD_RE = re.compile(
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
     r"^\s*\+?\d+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
 )
-DEFAULT_PDU_MAX_MULTIPART_ENTRIES = 512
 DEFAULT_PDU_MAX_SEGMENT_ENTRIES = 4096
 DEFAULT_PDU_MAX_COMPLETE_ENTRIES = 1024
-
-
-@dataclass(frozen=True)
-class DecodedIncomingSmsPdu:
-    sender: str
-    body: str
-    timestamp: str = ""
-    reference: Optional[int] = None
-    total: Optional[int] = None
-    index: Optional[int] = None
-    reference_bits: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -38,61 +33,6 @@ class CachedSmsPduSegment:
     body: str
     concat_info: ConcatSmsInfo
     timestamp: str = ""
-
-
-@dataclass(frozen=True)
-class CachedSmsPduMessage:
-    sender: str
-    body: str
-    timestamp: str = ""
-    reference: Optional[int] = None
-    total: Optional[int] = None
-    reference_bits: Optional[int] = None
-    message_trace_id: str = ""
-
-
-def _decode_semi_octet_number(value: str, number_type: str, digit_count: int) -> str:
-    digits = []
-    for i in range(0, len(value), 2):
-        pair = value[i:i + 2]
-        if len(pair) == 2:
-            digits.append(pair[1])
-            digits.append(pair[0])
-    number = "".join(digits)[:digit_count].rstrip("Ff")
-    return ("+" if number_type == "91" else "") + number
-
-
-def _read_octet(hex_text: str, offset: int):
-    if offset + 2 > len(hex_text):
-        raise ValueError("truncated PDU")
-    return int(hex_text[offset:offset + 2], 16), offset + 2
-
-
-def _decode_timestamp(scts_hex: str) -> str:
-    if len(scts_hex) < 14:
-        return ""
-    fields = []
-    for i in range(0, 14, 2):
-        pair = scts_hex[i:i + 2]
-        fields.append(pair[1] + pair[0])
-    return f"{fields[0]}/{fields[1]}/{fields[2]},{fields[3]}:{fields[4]}:{fields[5]}+{fields[6]}"
-
-
-def _parse_concat_udh(udh: bytes):
-    pos = 0
-    while pos + 2 <= len(udh):
-        iei = udh[pos]
-        iedl = udh[pos + 1]
-        pos += 2
-        content = udh[pos:pos + iedl]
-        pos += iedl
-        if len(content) != iedl:
-            break
-        if iei == 0x00 and iedl == 3:
-            return content[0], content[1], content[2]
-        if iei == 0x08 and iedl == 4:
-            return (content[0] << 8) | content[1], content[2], content[3]
-    return None, None, None
 
 
 def decode_incoming_sms_pdu(pdu_hex: str):
@@ -105,19 +45,16 @@ class SmsPduCorrectionCache:
         max_age: float = 30.0,
         multipart_timestamp_tolerance: float = 5.0,
         multipart_part_timestamp_step: float = 1.0,
-        max_multipart_entries: int = DEFAULT_PDU_MAX_MULTIPART_ENTRIES,
         max_segment_entries: int = DEFAULT_PDU_MAX_SEGMENT_ENTRIES,
         max_complete_entries: int = DEFAULT_PDU_MAX_COMPLETE_ENTRIES,
     ):
         self.max_age = max_age
         self.multipart_timestamp_tolerance = multipart_timestamp_tolerance
         self.multipart_part_timestamp_step = multipart_part_timestamp_step
-        self.max_multipart_entries = max(1, int(max_multipart_entries or DEFAULT_PDU_MAX_MULTIPART_ENTRIES))
         self.max_segment_entries = max(1, int(max_segment_entries or DEFAULT_PDU_MAX_SEGMENT_ENTRIES))
         self.max_complete_entries = max(1, int(max_complete_entries or DEFAULT_PDU_MAX_COMPLETE_ENTRIES))
         self._collecting = False
         self._pdu_lines = []
-        self._multipart = {}
         self._complete_by_key = {}
         self._segments_by_key = {}
         self._last_corrected_message = None
@@ -138,7 +75,8 @@ class SmsPduCorrectionCache:
         self._expire(now)
         self._enforce_cache_limits(log=log)
 
-    def correct_callback_text(self, callback_text: str, parse_callback_head, now: float) -> str:
+    def correct_single_pdu_callback_text(self, callback_text: str, parse_callback_head, now: float) -> str:
+        """Correct a callback body from a cached single-PDU body only."""
         self._last_corrected_message = None
         text = str(callback_text or "")
         sender, body = parse_callback_head(text)
@@ -152,19 +90,12 @@ class SmsPduCorrectionCache:
             candidate = _cached_message_body(item)
             if _should_correct_body(body, candidate):
                 corrected = candidate
-                self._last_corrected_message = _cached_message_metadata(item)
+                self._last_corrected_message = None
                 consumed_index = index
                 break
 
         if consumed_index is None:
-            for item in self._lookup_assembled_candidates(sender, timestamp, now):
-                candidate = _cached_message_body(item)
-                if _should_correct_body(body, candidate):
-                    corrected = candidate
-                    self._last_corrected_message = _cached_message_metadata(item)
-                    break
-            if not corrected:
-                return text
+            return text
         else:
             remaining = list(candidates)
             remaining.pop(consumed_index)
@@ -179,6 +110,10 @@ class SmsPduCorrectionCache:
         if body and text.endswith(body):
             return text[:-len(body)] + corrected
         return f"{sender} {corrected}".strip()
+
+    def correct_callback_text(self, callback_text: str, parse_callback_head, now: float) -> str:
+        """Compatibility alias; do not use for multipart reconstruction."""
+        return self.correct_single_pdu_callback_text(callback_text, parse_callback_head, now)
 
     def concat_part_for_callback(self, callback_text: str, parse_callback_head, now: float):
         text = str(callback_text or "")
@@ -212,19 +147,39 @@ class SmsPduCorrectionCache:
     def last_corrected_message(self):
         return self._last_corrected_message
 
-    def complete_metadata_for_concat_part(self, part, now: float, full_msg=None):
+    def segments_for_concat_part(self, part, now: float, full_msg=None):
         concat_info = getattr(part, "concat_info", None)
+        return self._segments_for_concat(
+            getattr(part, "sender", ""),
+            concat_info,
+            now,
+        )
+
+    def segments_for_message(self, message, now: float, full_msg=None):
+        concat_info = ConcatSmsInfo(
+            getattr(message, "reference", None),
+            getattr(message, "total", None),
+            1,
+            getattr(message, "reference_bits", None) or 8,
+        )
+        return self._segments_for_concat(
+            getattr(message, "sender", ""),
+            concat_info,
+            now,
+        )
+
+    def _segments_for_concat(self, sender, concat_info, now: float):
         if concat_info is None:
-            return None
+            return []
         total = int(getattr(concat_info, "total", 0) or 0)
         reference = getattr(concat_info, "reference", None)
         if total <= 1 or reference is None:
-            return None
+            return []
 
         self._expire(now)
-        normalized_sender = _normalize_sender_for_match(getattr(part, "sender", ""))
+        normalized_sender = _normalize_sender_for_match(sender)
         reference_bits = int(getattr(concat_info, "reference_bits", None) or 8)
-        parts = {}
+        segments = []
         for (candidate_sender, _candidate_timestamp), items in self._segments_by_key.items():
             if candidate_sender != normalized_sender:
                 continue
@@ -242,22 +197,15 @@ class SmsPduCorrectionCache:
                     or candidate_index > total
                 ):
                     continue
-                parts.setdefault(candidate_index, set()).add(str(body or ""))
-
-        if any(index not in parts or len(parts[index]) != 1 for index in range(1, total + 1)):
-            return None
-        body = "".join(next(iter(parts[index])) for index in range(1, total + 1))
-        if full_msg is not None and _normalize_message_text(full_msg) != _normalize_message_text(body):
-            return None
-
-        return _build_cached_message(
-            getattr(part, "sender", ""),
-            getattr(part, "timestamp", ""),
-            body,
-            reference,
-            total,
-            reference_bits,
-        )
+                segments.append(
+                    CachedSmsPduSegment(
+                        str(_sender or sender or ""),
+                        str(body or ""),
+                        ConcatSmsInfo(reference, total, candidate_index, reference_bits),
+                        str(_timestamp or ""),
+                    )
+                )
+        return segments
 
     def _finalize_pdu(self, now: float, log=None):
         pdu_hex = "".join(self._pdu_lines)
@@ -270,42 +218,6 @@ class SmsPduCorrectionCache:
         if decoded.total and decoded.total > 1 and decoded.index:
             self._store_segment(decoded, now)
             self._enforce_segment_limit(log=log)
-            reference_bits = int(getattr(decoded, "reference_bits", None) or 8)
-            key = (
-                decoded.sender,
-                decoded.timestamp,
-                reference_bits,
-                decoded.reference,
-                decoded.total,
-            )
-            entry = self._multipart.setdefault(
-                key,
-                {
-                    "sender": decoded.sender,
-                    "timestamp": decoded.timestamp,
-                    "reference_bits": reference_bits,
-                    "reference": decoded.reference,
-                    "total": decoded.total,
-                    "parts": {},
-                    "seen": now,
-                },
-            )
-            entry["seen"] = now
-            entry["parts"][decoded.index] = decoded.body
-            self._enforce_multipart_limit(log=log)
-            if len(entry["parts"]) == decoded.total:
-                body = "".join(entry["parts"].get(i, "") for i in range(1, decoded.total + 1))
-                self._store_complete(
-                    decoded.sender,
-                    decoded.timestamp,
-                    body,
-                    now,
-                    reference=decoded.reference,
-                    total=decoded.total,
-                    reference_bits=reference_bits,
-                )
-                self._multipart.pop(key, None)
-                self._enforce_complete_limit(log=log)
             return
 
         if decoded.body:
@@ -336,72 +248,6 @@ class SmsPduCorrectionCache:
                 matches.extend(items)
         return matches
 
-    def _lookup_assembled_candidates(self, sender: str, timestamp: str, now: float):
-        normalized_sender = _normalize_sender_for_match(sender)
-        if not normalized_sender or not timestamp:
-            return []
-
-        self._expire(now)
-        grouped = {}
-        for (candidate_sender, candidate_timestamp), items in self._segments_by_key.items():
-            if candidate_sender != normalized_sender:
-                continue
-            if not _timestamp_matches(timestamp, candidate_timestamp, self.multipart_timestamp_tolerance):
-                continue
-            for _sender, segment_timestamp, body, concat_info, seen in items:
-                total = int(getattr(concat_info, "total", 0) or 0)
-                index = int(getattr(concat_info, "index", 0) or 0)
-                reference = getattr(concat_info, "reference", None)
-                if total <= 1 or index < 1 or index > total or reference is None:
-                    continue
-                group_key = (
-                    int(getattr(concat_info, "reference_bits", None) or 8),
-                    int(reference),
-                    total,
-                )
-                entry = grouped.setdefault(group_key, {
-                    "sender": _sender or candidate_sender,
-                    "timestamp": timestamp,
-                    "reference_bits": group_key[0],
-                    "reference": group_key[1],
-                    "total": total,
-                    "parts": {},
-                })
-                entry["parts"].setdefault(index, []).append((str(body or ""), seen, segment_timestamp))
-
-        candidates = []
-        for entry in grouped.values():
-            total = int(entry.get("total") or 0)
-            parts = entry.get("parts") or {}
-            if total <= 1 or any(i not in parts for i in range(1, total + 1)):
-                continue
-            body_parts = []
-            seen_values = []
-            segment_timestamps = []
-            ambiguous = False
-            for i in range(1, total + 1):
-                unique_bodies = {part_body for part_body, _seen, _timestamp in parts[i]}
-                unique_timestamps = {_timestamp for _part_body, _seen, _timestamp in parts[i]}
-                if len(unique_bodies) != 1 or len(unique_timestamps) != 1:
-                    ambiguous = True
-                    break
-                body_parts.append(next(iter(unique_bodies)))
-                segment_timestamps.append(next(iter(unique_timestamps)))
-                seen_values.extend(_seen for _part_body, _seen, _timestamp in parts[i])
-            if not ambiguous and _multipart_timestamps_have_single_anchor(segment_timestamps):
-                body = "".join(body_parts)
-                seen = max(seen_values or [now])
-                message = _build_cached_message(
-                    entry.get("sender") or normalized_sender,
-                    timestamp,
-                    body,
-                    entry.get("reference"),
-                    total,
-                    entry.get("reference_bits"),
-                )
-                candidates.append((body, seen, message))
-        return candidates
-
     def _lookup_all_segments(self, sender: str, timestamp: str, now: float):
         if sender and timestamp:
             return []
@@ -422,16 +268,7 @@ class SmsPduCorrectionCache:
         reference_bits=None,
     ):
         key = self._cache_key(sender, timestamp)
-        message = _build_cached_message(
-            sender,
-            timestamp,
-            body,
-            reference,
-            total,
-            reference_bits,
-        )
-        item = (body, now, message) if message else (body, now)
-        self._complete_by_key.setdefault(key, []).append(item)
+        self._complete_by_key.setdefault(key, []).append((body, now))
 
     def _store_segment(self, decoded, now: float):
         key = self._cache_key(decoded.sender, decoded.timestamp)
@@ -460,11 +297,6 @@ class SmsPduCorrectionCache:
             )
             if items
         }
-        self._multipart = {
-            key: entry
-            for key, entry in self._multipart.items()
-            if now - entry.get("seen", now) <= self.max_age
-        }
         self._segments_by_key = {
             key: items
             for key, items in (
@@ -475,27 +307,8 @@ class SmsPduCorrectionCache:
         }
 
     def _enforce_cache_limits(self, log=None):
-        self._enforce_multipart_limit(log=log)
         self._enforce_segment_limit(log=log)
         self._enforce_complete_limit(log=log)
-
-    def _enforce_multipart_limit(self, log=None):
-        while len(self._multipart) > self.max_multipart_entries:
-            oldest_key = min(
-                self._multipart,
-                key=lambda key: self._multipart[key].get("seen", 0.0),
-            )
-            entry = self._multipart.pop(oldest_key, None)
-            if entry is not None:
-                _emit_cache_log(
-                    log,
-                    (
-                        "[SMS] PDU CACHE EVICT "
-                        f"Cache=MULTIPART Sender={entry.get('sender') or 'unknown'} "
-                        f"Ref=0x{int(entry.get('reference') or 0):X} "
-                        f"Parts={len(entry.get('parts') or {})}/{int(entry.get('total') or 0)}"
-                    ),
-                )
 
     def _enforce_segment_limit(self, log=None):
         while _nested_item_count(self._segments_by_key) > self.max_segment_entries:
@@ -531,15 +344,11 @@ class SmsPduCorrectionCache:
             self._complete_by_key[oldest_key].pop(oldest_index)
             if not self._complete_by_key[oldest_key]:
                 self._complete_by_key.pop(oldest_key, None)
-            metadata = _cached_message_metadata(oldest_item)
-            reference = getattr(metadata, "reference", None) if metadata else None
-            total = getattr(metadata, "total", None) if metadata else None
             _emit_cache_log(
                 log,
                 (
                     "[SMS] PDU CACHE EVICT "
                     f"Cache=COMPLETE Sender={oldest_key[0] or 'unknown'} Timestamp={oldest_key[1] or ''} "
-                    f"Ref=0x{int(reference or 0):X} Total={int(total or 0)}"
                 ),
             )
 
@@ -549,6 +358,8 @@ class SmsPduCorrectionCache:
             if candidate == body or _matches_corrupted_or_truncated_body(body, candidate):
                 matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
             elif body and len(body) >= 16 and candidate.startswith(body):
+                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
+            elif "\ufffd" in str(body or "") and candidate and str(body or "").startswith(candidate):
                 matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
         matches = _dedupe_concat_part_matches(matches)
         if not matches:
@@ -637,47 +448,7 @@ def _should_correct_body(body: str, candidate: str) -> bool:
     )
 
 
-def _build_cached_message(
-    sender: str,
-    timestamp: str,
-    body: str,
-    reference=None,
-    total=None,
-    reference_bits=None,
-):
-    if reference is None or total is None:
-        return None
-    try:
-        reference_value = int(reference)
-        total_value = int(total)
-        reference_bits_value = int(reference_bits or 8)
-    except Exception:
-        return None
-    if total_value <= 1:
-        return None
-
-    normalized_sender = _normalize_sender_for_match(sender)
-    trace_id = message_trace_id(
-        normalized_sender,
-        timestamp,
-        reference_bits_value,
-        reference_value,
-        total_value,
-    )
-    return CachedSmsPduMessage(
-        sender=str(sender or ""),
-        body=str(body or ""),
-        timestamp=str(timestamp or ""),
-        reference=reference_value,
-        total=total_value,
-        reference_bits=reference_bits_value,
-        message_trace_id=trace_id,
-    )
-
-
 def _cached_message_body(item) -> str:
-    if isinstance(item, CachedSmsPduMessage):
-        return str(item.body or "")
     if isinstance(item, (list, tuple)) and item:
         return str(item[0] or "")
     return ""
@@ -690,20 +461,6 @@ def _cached_message_seen(item) -> float:
         except Exception:
             return 0.0
     return 0.0
-
-
-def _cached_message_metadata(item):
-    if isinstance(item, CachedSmsPduMessage):
-        return item
-    if isinstance(item, (list, tuple)) and len(item) >= 3:
-        meta = item[2]
-        if isinstance(meta, CachedSmsPduMessage):
-            return meta
-    return None
-
-
-def _normalize_message_text(value) -> str:
-    return re.sub(r"[\r\n]+", "", str(value or ""))
 
 
 def _callback_timestamp(text: str) -> str:
@@ -730,13 +487,6 @@ def _timestamp_matches(expected: str, candidate: str, tolerance: float) -> bool:
     if expected_dt is None or candidate_dt is None:
         return False
     return abs((expected_dt - candidate_dt).total_seconds()) <= float(tolerance)
-
-
-def _multipart_timestamps_have_single_anchor(timestamps) -> bool:
-    normalized = {str(timestamp or "").strip() for timestamp in list(timestamps or [])}
-    normalized.discard("")
-    return len(normalized) == 1
-
 
 def _parse_sms_timestamp(value: str):
     text = str(value or "").strip()

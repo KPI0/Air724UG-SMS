@@ -307,7 +307,7 @@ class CoreHelperTests(unittest.TestCase):
         def parse_head(text):
             return ("+8613812345678", text.split(" ", 1)[1])
 
-        collector = SmsPendingCollector(parse_head, initial_timeout=1.0, fragment_timeout=0.4, max_follow_lines=2)
+        collector = SmsPendingCollector(parse_head, initial_timeout=1.0, continuation_timeout=0.4)
         line = SMS_CALLBACK_PREFIX + " +8613812345678 26/06/08,12:00:00+32 first"
 
         self.assertEqual(callback_body_from_line(line), "+8613812345678 26/06/08,12:00:00+32 first")
@@ -322,7 +322,7 @@ class CoreHelperTests(unittest.TestCase):
         collected = collector.flush()
 
         self.assertEqual(collected.callback_text, "+8613812345678 26/06/08,12:00:00+32 first")
-        self.assertEqual(collected.follow_lines, ["second", "third"])
+        self.assertEqual(collected.raw_lines, ["second", "third"])
         self.assertFalse(collector.active)
 
     def test_sms_processing_helpers(self):

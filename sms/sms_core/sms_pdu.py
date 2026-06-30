@@ -158,6 +158,33 @@ def _fallback_concat_payload(user_data_hex: str):
     return None, user_data_hex
 
 
+def _has_concat_udh_marker(udh_hex: str):
+    data = _hex_to_bytes(udh_hex)
+    if not data:
+        return False
+    payload = data[1:] if len(data) >= 2 and data[0] == len(data) - 1 else data
+    pos = 0
+    while pos + 2 <= len(payload):
+        iei = payload[pos]
+        iedl = payload[pos + 1]
+        pos += 2
+        content = payload[pos:pos + iedl]
+        pos += iedl
+        if len(content) != iedl:
+            return iei in (0x00, 0x08)
+        if (iei == 0x00 and iedl == 3) or (iei == 0x08 and iedl == 4):
+            return True
+    return False
+
+
+def _has_fallback_concat_marker(user_data_hex: str):
+    data = _hex_to_bytes(user_data_hex)
+    return (
+        len(data) >= 3
+        and (data[0:3] == b"\x05\x00\x03" or data[0:3] == b"\x06\x08\x04")
+    )
+
+
 def decode_received_pdu(pdu_hex: str):
     pdu = re.sub(r"\s+", "", str(pdu_hex or ""))
     if not pdu or len(pdu) % 2:
@@ -195,8 +222,15 @@ def decode_received_pdu(pdu_hex: str):
             udh_with_len = user_data[:2 + udh_hex_len]
             payload = user_data[2 + udh_hex_len:]
             concat_info = decode_concat_udh(udh_with_len)
+            if concat_info is None and _has_concat_udh_marker(udh_with_len):
+                return None
         else:
-            concat_info, payload = _fallback_concat_payload(user_data)
+            if _has_fallback_concat_marker(user_data):
+                concat_info, payload = _fallback_concat_payload(user_data)
+                if concat_info is None:
+                    return None
+            else:
+                concat_info, payload = None, user_data
 
         if dcs != 0x08:
             return None

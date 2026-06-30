@@ -43,7 +43,7 @@ def parse_callback_head(text):
 
 
 class SmsPduCorrectionCacheTests(unittest.TestCase):
-    def test_correct_callback_text_consumes_matching_cache_entry(self):
+    def test_correct_callback_text_is_compatibility_alias_for_single_pdu_correction(self):
         cache = SmsPduCorrectionCache()
         cache._complete_by_key[("10086", "")] = [("中国电信温馨提醒:尊享来电识别", 10.0)]
 
@@ -54,7 +54,20 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         )
 
         self.assertEqual(corrected, "10086 中国电信温馨提醒:尊享来电识别")
-        self.assertEqual(cache.correct_callback_text(
+        self.assertEqual(cache.last_corrected_message(), None)
+
+    def test_correct_callback_text_consumes_matching_cache_entry(self):
+        cache = SmsPduCorrectionCache()
+        cache._complete_by_key[("10086", "")] = [("中国电信温馨提醒:尊享来电识别", 10.0)]
+
+        corrected = cache.correct_single_pdu_callback_text(
+            "10086 中国电信温馨提醒:尊享来电�",
+            parse_callback_head,
+            11.0,
+        )
+
+        self.assertEqual(corrected, "10086 中国电信温馨提醒:尊享来电识别")
+        self.assertEqual(cache.correct_single_pdu_callback_text(
             "10086 中国电信温馨提醒:尊享来电�",
             parse_callback_head,
             12.0,
@@ -126,7 +139,7 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
             [("【中国电信】验证码342089，3分钟内有效。", 10.0)],
         )
 
-    def test_correct_callback_text_assembles_multipart_with_single_timestamp_anchor(self):
+    def test_multipart_pdu_cache_exposes_segments_without_assembling_body(self):
         cache = SmsPduCorrectionCache()
         body = "中国电信温馨提醒:尊享来电识别【号码百事通】"
         part1 = body[:12]
@@ -143,13 +156,18 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         ), 11.1)
         cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 11.2)
 
+        callback = "10086 26/06/28,11:15:50+32 " + body[:18] + "\ufffd"
         corrected = cache.correct_callback_text(
-            "10086 26/06/28,11:15:50+32 " + body[:18] + "\ufffd",
+            callback,
             parse_callback_head,
             12.0,
         )
+        part = cache.concat_part_for_callback(callback, parse_callback_head, 12.0)
+        segments = cache.segments_for_concat_part(part, 12.0)
 
-        self.assertEqual(corrected, "10086 26/06/28,11:15:50+32 " + body)
+        self.assertEqual(corrected, callback)
+        self.assertEqual([segment.body for segment in segments], [part1, part2])
+        self.assertEqual(cache._complete_by_key, {})
 
     def test_correct_callback_text_rejects_multipart_with_near_timestamp_anchor_collision(self):
         cache = SmsPduCorrectionCache()
@@ -329,21 +347,9 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
 
         self.assertIsNone(cache.concat_part_for_callback("AA", parse_sms_callback_head, 13.0))
 
-    def test_multipart_cache_limit_evicts_oldest_entry(self):
-        logs = []
-        cache = SmsPduCorrectionCache(max_multipart_entries=1, max_segment_entries=10)
-        for index, reference in enumerate((0x2A, 0x2B), start=1):
-            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index, log=logs.append)
-            cache.observe_line(_incoming_ucs2_pdu("10086", f"P{index}", reference=reference, total=2, index=1), 10.1 + index, log=logs.append)
-            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index, log=logs.append)
-
-        self.assertEqual(len(cache._multipart), 1)
-        self.assertFalse(any(key[3] == 0x2A for key in cache._multipart))
-        self.assertTrue(any("PDU CACHE EVICT" in item and "Cache=MULTIPART" in item for item in logs))
-
     def test_segment_cache_limit_evicts_oldest_entry(self):
         logs = []
-        cache = SmsPduCorrectionCache(max_segment_entries=2, max_multipart_entries=10)
+        cache = SmsPduCorrectionCache(max_segment_entries=2)
         for index, reference in enumerate((0x2A, 0x2B, 0x2C), start=1):
             cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index, log=logs.append)
             cache.observe_line(_incoming_ucs2_pdu("10086", f"P{index}", reference=reference, total=2, index=1), 10.1 + index, log=logs.append)

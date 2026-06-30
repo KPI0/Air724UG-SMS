@@ -286,7 +286,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
         self.assertEqual(len(assembler._completed), 1)
         self.assertTrue(any("duplicate complete" in item for item in logs))
 
-    def test_default_cleanup_uses_dynamic_incomplete_timeout(self):
+    def test_default_cleanup_uses_fixed_incomplete_timeout(self):
         assembler = LongSmsAssembler(parse_head)
         part1 = PendingSms(
             "10086 26/06/28,12:00:00+32 AA",
@@ -304,10 +304,18 @@ class LongSmsAssemblerTests(unittest.TestCase):
         )
 
         self.assertIsNone(assembler.add_message(part1, now=1.0))
-        complete = assembler.add_message(part2, now=250.0)
-
-        self.assertIsNone(complete)
+        assembler.cleanup(now=250.0)
         self.assertEqual(len(assembler._pending), 1)
+
+        complete = assembler.add_message(part2, now=250.0)
+        self.assertIsNone(complete)
+        self.assertEqual(len(assembler._pending), 2)
+
+        assembler.cleanup(now=302.0)
+        self.assertEqual(len(assembler._pending), 1)
+
+        assembler.cleanup(now=551.0)
+        self.assertEqual(assembler._pending, {})
 
     def test_completed_duplicate_cache_expires_before_incomplete_cache(self):
         assembler = LongSmsAssembler(parse_head)

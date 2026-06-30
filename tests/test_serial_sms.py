@@ -63,7 +63,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertEqual(collector.callback_head, "+8613812345678 second")
 
     def test_handle_sms_collector_line_consumes_fragment_and_boundary(self):
-        collector = SmsPendingCollector(parse_head, max_follow_lines=3)
+        collector = SmsPendingCollector(parse_head)
         collector.start("+8613812345678 first", now=10.0)
         flushed = []
 
@@ -100,7 +100,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(consumed.action, "consumed")
-        self.assertEqual(collector.follow_lines, ["+100.00 元到账"])
+        self.assertEqual(collector.raw_lines, ["+100.00 元到账"])
         self.assertEqual(flushed, [])
 
         boundary = handle_sms_collector_line(
@@ -121,7 +121,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         collected = collector.flush()
 
         self.assertEqual(collected.callback_text, "+8613812345678 first")
-        self.assertEqual(collected.follow_lines, ["follow line"])
+        self.assertEqual(collected.raw_lines, ["follow line"])
 
     def test_collector_does_not_parse_sms_content_while_buffering(self):
         def fail_parse(_text):
@@ -134,18 +134,18 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         collected = collector.flush()
 
         self.assertEqual(collected.callback_text, "+8613812345678 first")
-        self.assertEqual(collected.follow_lines, ["follow line"])
+        self.assertEqual(collected.raw_lines, ["follow line"])
 
-    def test_collector_respects_max_follow_lines(self):
-        collector = SmsPendingCollector(parse_head, max_follow_lines=2)
+    def test_collector_does_not_cap_raw_lines(self):
+        collector = SmsPendingCollector(parse_head)
         collector.start("+8613812345678 first", now=10.0)
 
         self.assertEqual(collector.consume_line("line1", now=10.1), "consumed")
         self.assertEqual(collector.consume_line("line2", now=10.2), "consumed")
-        self.assertEqual(collector.consume_line("line3", now=10.3), "flush")
+        self.assertEqual(collector.consume_line("line3", now=10.3), "consumed")
         collected = collector.flush()
 
-        self.assertEqual(collected.follow_lines, ["line1", "line2"])
+        self.assertEqual(collected.raw_lines, ["line1", "line2", "line3"])
 
     def test_flush_pending_sms_delegates_to_sms_processing(self):
         collector = SmsPendingCollector(parse_head)

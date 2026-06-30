@@ -4,6 +4,8 @@ import hashlib
 import re
 import time
 
+from sms_core.sms_collected_event import pending_from_collected
+
 
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
     r"^\s*\+?\d+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
@@ -46,7 +48,6 @@ class LongSmsAssembler:
             self.incomplete_timeout = self.timeout
         else:
             self.incomplete_timeout = DEFAULT_INCOMPLETE_SMS_TTL
-        self._dynamic_incomplete_timeout = incomplete_timeout is None and not timeout_explicit
         self._pending = {}
         self._completed = {}
         self.multipart_timestamp_tolerance = float(multipart_timestamp_tolerance)
@@ -59,6 +60,22 @@ class LongSmsAssembler:
     def reset(self):
         self._pending.clear()
         self._completed.clear()
+
+    def add_collected(self, collected, correction_cache=None, now=None, log=None):
+        pending = pending_from_collected(
+            collected,
+            self.parse_callback_head,
+            correction_cache=correction_cache,
+            now=now,
+        )
+        if isinstance(pending, list):
+            result = None
+            for item in pending:
+                current = self.add_message(item, now=now, log=log)
+                if current is not None:
+                    result = current
+            return result
+        return self.add_message(pending, now=now, log=log)
 
     def cleanup(self, now=None, log=None):
         current = time.monotonic() if now is None else now
@@ -360,8 +377,6 @@ class LongSmsAssembler:
         total = int(entry.get("total") or 0)
         parts = entry.get("parts") or {}
         if total > 1 and len(parts) < total:
-            if self._dynamic_incomplete_timeout:
-                return _dynamic_incomplete_ttl(total)
             return self.incomplete_timeout
         return self.timeout
 
@@ -577,18 +592,6 @@ def _normalize_sender_for_key(sender: str) -> str:
     if text.startswith("86") and len(text) > 2:
         return text[2:]
     return text
-
-
-def _dynamic_incomplete_ttl(total) -> float:
-    try:
-        total_value = int(total)
-    except Exception:
-        total_value = 0
-    if total_value <= 2:
-        return 120.0
-    if total_value <= 5:
-        return 180.0
-    return 300.0
 
 
 def _timestamp_matches(expected: str, candidate: str, tolerance: float) -> bool:

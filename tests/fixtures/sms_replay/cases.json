@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "single_ucs2_plain_sms",
+      "description": "脱敏普通短信，验证完整串口运行时路径只输出一次。",
+      "lines": [
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,50",
+        "000005810180F6000862608211510523229A8C8BC17801003100320033003400350036FF0C00355206949F5185670965483002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[handler_sms.smsCallback] 10086 26/06/28,11:15:50+32 验证码123456，5分钟内有效。",
+        "[I]-[ril.proatc] OK"
+      ],
+      "expected_popups": [
+        "验证码123456，5分钟内有效。"
+      ],
+      "expected_cloud_bodies": [
+        "验证码123456，5分钟内有效。"
+      ],
+      "forbidden_popup_substrings": [
+        "�"
+      ]
+    },
+    {
+      "name": "multipart_corrupted_callback_recovered_from_pdu",
+      "description": "脱敏长短信，Lua callback 含 replacement char，最终正文必须来自缓存 PDU 分段。",
+      "lines": [
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,156",
+        "004005810110F00008626092616171238C0500032A0201957F77ED4FE152066BB56D4B8BD5FF1A7B2C4E006BB551855BB975284E8E9A8C8BC14E715E8F548C9",
+        "1CD590D52066BB559047406FF0C7B2C4E8C6BB551855BB95305542B8D2653554F59989D30016D4191CF4F5991CF548C670D52A163D0793AFF0C7B2C4E096BB5",
+        "51855BB97EE77EED8865514566F4591A67E58BE265B95F0F4EE553CA7ED3",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,64",
+        "004005810110F0000862609261617123300500032A0202675F8BED30028BF75FFD756591CD590D52066BB5FF0C53EA5C55793A4E006B215B8C657477ED4FE13",
+        "002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[handler_sms.smsCallback] 10010 26/06/29,16:16:17+32 长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二�",
+        "��内容包含账单余额、流量余量和服务提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。",
+        "[I]-[ril.proatc] OK"
+      ],
+      "expected_popups": [
+        "长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二段内容包含账单余额、流量余量和服务提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。"
+      ],
+      "expected_cloud_bodies": [
+        "长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二段内容包含账单余额、流量余量和服务提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。"
+      ],
+      "forbidden_popup_substrings": [
+        "�"
+      ]
+    },
+    {
+      "name": "multipart_out_of_order_duplicate_part",
+      "description": "同一条脱敏长短信的 PDU part2 先到且重复，assembler 应去重、重排并只输出一次完整短信。",
+      "lines": [
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,64",
+        "004005810110F0000862609261617123300500035C0202675F8BED30028BF75FFD756591CD590D52066BB5FF0C53EA5C55793A4E006B215B8C657477ED4FE13",
+        "002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,64",
+        "004005810110F0000862609261617123300500035C0202675F8BED30028BF75FFD756591CD590D52066BB5FF0C53EA5C55793A4E006B215B8C657477ED4FE13",
+        "002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,156",
+        "004005810110F00008626092616171238C0500035C0201957F77ED4FE152066BB56D4B8BD5FF1A7B2C4E006BB551855BB975284E8E9A8C8BC14E715E8F548C9",
+        "1CD590D52066BB559047406FF0C7B2C4E8C6BB551855BB95305542B8D2653554F59989D30016D4191CF4F5991CF548C670D52A163D0793AFF0C7B2C4E096BB5",
+        "51855BB97EE77EED8865514566F4591A67E58BE265B95F0F4EE553CA7ED3",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[handler_sms.smsCallback] 10010 26/06/29,16:16:17+32 长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二段内容包含账单余额、流量余量和服�",
+        "��提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。",
+        "[I]-[ril.proatc] OK"
+      ],
+      "expected_popups": [
+        "长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二段内容包含账单余额、流量余量和服务提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。"
+      ],
+      "expected_cloud_bodies": [
+        "长短信分段测试：第一段内容用于验证乱序和重复分段处理，第二段内容包含账单余额、流量余量和服务提示，第三段内容继续补充更多查询方式以及结束语。请忽略重复分段，只展示一次完整短信。"
+      ],
+      "forbidden_popup_substrings": [
+        "�"
+      ]
+    },
+    {
+      "name": "multipart_reference_reuse_after_completion",
+      "description": "同一发送方复用相同 concat reference，前一条完成后后一条不能串包。",
+      "lines": [
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,82",
+        "004005810100F1000862609271001023420500033302017B2C4E006761540C5F15752877ED4FE1FF1A8D2662374F59989D003200305143FF0C595799106D419",
+        "1CF52694F59003300300030004D0042FF0C8BF7",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,32",
+        "004005810100F1000862609271001023100500033302026CE8610F67E565363002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[handler_sms.smsCallback] 10001 26/06/29,17:00:01+32 第一条同引用短信：账户余额20元，套餐流量剩余300MB，请注意查收。",
+        "[I]-[ril.proatc] OK",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,82",
+        "004005810100F1000862609271000223420500033302017B2C4E8C6761540C5F15752877ED4FE1FF1A8D2662374F59989D003100385143FF0C595799106D419",
+        "1CF52694F59003200380030004D0042FF0C8BF7",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,32",
+        "004005810100F1000862609271000223100500033302026CE8610F67E565363002",
+        "[I]-[TP-PID : ] 0 dcs:  8",
+        "[I]-[handler_sms.smsCallback] 10001 26/06/29,17:00:20+32 第二条同引用短信：账户余额18元，套餐流量剩余280MB，请注意查收。",
+        "[I]-[ril.proatc] OK"
+      ],
+      "expected_popups": [
+        "第一条同引用短信：账户余额20元，套餐流量剩余300MB，请注意查收。",
+        "第二条同引用短信：账户余额18元，套餐流量剩余280MB，请注意查收。"
+      ],
+      "expected_cloud_bodies": [
+        "第一条同引用短信：账户余额20元，套餐流量剩余300MB，请注意查收。",
+        "第二条同引用短信：账户余额18元，套餐流量剩余280MB，请注意查收。"
+      ],
+      "forbidden_popup_substrings": [
+        "�"
+      ]
+    }
+  ]
+}

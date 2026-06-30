@@ -25,7 +25,7 @@ class PendingSms:
 @dataclass
 class CollectedSmsCallback:
     callback_text: str
-    follow_lines: list
+    raw_lines: list
 
 
 @dataclass
@@ -37,25 +37,23 @@ class SmsLineDecision:
 
 
 class SmsPendingCollector:
-    """Collect raw smsCallback frame lines; long-SMS semantics live in LongSmsAssembler."""
+    """Collect raw smsCallback frames without interpreting SMS content."""
 
     def __init__(
         self,
         parse_callback_head=None,
         correction_cache=None,
         initial_timeout: float = 1.0,
-        fragment_timeout: float = 0.4,
-        max_follow_lines=None,
+        continuation_timeout: float = 0.4,
     ):
         self.parse_callback_head = parse_callback_head
         self.initial_timeout = initial_timeout
-        self.fragment_timeout = fragment_timeout
-        self.max_follow_lines = max_follow_lines
+        self.continuation_timeout = continuation_timeout
         self.reset()
 
     def reset(self):
         self.callback_head = ""
-        self.follow_lines = []
+        self.raw_lines = []
         self.deadline = 0.0
         self.active = False
 
@@ -69,7 +67,7 @@ class SmsPendingCollector:
             return False
 
         self.callback_head = text
-        self.follow_lines = []
+        self.raw_lines = []
         self.deadline = now + self.initial_timeout
         self.active = True
         return True
@@ -80,7 +78,7 @@ class SmsPendingCollector:
 
         collected = CollectedSmsCallback(
             callback_text=self.callback_head,
-            follow_lines=list(self.follow_lines),
+            raw_lines=list(self.raw_lines),
         )
         self.reset()
         return collected
@@ -90,21 +88,10 @@ class SmsPendingCollector:
             return "pass"
         if is_sms_collection_boundary(line):
             return "boundary"
-        if self._follow_line_limit_reached():
-            return "flush"
 
-        self.follow_lines.append(line)
-        self.deadline = now + self.fragment_timeout
+        self.raw_lines.append(line)
+        self.deadline = now + self.continuation_timeout
         return "consumed"
-
-    def _follow_line_limit_reached(self) -> bool:
-        if self.max_follow_lines is None:
-            return False
-        try:
-            limit = int(self.max_follow_lines)
-        except Exception:
-            return False
-        return limit >= 0 and len(self.follow_lines) >= limit
 
 
 def callback_body_from_line(line: str, prefix: str = SMS_CALLBACK_PREFIX) -> str:
@@ -172,11 +159,12 @@ def flush_pending_sms(
     else:
         callback_head = collected.callback_text
         _sender, body = collector.parse_callback_head(callback_head) if getattr(collector, "parse_callback_head", None) else ("", callback_head)
-        full_msg = "".join([body or callback_head] + list(collected.follow_lines or [])).strip()
+        raw_lines = list(getattr(collected, "raw_lines", []) or [])
+        full_msg = "\n".join([body or callback_head] + raw_lines).strip()
         pending = PendingSms(
             callback_head=callback_head,
             full_msg=full_msg,
-            display_lines=["📩 收到短信：", callback_head] + list(collected.follow_lines or []),
+            display_lines=["📩 收到短信：", callback_head] + raw_lines,
         )
     if assembler is not None and not hasattr(assembler, "add_collected"):
         pending = assembler.add_message(pending, now=now, log=concat_log)
