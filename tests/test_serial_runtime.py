@@ -344,7 +344,7 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertIn(("sms_popup", (body,)), calls)
         self.assertIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
 
-    def test_concat_progress_logs_do_not_go_to_main_system_ui(self):
+    def test_concat_progress_logs_stay_out_of_user_facing_logs(self):
         calls = []
         state = SerialRuntimeState.create(parse_sms_callback_head)
         callbacks = runtime_callbacks(calls)
@@ -384,7 +384,7 @@ class SerialRuntimeTests(unittest.TestCase):
             item[0] == "debug" and "SMS CONCAT" in str(item[1])
             for item in calls
         ))
-        self.assertTrue(any(
+        self.assertFalse(any(
             item[0] == "file_log" and "SMS CONCAT" in str(item[1])
             for item in calls
         ))

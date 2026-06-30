@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 import codecs
-from datetime import datetime
-import os
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
@@ -84,7 +82,6 @@ class SerialRuntimeCallbacks:
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
     def log(message, tag="normal"):
         _push_sms_diagnostic_debug(callbacks.push_serial_debug, message)
-        _write_sms_diagnostic_file_log(config, callbacks.file_log, message, now_func=now_func)
 
     return log
 
@@ -92,19 +89,6 @@ def build_sms_diagnostic_log(config, callbacks, now_func=None):
 def _push_sms_diagnostic_debug(push_serial_debug, message):
     try:
         push_serial_debug(message)
-    except Exception:
-        pass
-
-
-def _write_sms_diagnostic_file_log(config, file_log, message, now_func=None):
-    try:
-        current = (now_func or datetime.now)()
-        today = current.strftime("%Y-%m-%d")
-        prefix = str(getattr(config, "log_prefix", "") or "system").replace(":", "_")
-        log_dir = str(getattr(config, "log_dir", "") or ".")
-        path = os.path.join(log_dir, f"sms_{prefix}_{today}.txt")
-        line = f"{current:%Y-%m-%d %H:%M:%S} {message}\n"
-        file_log((path, line))
     except Exception:
         pass
 
