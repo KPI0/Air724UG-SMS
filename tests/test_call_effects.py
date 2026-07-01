@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 from types import SimpleNamespace
 
 from sms_core.call_effects import (
@@ -104,8 +104,8 @@ class CallEffectTests(unittest.TestCase):
         decision = CallLineDecision(
             state=CallState(),
             push_message="incoming",
-            incoming_number="+8613812345678",
-            show_popup_number="+8613812345678",
+            incoming_number="+8613123123123",
+            show_popup_number="+8613123123123",
         )
 
         result = apply_call_decision(
@@ -121,9 +121,9 @@ class CallEffectTests(unittest.TestCase):
 
         self.assertFalse(result.stop_processing)
         self.assertEqual(calls[0], ("push", "incoming", "call"))
-        self.assertIn(("ui", "📞 收到来电：来自 +8613812345678", "normal"), calls)
-        self.assertIn(("status", "🔔 响铃中：+8613812345678", "blue"), calls)
-        self.assertIn(("popup", "+8613812345678"), calls)
+        self.assertIn(("ui", "📞 收到来电：来自 +8613123123123", "normal"), calls)
+        self.assertIn(("status", "🔔 响铃中：+8613123123123", "blue"), calls)
+        self.assertIn(("popup", "+8613123123123"), calls)
         self.assertNotIn(("hangup",), calls)
 
     def test_apply_call_decision_passes_call_template_variables(self):
@@ -131,8 +131,8 @@ class CallEffectTests(unittest.TestCase):
         decision = CallLineDecision(
             state=CallState(),
             push_message="incoming",
-            incoming_number="+8613912345678",
-            show_popup_number="+8613912345678",
+            incoming_number="+8613323312312",
+            show_popup_number="+8613323312312",
         )
 
         apply_call_decision(
@@ -150,15 +150,15 @@ class CallEffectTests(unittest.TestCase):
         self.assertEqual(push[0], "push")
         self.assertEqual(push[1], "incoming")
         self.assertEqual(push[2]["event_type"], "call")
-        self.assertEqual(push[2]["variables"]["caller"], "+8613912345678")
-        self.assertEqual(push[2]["variables"]["phone"], "+8613912345678")
+        self.assertEqual(push[2]["variables"]["caller"], "+8613323312312")
+        self.assertEqual(push[2]["variables"]["phone"], "+8613323312312")
 
     def test_apply_call_decision_blocks_and_stops_processing(self):
         calls = []
         decision = CallLineDecision(
             state=CallState(),
             push_message="blocked",
-            blocked_number="+8613812345678",
+            blocked_number="+8613123123123",
             block_reason="黑名单",
             stop_processing=True,
         )
@@ -177,11 +177,11 @@ class CallEffectTests(unittest.TestCase):
         self.assertTrue(result.stop_processing)
         self.assertEqual(calls[0], ("push", "blocked", "call"))
         self.assertIn(
-            ("ui", "🚫 防骚扰拦截：拒接 +8613812345678 (黑名单)", "warning"),
+            ("ui", "🚫 防骚扰拦截：拒接 +8613123123123 (黑名单)", "warning"),
             calls,
         )
         self.assertIn(("hangup",), calls)
-        self.assertNotIn(("popup", "+8613812345678"), calls)
+        self.assertNotIn(("popup", "+8613123123123"), calls)
 
     def test_apply_call_decision_handles_hangup_and_connected(self):
         calls = []

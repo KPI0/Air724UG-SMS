@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
@@ -102,19 +102,19 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
 
     def test_correct_callback_text_normalizes_china_country_code(self):
         cache = SmsPduCorrectionCache()
-        cache._complete_by_key[("13812345678", "26/06/28,11:15:50+32")] = [
+        cache._complete_by_key[("13123123123", "26/06/28,11:15:50+32")] = [
             ("中国电信温馨提醒:尊享来电识别", 10.0),
         ]
 
         corrected = cache.correct_callback_text(
-            "+8613812345678 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电�",
+            "+8613123123123 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电�",
             parse_callback_head,
             11.0,
         )
 
         self.assertEqual(
             corrected,
-            "+8613812345678 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电识别",
+            "+8613123123123 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电识别",
         )
 
     def test_correct_callback_text_selects_matching_candidate_for_same_timestamp(self):

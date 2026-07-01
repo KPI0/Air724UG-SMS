@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import os
 import tempfile
 import hashlib
@@ -157,23 +157,23 @@ class SmsProcessingTests(unittest.TestCase):
 
     def test_parse_sms_callback_metadata_extracts_sender_and_time(self):
         metadata = parse_sms_callback_metadata(
-            "106598731 26/06/24,13:44:15+32 【中国电信】验证码461582"
+            "123123123 26/06/24,13:44:15+32 【中国电信】验证码461582"
         )
 
-        self.assertEqual(metadata["sender"], "106598731")
-        self.assertEqual(metadata["from"], "106598731")
-        self.assertEqual(metadata["phone"], "106598731")
+        self.assertEqual(metadata["sender"], "123123123")
+        self.assertEqual(metadata["from"], "123123123")
+        self.assertEqual(metadata["phone"], "123123123")
         self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
         self.assertEqual(metadata["local_number"], "")
 
     def test_build_sms_ui_display_lines_formats_three_display_lines(self):
         lines = build_sms_ui_display_lines(
-            "106598731 26/06/24,13:44:15+32 【中国电信】验证码461582",
+            "123123123 26/06/24,13:44:15+32 【中国电信】验证码461582",
             "【中国电信】\n验证码461582",
         )
 
         self.assertEqual(lines, [
-            "号码：106598731",
+            "号码：123123123",
             "时间：2026-06-24 13:44:15",
             "内容：",
             "【中国电信】",
@@ -182,12 +182,12 @@ class SmsProcessingTests(unittest.TestCase):
 
     def test_build_sms_ui_display_lines_keeps_single_line_compact(self):
         lines = build_sms_ui_display_lines(
-            "106598731 26/06/24,13:44:15+32 验证码461582",
+            "123123123 26/06/24,13:44:15+32 验证码461582",
             "验证码461582",
         )
 
         self.assertEqual(lines, [
-            "号码：106598731",
+            "号码：123123123",
             "时间：2026-06-24 13:44:15",
             "内容：验证码461582",
         ])
@@ -298,7 +298,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "Verification code:\n123456"
-            callback_head = "+8613812345678 26/06/24,13:44:15+32 Verification code:"
+            callback_head = "+8613123123123 26/06/24,13:44:15+32 Verification code:"
             display_lines = ["old display line"]
 
         def port_ui(text, style):
@@ -329,7 +329,7 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(calls["popup"], ["Verification code:\n123456"])
         self.assertEqual(calls["ui"], [
             ("📩 收到短信：", "normal"),
-            ("号码：+8613812345678", "sms"),
+            ("号码：+8613123123123", "sms"),
             ("时间：2026-06-24 13:44:15", "sms"),
             ("内容：", "sms"),
             ("Verification code:", "sms"),
@@ -341,7 +341,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "验证码461582"
-            callback_head = "106598731 26/06/24,13:44:15+32 验证码461582"
+            callback_head = "123123123 26/06/24,13:44:15+32 验证码461582"
             display_lines = []
 
         process_pending_sms(
@@ -358,7 +358,7 @@ class SmsProcessingTests(unittest.TestCase):
         )
 
         self.assertEqual(calls[0][0], "验证码461582")
-        self.assertEqual(calls[0][1]["variables"]["sender"], "106598731")
+        self.assertEqual(calls[0][1]["variables"]["sender"], "123123123")
         self.assertEqual(calls[0][1]["variables"]["sms_time"], "2026-06-24 13:44:15")
 
     def test_process_pending_sms_keeps_multiline_body_for_push(self):
@@ -366,7 +366,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "第一行\n第二行\n第三行"
-            callback_head = "106598731 26/06/24,13:44:15+32 第一行"
+            callback_head = "123123123 26/06/24,13:44:15+32 第一行"
             display_lines = []
 
         process_pending_sms(
@@ -416,7 +416,7 @@ class SmsProcessingTests(unittest.TestCase):
 
         class MockPending:
             full_msg = "Any message"
-            callback_head = "+8613812345678"
+            callback_head = "+8613123123123"
             display_lines = []
 
         def enqueue_push(msg):

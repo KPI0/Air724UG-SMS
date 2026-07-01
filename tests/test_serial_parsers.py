@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.serial_parsers import (
     parse_cnum_number,
@@ -22,10 +22,10 @@ from sms_core.serial_parsers import (
 
 class SerialParsersTests(unittest.TestCase):
     def test_parse_cnum_number_extracts_local_number(self):
-        self.assertEqual(parse_cnum_number('[I]-[ril.proatc] +CNUM: "","+8613812345678",145'), "+8613812345678")
-        self.assertEqual(parse_cnum_number("+CNUM: 13812345678"), "13812345678")
+        self.assertEqual(parse_cnum_number('[I]-[ril.proatc] +CNUM: "","+8613123123123",145'), "+8613123123123")
+        self.assertEqual(parse_cnum_number("+CNUM: 13123123123"), "13123123123")
         self.assertIsNone(parse_cnum_number("OK"))
-        self.assertIsNone(parse_cnum_number('[I]-[websocket] json: {"message":"+CNUM: 13812345678"}'))
+        self.assertIsNone(parse_cnum_number('[I]-[websocket] json: {"message":"+CNUM: 13123123123"}'))
 
     def test_parse_temperature_extracts_value(self):
         """Should extract temperature from +RFTEMPERATURE response."""
@@ -136,17 +136,17 @@ class SerialParsersTests(unittest.TestCase):
 
     def test_parse_clip_number_extracts_caller_id(self):
         """Should extract caller ID from +CLIP."""
-        number = parse_clip_number('+CLIP: "13812345678",129')
-        self.assertEqual(number, "13812345678")
+        number = parse_clip_number('+CLIP: "13123123123",129')
+        self.assertEqual(number, "13123123123")
 
     def test_parse_clip_number_ignores_websocket_json_payload(self):
-        number = parse_clip_number('[I]-[websocket] json: {"message":"+CLIP: \\"13812345678\\",129"}')
+        number = parse_clip_number('[I]-[websocket] json: {"message":"+CLIP: \\"13123123123\\",129"}')
         self.assertEqual(number, "未知号码")
 
     def test_parse_clip_number_handles_international_format(self):
         """Should handle + prefix in number."""
-        number = parse_clip_number('+CLIP: "+8613812345678",145')
-        self.assertEqual(number, "+8613812345678")
+        number = parse_clip_number('+CLIP: "+8613123123123",145')
+        self.assertEqual(number, "+8613123123123")
 
     def test_parse_clip_number_returns_default_on_no_match(self):
         """Should return default when no CLIP found."""
@@ -156,9 +156,9 @@ class SerialParsersTests(unittest.TestCase):
     def test_evaluate_call_filter_whitelist_mode_allows_listed(self):
         """Whitelist mode: should allow numbers in whitelist."""
         blocked, reason = evaluate_call_filter(
-            "13812345678",
+            "13123123123",
             "Whitelist",
-            ["13812345678", "13912345678"],
+            ["13123123123", "13213213213"],
             []
         )
         self.assertFalse(blocked)
@@ -166,9 +166,9 @@ class SerialParsersTests(unittest.TestCase):
     def test_evaluate_call_filter_whitelist_mode_blocks_unlisted(self):
         """Whitelist mode: should block numbers not in whitelist."""
         blocked, reason = evaluate_call_filter(
-            "13712345678",
+            "13312312312",
             "Whitelist",
-            ["13812345678"],
+            ["13123123123"],
             []
         )
         self.assertTrue(blocked)
@@ -177,10 +177,10 @@ class SerialParsersTests(unittest.TestCase):
     def test_evaluate_call_filter_blacklist_mode_blocks_listed(self):
         """Blacklist mode: should block numbers in blacklist."""
         blocked, reason = evaluate_call_filter(
-            "13812345678",
+            "13123123123",
             "Blacklist",
             [],
-            ["13812345678"]
+            ["13123123123"]
         )
         self.assertTrue(blocked)
         self.assertIn("黑名单", reason)
@@ -188,46 +188,46 @@ class SerialParsersTests(unittest.TestCase):
     def test_evaluate_call_filter_blacklist_mode_allows_unlisted(self):
         """Blacklist mode: should allow numbers not in blacklist."""
         blocked, reason = evaluate_call_filter(
-            "13712345678",
+            "13312312312",
             "Blacklist",
             [],
-            ["13812345678"]
+            ["13123123123"]
         )
         self.assertFalse(blocked)
 
     def test_evaluate_call_filter_disabled_mode_allows_all(self):
         """Disabled mode: should allow all numbers."""
         blocked, reason = evaluate_call_filter(
-            "13812345678",
+            "13123123123",
             "Disabled",
             [],
-            ["13812345678"]
+            ["13123123123"]
         )
         self.assertFalse(blocked)
 
     def test_evaluate_call_filter_normalizes_numbers(self):
         """Should normalize both caller and list numbers before comparing."""
-        # +8613812345678 should match 13812345678 in whitelist
+        # +8613123123123 should match 13123123123 in whitelist
         blocked, _ = evaluate_call_filter(
-            "+8613812345678",
+            "+8613123123123",
             "Whitelist",
-            ["13812345678"],
+            ["13123123123"],
             []
         )
         self.assertFalse(blocked)
 
     def test_is_new_clip_detects_different_number(self):
         """Should return True for different caller number."""
-        self.assertTrue(is_new_clip("13812345678", "13912345678", 100, 90))
+        self.assertTrue(is_new_clip("13123123123", "13213213213", 100, 90))
 
     def test_is_new_clip_detects_timeout(self):
         """Should return True when time window exceeded."""
         # Same number but >4 seconds gap
-        self.assertTrue(is_new_clip("13812345678", "13812345678", 100, 90, window_sec=4.0))
+        self.assertTrue(is_new_clip("13123123123", "13123123123", 100, 90, window_sec=4.0))
 
     def test_is_new_clip_returns_false_within_window(self):
         """Should return False for same number within time window."""
-        self.assertFalse(is_new_clip("13812345678", "13812345678", 100, 98, window_sec=4.0))
+        self.assertFalse(is_new_clip("13123123123", "13123123123", 100, 98, window_sec=4.0))
 
     def test_is_ring_line_recognizes_ring(self):
         """Should recognize RING lines."""
@@ -278,7 +278,7 @@ class SerialParsersTests(unittest.TestCase):
 
     def test_is_sms_collection_boundary_keeps_numeric_plus_sms_content(self):
         """Should not treat SMS continuation lines starting with phone-like +digits as AT boundaries."""
-        self.assertFalse(is_sms_collection_boundary("+8613812345678 可联系客服"))
+        self.assertFalse(is_sms_collection_boundary("+8613123123123 可联系客服"))
         self.assertFalse(is_sms_collection_boundary("+100.00 元到账"))
 
     def test_is_sms_collection_boundary_recognizes_debug_marker(self):

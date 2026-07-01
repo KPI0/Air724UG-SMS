@@ -1,4 +1,4 @@
-import configparser
+﻿import configparser
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +19,7 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
             "THIRD_PUSH_CALL_ENABLED": True,
             "THIRD_PUSH_TYPES": ["dingtalk"],
             "THIRD_PUSH_SETTINGS": {"dingtalk_webhook": "url"},
-            "LOCAL_NUMBER": "+8613812345678",
+            "LOCAL_NUMBER": "+8613123123123",
             "third_push_stop": "stop",
             "THIRD_PUSH_Q": "queue",
             "LOG_PREFIX": "COM5",
@@ -160,14 +160,14 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
             result = runtime.enqueue_third_push_namespace_runtime(
                 namespace,
                 "raw",
-                variables={"sender": "106598731", "local_number": "", "self_number": ""},
+                variables={"sender": "123123123", "local_number": "", "self_number": ""},
             )
 
         self.assertEqual(result, "queued")
         variables = enqueue_runtime.call_args.kwargs["variables"]
-        self.assertEqual(variables["sender"], "106598731")
-        self.assertEqual(variables["local_number"], "+8613812345678")
-        self.assertEqual(variables["self_number"], "+8613812345678")
+        self.assertEqual(variables["sender"], "123123123")
+        self.assertEqual(variables["local_number"], "+8613123123123")
+        self.assertEqual(variables["self_number"], "+8613123123123")
 
     def test_open_window_forwards_callbacks_and_stores_window(self):
         namespace = self.make_namespace()

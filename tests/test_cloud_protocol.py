@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.cloud_protocol import (
     CLOUD_WS_DEFAULT_PATH,
@@ -68,27 +68,27 @@ class CloudProtocolTests(unittest.TestCase):
 
     def test_parse_sms_callback_head_extracts_phone_and_message(self):
         """Should extract phone number and message from callback format."""
-        text = '+8613812345678 24/12/25,14:30:45+32 Hello World'
+        text = '+8613123123123 24/12/25,14:30:45+32 Hello World'
         phone, message = parse_sms_callback_head(text)
 
-        self.assertEqual(phone, "+8613812345678")
+        self.assertEqual(phone, "+8613123123123")
         self.assertEqual(message, "Hello World")
 
     def test_parse_sms_callback_head_handles_multiline_message(self):
         """Should preserve multiline message content."""
-        text = '+8613812345678 24/12/25,14:30:45+32 Line1\nLine2\nLine3'
+        text = '+8613123123123 24/12/25,14:30:45+32 Line1\nLine2\nLine3'
         phone, message = parse_sms_callback_head(text)
 
-        self.assertEqual(phone, "+8613812345678")
+        self.assertEqual(phone, "+8613123123123")
         self.assertIn("Line1", message)
         self.assertIn("Line3", message)
 
     def test_parse_sms_callback_head_handles_phone_without_plus(self):
         """Should handle phone numbers without + prefix."""
-        text = '13812345678 24/12/25,14:30:45+32 Message'
+        text = '13123123123 24/12/25,14:30:45+32 Message'
         phone, message = parse_sms_callback_head(text)
 
-        self.assertEqual(phone, "13812345678")
+        self.assertEqual(phone, "13123123123")
         self.assertEqual(message, "Message")
 
     def test_parse_sms_callback_head_returns_original_on_no_match(self):

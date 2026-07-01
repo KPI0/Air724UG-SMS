@@ -3,9 +3,9 @@ from sms_ui.ui_log_runtime import (
     flush_pending_ui_logs_runtime,
     insert_main_text_runtime,
     log_file_only_runtime,
-    run_log_runtime,
     system_ui_runtime,
     ui_only_runtime,
+    write_port_log_runtime,
 )
 
 
@@ -90,16 +90,31 @@ def flush_pending_ui_logs_namespace_runtime(namespace):
 
 
 def log_namespace_runtime(namespace, msg, tag="normal"):
-    def ui_and_file():
-        return run_log_runtime(
+    try:
+        write_port_log_runtime(
             msg,
-            tag,
-            has_text=namespace["main_text_available"],
-            insert_text=namespace["safe_insert_main_text"],
-            log_early=namespace["log_early"],
-            log_dir=namespace["LOG_DIR"],
-            log_prefix=namespace["LOG_PREFIX"],
-            file_log=namespace["FILE_LOG_Q"].put_nowait,
+            namespace["LOG_DIR"],
+            namespace["LOG_PREFIX"],
+            namespace["FILE_LOG_Q"].put_nowait,
         )
+    except Exception:
+        pass
 
-    return namespace["run_on_ui_thread"](ui_and_file, namespace["ui_post"])
+    def ui_only():
+        try:
+            if namespace["main_text_available"]():
+                namespace["safe_insert_main_text"](msg, tag)
+                return "logged"
+            try:
+                namespace["PENDING_UI_LOGS"].put_nowait((msg, tag))
+            except Exception:
+                pass
+            return "pending"
+        except Exception:
+            try:
+                namespace["PENDING_UI_LOGS"].put_nowait((msg, tag))
+            except Exception:
+                pass
+            return "pending"
+
+    return namespace["run_on_ui_thread"](ui_only, namespace["ui_post"])

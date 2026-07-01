@@ -134,6 +134,21 @@ class UiLogNamespaceRuntimeTests(unittest.TestCase):
         self.assertIn(("insert", ("msg", "tag")), namespace["calls"])
         self.assertEqual(len(namespace["FILE_LOG_Q"].items), 1)
 
+    def test_log_namespace_runtime_writes_file_before_posted_ui_runs(self):
+        namespace = self.make_namespace()
+        posted = []
+        namespace["run_on_ui_thread"] = lambda callback, ui_post: posted.append((callback, ui_post))
+
+        result = log_namespace_runtime(namespace, "msg", "tag")
+
+        self.assertIsNone(result)
+        self.assertEqual(len(namespace["FILE_LOG_Q"].items), 1)
+        self.assertEqual(posted[0][1], "ui_post")
+        self.assertNotIn(("insert", ("msg", "tag")), namespace["calls"])
+
+        self.assertEqual(posted[0][0](), "logged")
+        self.assertIn(("insert", ("msg", "tag")), namespace["calls"])
+
 
 if __name__ == "__main__":
     unittest.main()

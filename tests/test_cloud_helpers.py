@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.cloud_auth import (
     auth_match_result,
@@ -39,21 +39,21 @@ class CloudHelperTests(unittest.TestCase):
         self.assertTrue(reason)
 
         self.assertEqual(
-            target_match_result({"target_imei": ["000", "861234567890123"]}, "861234567890123"),
+            target_match_result({"target_imei": ["000", "123456789012345"]}, "123456789012345"),
             (True, ""),
         )
-        ok, reason = target_match_result({"target_imei": "000"}, "861234567890123")
+        ok, reason = target_match_result({"target_imei": "000"}, "123456789012345")
         self.assertFalse(ok)
         self.assertTrue(reason)
 
         self.assertEqual(
-            auth_match_result({"target_imei": "861234567890123", "password": "s3"}, "861234567890123", "s3"),
+            auth_match_result({"target_imei": "123456789012345", "password": "s3"}, "123456789012345", "s3"),
             (True, ""),
         )
 
     def test_cloud_payload_builders(self):
-        identity = identity_payload("861234567890123", "3.6.6", device_name="host-a")
-        self.assertEqual(identity["imei"], "861234567890123")
+        identity = identity_payload("123456789012345", "3.6.6", device_name="host-a")
+        self.assertEqual(identity["imei"], "123456789012345")
         self.assertEqual(identity["device_name"], "host-a")
 
         register = build_register_payload(True, 100, identity, "s3", "COM5", 115200, "Auto", "now")
@@ -73,19 +73,19 @@ class CloudHelperTests(unittest.TestCase):
         self.assertIn("AT", serial_log["data"])
 
         sms = build_sms_event_payload(
-            "+8613812345678 26/06/08,12:00:00+32 hello",
+            "+8613123123123 26/06/08,12:00:00+32 hello",
             "hello world",
             103,
             identity,
             "now",
         )
         self.assertEqual(sms["type"], "sms_event")
-        self.assertEqual(sms["phone"], "+8613812345678")
+        self.assertEqual(sms["phone"], "+8613123123123")
         self.assertEqual(sms["content"], "hello world")
         self.assertIn("hello world", sms["message"])
 
         traced_sms = build_sms_event_payload(
-            "+8613812345678 26/06/08,12:00:00+32 hello",
+            "+8613123123123 26/06/08,12:00:00+32 hello",
             "hello world",
             103,
             identity,

@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_sms import PendingSms
@@ -572,7 +572,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
     def test_sender_key_normalizes_callback_and_pdu_sender(self):
         assembler = LongSmsAssembler(parse_head)
         part1 = PendingSms(
-            "+8613812345678 26/06/28,12:00:00+32 AA",
+            "+8613123123123 26/06/28,12:00:00+32 AA",
             "AA",
             [],
             ConcatSmsInfo(0x2A, 2, 1),
@@ -584,7 +584,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
             [],
             ConcatSmsInfo(0x2A, 2, 2),
             "BB",
-            "13812345678",
+            "13123123123",
             "26/06/28,12:00:00+32",
         )
 

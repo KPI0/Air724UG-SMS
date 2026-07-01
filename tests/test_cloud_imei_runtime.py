@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import re
 
 from sms_core.cloud_imei_runtime import (
@@ -52,7 +52,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
             get_loop=lambda: loop,
             get_ws=lambda: ws,
             is_connected=lambda: True,
-            runtime_imei=lambda: "861234567890123",
+            runtime_imei=lambda: "123456789012345",
             send_register=send_register,
             run_coroutine_threadsafe=lambda coro, next_loop: calls.append((coro, next_loop)),
         )
@@ -66,7 +66,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
             "get_loop": lambda: FakeLoop(),
             "get_ws": lambda: object(),
             "is_connected": lambda: True,
-            "runtime_imei": lambda: "861234567890123",
+            "runtime_imei": lambda: "123456789012345",
             "send_register": lambda ws: "coro",
             "run_coroutine_threadsafe": lambda *_args: None,
         }
@@ -97,8 +97,8 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         calls = []
 
         result = set_cloud_device_imei_runtime(
-            "IMEI: 861234567890123",
-            current_imei=lambda: "861234567890123",
+            "IMEI: 123456789012345",
+            current_imei=lambda: "123456789012345",
             normalize_imei=lambda value: re.sub(r"\D", "", str(value or "")),
             set_device_imei=lambda value: calls.append(("imei", value)),
             set_verified=lambda value: calls.append(("verified", value)),
@@ -113,7 +113,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         calls = []
 
         result = set_cloud_device_imei_runtime(
-            "IMEI: 861234567890123",
+            "IMEI: 123456789012345",
             current_imei=lambda: "",
             normalize_imei=lambda value: re.sub(r"\D", "", str(value or "")),
             set_device_imei=lambda value: calls.append(("imei", value)),
@@ -123,9 +123,9 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(calls[0], ("imei", "861234567890123"))
+        self.assertEqual(calls[0], ("imei", "123456789012345"))
         self.assertEqual(calls[1], ("verified", True))
-        self.assertIn("861234567890123", calls[2][1])
+        self.assertIn("123456789012345", calls[2][1])
         self.assertEqual(calls[3], ("notify",))
 
     def test_maybe_capture_cloud_device_imei_runtime_ignores_inactive_and_echo(self):
@@ -134,7 +134,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             maybe_capture_cloud_device_imei_runtime(
-                "861234567890123",
+                "123456789012345",
                 query_deadline=0.0,
                 set_query_deadline=lambda value: calls.append(("deadline", value)),
                 imei_regex=regex,
@@ -160,7 +160,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         calls = []
 
         result = maybe_capture_cloud_device_imei_runtime(
-            "861234567890123",
+            "123456789012345",
             query_deadline=10.0,
             set_query_deadline=lambda value: calls.append(("deadline", value)),
             imei_regex=re.compile(r"\b(\d{14,17})\b"),
@@ -175,7 +175,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         calls = []
 
         result = maybe_capture_cloud_device_imei_runtime(
-            "IMEI: 861234567890123",
+            "IMEI: 123456789012345",
             query_deadline=10.0,
             set_query_deadline=lambda value: calls.append(("deadline", value)),
             imei_regex=re.compile(r"\b(\d{14,17})\b"),
@@ -184,7 +184,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "captured")
-        self.assertEqual(calls, [("imei", "861234567890123", IMEI_READ_COMMAND), ("deadline", 0.0)])
+        self.assertEqual(calls, [("imei", "123456789012345", IMEI_READ_COMMAND), ("deadline", 0.0)])
 
     def test_maybe_capture_cloud_device_imei_runtime_reports_no_match_and_unchanged(self):
         regex = re.compile(r"\b(\d{14,17})\b")
@@ -202,7 +202,7 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             maybe_capture_cloud_device_imei_runtime(
-                "861234567890123",
+                "123456789012345",
                 query_deadline=10.0,
                 set_query_deadline=lambda value: None,
                 imei_regex=regex,

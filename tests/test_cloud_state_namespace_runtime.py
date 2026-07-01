@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import re
 import unittest
 from types import SimpleNamespace
@@ -31,7 +31,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
             "APP_VERSION": "1.0.0",
-            "CLOUD_DEVICE_IMEI": "IMEI: 861234567890123",
+            "CLOUD_DEVICE_IMEI": "IMEI: 123456789012345",
             "CLOUD_DEVICE_SECRET": "secret",
             "cloud_imei_verified": True,
             "cloud_ws_loop": "loop",
@@ -51,7 +51,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
             "threading": FakeThreading,
             "_normalize_imei": lambda value: re.sub(r"\D", "", str(value or "")),
             "_cloud_identity_payload_core": lambda imei, version: {"imei": imei, "version": version},
-            "_cloud_runtime_imei": lambda: "861234567890123",
+            "_cloud_runtime_imei": lambda: "123456789012345",
             "_cloud_send_register": lambda ws: ("register", ws),
             "_cloud_log": lambda message: None,
             "_notify_cloud_identity_changed": lambda: "notified",
@@ -61,7 +61,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_auth_match_result": lambda data, imei, secret: (True, ""),
             "_cloud_build_status_payload": lambda *args: ("status_payload", args),
             "_cloud_now_ts": lambda: 123,
-            "_cloud_identity_payload": lambda: {"imei": "861234567890123"},
+            "_cloud_identity_payload": lambda: {"imei": "123456789012345"},
             "_cloud_reply": lambda ws, payload: ("reply", ws, payload),
             "_cloud_check_replay_window_core": lambda *args, **kwargs: SimpleNamespace(ok=True, log_message="", payload=None),
         }
@@ -69,10 +69,10 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
     def test_runtime_imei_and_identity_payload_read_namespace(self):
         namespace = self.base_namespace()
 
-        self.assertEqual(cloud_runtime_imei_namespace_runtime(namespace), "861234567890123")
+        self.assertEqual(cloud_runtime_imei_namespace_runtime(namespace), "123456789012345")
         self.assertEqual(
             cloud_identity_payload_namespace_runtime(namespace),
-            {"imei": "861234567890123", "version": "1.0.0"},
+            {"imei": "123456789012345", "version": "1.0.0"},
         )
 
         namespace["cloud_imei_verified"] = False
@@ -92,7 +92,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["get_loop"](), "loop")
         self.assertEqual(forwarded["get_ws"](), "ws")
         self.assertTrue(forwarded["is_connected"]())
-        self.assertEqual(forwarded["runtime_imei"](), "861234567890123")
+        self.assertEqual(forwarded["runtime_imei"](), "123456789012345")
 
     def test_set_cloud_device_imei_namespace_runtime_updates_state(self):
         namespace = self.base_namespace()
@@ -100,18 +100,18 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
 
         result = set_cloud_device_imei_namespace_runtime(
             namespace,
-            "861234567890999",
+            "123456789012999",
             source="test",
             set_imei_runtime=lambda imei, **kwargs: (
                 calls.append((imei, kwargs)),
-                kwargs["set_device_imei"]("861234567890999"),
+                kwargs["set_device_imei"]("123456789012999"),
                 kwargs["set_verified"](True),
                 "updated",
             )[-1],
         )
 
         self.assertEqual(result, "updated")
-        self.assertEqual(namespace["CLOUD_DEVICE_IMEI"], "861234567890999")
+        self.assertEqual(namespace["CLOUD_DEVICE_IMEI"], "123456789012999")
         self.assertTrue(namespace["cloud_imei_verified"])
         self.assertEqual(calls[0][1]["source"], "test")
 
@@ -125,7 +125,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         )
         capture_result = maybe_capture_cloud_device_imei_namespace_runtime(
             namespace,
-            "IMEI: 861234567890123",
+            "IMEI: 123456789012345",
             capture_runtime=lambda line, **kwargs: (
                 calls.append(("capture", line, kwargs)),
                 kwargs["set_query_deadline"](0.0),
@@ -163,7 +163,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         forwarded = calls[0]
         self.assertEqual(forwarded["get_serial"](), "serial")
         self.assertEqual(forwarded["timestamp"](), 123)
-        self.assertEqual(forwarded["identity_payload"](), {"imei": "861234567890123"})
+        self.assertEqual(forwarded["identity_payload"](), {"imei": "123456789012345"})
         self.assertEqual(forwarded["serial_port"], "COM5")
 
     def test_check_replay_window_namespace_runtime_replies_on_rejection(self):

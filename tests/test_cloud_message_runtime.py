@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import unittest
 
@@ -181,7 +181,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertTrue(any("已隐藏" in item for item in receive_logs))
 
     def test_handle_cloud_message_hides_sms_summary_metadata_in_receive_log(self):
-        phone = "+8613812345678"
+        phone = "+8613123123123"
         message = "验证码 1234"
         state, calls, replies, replay_checks = run(self._handle(
             json.dumps({
@@ -483,7 +483,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             "AT+CMGF=0",
             command_meta={
                 "sms_log": "summary",
-                "sms_phone": "+8613812345678",
+                "sms_phone": "+8613123123123",
                 "sms_message": "验证码 1234",
             },
             serial_lock=DummyLock(),
@@ -496,7 +496,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(calls, [
-            ("port_ui", "云端发送短信至 +8613812345678：", "normal"),
+            ("port_ui", "云端发送短信至 +8613123123123：", "normal"),
             ("port_ui", "验证码 1234", "sms"),
         ])
 

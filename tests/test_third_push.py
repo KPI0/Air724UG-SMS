@@ -1,4 +1,4 @@
-import configparser
+﻿import configparser
 import json
 import queue
 import unittest
@@ -83,7 +83,7 @@ class ThirdPushDispatchTests(unittest.TestCase):
         message = format_message(
             "【中国电信】验证码461582，3分钟内有效。",
             variables={
-                "sender": "106598731",
+                "sender": "123123123",
                 "local_number": "",
                 "sms_time": "2026-06-24 13:44:15",
             },
@@ -92,26 +92,26 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(
             message,
             "【中国电信】验证码461582，3分钟内有效。\n\n"
-            "发件号码：106598731\n"
+            "发件号码：123123123\n"
             "本机号码：\n"
             "时间：2026-06-24 13:44:15",
         )
 
     def test_format_message_uses_call_metadata_variables(self):
         message = format_message(
-            "收到来电：来自 +8613912345678",
+            "收到来电：来自 +8613323312312",
             template="收到来电：{caller}\n\n本机号码：{local_number}\n时间：{call_time}",
             variables={
-                "caller": "+8613912345678",
-                "local_number": "+8613812345678",
+                "caller": "+8613323312312",
+                "local_number": "+8613123123123",
                 "call_time": "2026-06-24 13:52:55",
             },
         )
 
         self.assertEqual(
             message,
-            "收到来电：+8613912345678\n\n"
-            "本机号码：+8613812345678\n"
+            "收到来电：+8613323312312\n\n"
+            "本机号码：+8613123123123\n"
             "时间：2026-06-24 13:52:55",
         )
 

@@ -68,7 +68,7 @@ class CloudAuthTests(unittest.TestCase):
     def test_target_imeis_handles_list_of_imeis(self):
         """Should normalize list of IMEIs."""
         raw, normalized = target_imeis({
-            "target_imei": ["123456789012345", "987654321098765"]
+            "target_imei": ["123456789012345", "123456789012346"]
         })
         self.assertIsInstance(raw, list)
         self.assertEqual(len(normalized), 2)
@@ -142,7 +142,7 @@ class CloudAuthTests(unittest.TestCase):
     def test_target_match_result_rejects_different_imei(self):
         """Should reject when target IMEI differs from local."""
         ok, msg = target_match_result(
-            {"target_imei": "999999999999999"},
+            {"target_imei": "123456789012999"},
             "123456789012345"
         )
         self.assertFalse(ok)
@@ -166,7 +166,7 @@ class CloudAuthTests(unittest.TestCase):
     def test_target_match_result_accepts_broadcast_to_list(self):
         """Should accept when local IMEI is in target list."""
         ok, msg = target_match_result(
-            {"target_imei": ["111111111111111", "123456789012345", "999999999999999"]},
+            {"target_imei": ["123456789012346", "123456789012345", "123456789012999"]},
             "123456789012345"
         )
         self.assertTrue(ok)
@@ -184,7 +184,7 @@ class CloudAuthTests(unittest.TestCase):
     def test_auth_match_result_rejects_on_target_mismatch(self):
         """Should reject if target IMEI doesn't match (even with correct secret)."""
         ok, msg = auth_match_result(
-            {"target_imei": "999999999999999", "secret": "password123"},
+            {"target_imei": "123456789012999", "secret": "password123"},
             "123456789012345",
             "password123"
         )

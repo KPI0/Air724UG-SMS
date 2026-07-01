@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.serial_line_effects import apply_serial_line_effects, push_serial_debug_insights
 
@@ -42,7 +42,7 @@ class SerialLineEffectsTests(unittest.TestCase):
 
     def test_apply_serial_line_effects_updates_local_number_from_cnum(self):
         calls = []
-        line = '[I]-[ril.proatc] +CNUM: "","+8613812345678",145'
+        line = '[I]-[ril.proatc] +CNUM: "","+8613123123123",145'
 
         apply_serial_line_effects(
             line,
@@ -54,7 +54,7 @@ class SerialLineEffectsTests(unittest.TestCase):
             lambda value: calls.append(("local", value)),
         )
 
-        self.assertIn(("local", "+8613812345678"), calls)
+        self.assertIn(("local", "+8613123123123"), calls)
 
     def test_push_serial_debug_insights_pushes_parser_messages(self):
         calls = []

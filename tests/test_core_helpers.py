@@ -1,4 +1,4 @@
-import os
+﻿import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -106,12 +106,12 @@ class CoreHelperTests(unittest.TestCase):
             self.wait_count += 1
 
     def test_normalize_call_number_strips_china_prefix(self):
-        self.assertEqual(normalize_call_number("+8613812345678"), "13812345678")
-        self.assertEqual(normalize_call_number("8613812345678"), "13812345678")
+        self.assertEqual(normalize_call_number("+8613123123123"), "13123123123")
+        self.assertEqual(normalize_call_number("8613123123123"), "13123123123")
         self.assertEqual(normalize_call_number("10086"), "10086")
 
     def test_encode_text_sms_pdu_uses_ucs2_and_cmgs_tpdu_length(self):
-        pdu, cmgs_len = encode_text_sms_pdu("+8613812345678", "\u6d4b\u8bd5")
+        pdu, cmgs_len = encode_text_sms_pdu("+8613123123123", "\u6d4b\u8bd5")
 
         self.assertTrue(pdu.startswith("0011000D91"))
         self.assertIn("6D4B8BD5", pdu)
@@ -279,19 +279,19 @@ class CoreHelperTests(unittest.TestCase):
         )
 
     def test_serial_call_event_helpers(self):
-        self.assertEqual(parse_clip_number('+CLIP: "+8613812345678",129'), "+8613812345678")
+        self.assertEqual(parse_clip_number('+CLIP: "+8613123123123",129'), "+8613123123123")
         self.assertEqual(parse_clip_number("no caller"), "\u672a\u77e5\u53f7\u7801")
 
         self.assertEqual(
-            evaluate_call_filter("+8613812345678", "Whitelist", ["13812345678"], []),
+            evaluate_call_filter("+8613123123123", "Whitelist", ["13123123123"], []),
             (False, ""),
         )
         self.assertEqual(
-            evaluate_call_filter("+8613812345678", "Whitelist", ["10086"], []),
+            evaluate_call_filter("+8613123123123", "Whitelist", ["10086"], []),
             (True, "\u4e0d\u5728\u767d\u540d\u5355"),
         )
         self.assertEqual(
-            evaluate_call_filter("+8613812345678", "Blacklist", [], ["13812345678"]),
+            evaluate_call_filter("+8613123123123", "Blacklist", [], ["13123123123"]),
             (True, "\u547d\u4e2d\u9ed1\u540d\u5355"),
         )
 
@@ -305,12 +305,12 @@ class CoreHelperTests(unittest.TestCase):
 
     def test_sms_pending_collector(self):
         def parse_head(text):
-            return ("+8613812345678", text.split(" ", 1)[1])
+            return ("+8613123123123", text.split(" ", 1)[1])
 
         collector = SmsPendingCollector(parse_head, initial_timeout=1.0, continuation_timeout=0.4)
-        line = SMS_CALLBACK_PREFIX + " +8613812345678 26/06/08,12:00:00+32 first"
+        line = SMS_CALLBACK_PREFIX + " +8613123123123 26/06/08,12:00:00+32 first"
 
-        self.assertEqual(callback_body_from_line(line), "+8613812345678 26/06/08,12:00:00+32 first")
+        self.assertEqual(callback_body_from_line(line), "+8613123123123 26/06/08,12:00:00+32 first")
         self.assertTrue(collector.start(callback_body_from_line(line), now=10.0))
         self.assertTrue(collector.active)
         self.assertFalse(collector.expired(10.5))
@@ -321,7 +321,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(collector.consume_line("[I]-[ril] next", now=11.4), "boundary")
         collected = collector.flush()
 
-        self.assertEqual(collected.callback_text, "+8613812345678 26/06/08,12:00:00+32 first")
+        self.assertEqual(collected.callback_text, "+8613123123123 26/06/08,12:00:00+32 first")
         self.assertEqual(collected.raw_lines, ["second", "third"])
         self.assertFalse(collector.active)
 
@@ -441,14 +441,14 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(build_pin_lock_command("1234", enable=True), 'AT+CLCK="SC",1,"1234"')
         self.assertEqual(build_pin_lock_command("1234", enable=False), 'AT+CLCK="SC",0,"1234"')
         self.assertEqual(build_pin_change_command("1234", "5678"), 'AT+CPWD="SC","1234","5678"')
-        self.assertEqual(normalize_own_number("13812345678"), "+8613812345678")
+        self.assertEqual(normalize_own_number("13123123123"), "+8613123123123")
         self.assertEqual(
-            build_own_number_commands("13812345678"),
-            ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613812345678",145', "AT+CNUM"),
+            build_own_number_commands("13123123123"),
+            ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613123123123",145', "AT+CNUM"),
         )
         self.assertEqual(build_sn_command("ABC123"), "AT+WISN=ABC123")
-        self.assertEqual(normalize_dial_number("+8613812345678"), "13812345678")
-        self.assertEqual(build_dial_command("8613812345678"), "ATD13812345678;")
+        self.assertEqual(normalize_dial_number("+8613123123123"), "13123123123")
+        self.assertEqual(build_dial_command("13123123123"), "ATD13123123123;")
         self.assertEqual(HANGUP_COMMAND, "ATH")
 
     def test_serial_sender_writes_command_and_sequence(self):
@@ -479,7 +479,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertFalse(
             write_text_sms_pdu(
                 serial_obj,
-                "+8613812345678",
+                "+8613123123123",
                 "测试",
                 push_debug=debug_lines.append,
                 port_ui=lambda *args: ui_lines.append(args),
@@ -498,7 +498,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(
             write_text_sms_pdu(
                 serial_obj,
-                "+8613812345678",
+                "+8613123123123",
                 "测试",
                 push_debug=debug_lines.append,
                 port_ui=lambda *args: ui_lines.append(args),
@@ -511,7 +511,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(serial_obj.writes[1].startswith(b"AT+CMGS="))
         self.assertTrue(serial_obj.writes[2].endswith(b"\x1a"))
         self.assertIn(">>> 发送 PDU 正文及 Ctrl+Z，等待模组响应...", debug_lines)
-        self.assertEqual(ui_lines[0], ("📤 发送短信至 +8613812345678：", "normal"))
+        self.assertEqual(ui_lines[0], ("📤 发送短信至 +8613123123123：", "normal"))
 
 
 if __name__ == "__main__":

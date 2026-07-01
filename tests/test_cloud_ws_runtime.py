@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import unittest
 
 from sms_core.cloud_ws_runtime import (
@@ -214,7 +214,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
             "ws://server",
             2,
             stop_event=stop_event,
-            runtime_imei=lambda: "861234567890123",
+            runtime_imei=lambda: "123456789012345",
             request_cloud_device_imei=lambda: calls.append(("request",)),
             set_cloud_status=lambda *args: calls.append(("status", args)),
             log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
@@ -258,7 +258,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
             "ws://server",
             1,
             stop_event=stop_event,
-            runtime_imei=lambda: "861234567890123",
+            runtime_imei=lambda: "123456789012345",
             request_cloud_device_imei=lambda: calls.append(("request",)),
             set_cloud_status=lambda *args: calls.append(("status", args)),
             log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),

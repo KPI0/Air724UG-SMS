@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.call_events import (
     CallState,
@@ -16,7 +16,7 @@ from sms_core.call_events import (
 class CallEventTests(unittest.TestCase):
     def test_handle_clip_line_allows_new_call(self):
         decision = handle_clip_line(
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             last_clip_num="",
             last_clip_time=0.0,
             now=10.0,
@@ -25,22 +25,22 @@ class CallEventTests(unittest.TestCase):
             blacklist=[],
         )
 
-        self.assertEqual(decision.caller_num, "+8613812345678")
+        self.assertEqual(decision.caller_num, "+8613123123123")
         self.assertFalse(decision.blocked)
         self.assertTrue(decision.new_clip)
-        self.assertEqual(decision.last_clip_num, "+8613812345678")
+        self.assertEqual(decision.last_clip_num, "+8613123123123")
         self.assertEqual(decision.last_clip_time, 10.0)
         self.assertEqual(decision.ring_timeout_target, 22.0)
 
     def test_handle_clip_line_blocks_blacklisted_call(self):
         decision = handle_clip_line(
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             last_clip_num="",
             last_clip_time=0.0,
             now=10.0,
             filter_mode="Blacklist",
             whitelist=[],
-            blacklist=["13812345678"],
+            blacklist=["13123123123"],
         )
 
         self.assertTrue(decision.blocked)
@@ -95,7 +95,7 @@ class CallEventTests(unittest.TestCase):
 
     def test_handle_call_line_reports_incoming_call(self):
         decision = handle_call_line(
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             CallState(),
             now=10.0,
             filter_mode="Disabled",
@@ -104,16 +104,16 @@ class CallEventTests(unittest.TestCase):
             popup_active=False,
         )
 
-        self.assertEqual(decision.incoming_number, "+8613812345678")
-        self.assertEqual(decision.show_popup_number, "+8613812345678")
-        self.assertEqual(decision.push_message, "收到来电：来自 +8613812345678")
-        self.assertEqual(decision.state.last_clip_num, "+8613812345678")
+        self.assertEqual(decision.incoming_number, "+8613123123123")
+        self.assertEqual(decision.show_popup_number, "+8613123123123")
+        self.assertEqual(decision.push_message, "收到来电：来自 +8613123123123")
+        self.assertEqual(decision.state.last_clip_num, "+8613123123123")
         self.assertEqual(decision.state.ring_timeout_target, 22.0)
         self.assertFalse(decision.stop_processing)
 
     def test_handle_call_line_ignores_websocket_json_clip_payload(self):
         decision = handle_call_line(
-            '[I]-[websocket] json: {"message":"+CLIP: \\"+8613812345678\\",129"}',
+            '[I]-[websocket] json: {"message":"+CLIP: \\"+8613123123123\\",129"}',
             CallState(),
             now=10.0,
             filter_mode="Disabled",
@@ -128,16 +128,16 @@ class CallEventTests(unittest.TestCase):
 
     def test_handle_call_line_blocks_blacklisted_call(self):
         decision = handle_call_line(
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             CallState(),
             now=10.0,
             filter_mode="Blacklist",
             whitelist=[],
-            blacklist=["13812345678"],
+            blacklist=["13123123123"],
             popup_active=False,
         )
 
-        self.assertEqual(decision.blocked_number, "+8613812345678")
+        self.assertEqual(decision.blocked_number, "+8613123123123")
         self.assertTrue(decision.block_reason)
         self.assertTrue(decision.stop_processing)
         self.assertEqual(decision.state.ring_timeout_target, 0.0)

@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.serial_sms import (
     SMS_CALLBACK_PREFIX,
@@ -7,7 +7,7 @@ from sms_core.serial_sms import (
     handle_sms_collector_line,
 )
 def parse_head(text):
-    return ("+8613812345678", text.split(" ", 1)[1])
+    return ("+8613123123123", text.split(" ", 1)[1])
 
 
 class SerialSmsCollectorDecisionTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
         decision = handle_sms_collector_line(
             collector,
-            SMS_CALLBACK_PREFIX + " +8613812345678 first",
+            SMS_CALLBACK_PREFIX + " +8613123123123 first",
             now=10.0,
             flush_callback=lambda: flushed.append("flush"),
         )
@@ -35,7 +35,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
         decision = handle_sms_collector_line(
             collector,
-            '[I]-[websocket] json: {"message":"[I]-[handler_sms.smsCallback] +8613812345678 first"}',
+            '[I]-[websocket] json: {"message":"[I]-[handler_sms.smsCallback] +8613123123123 first"}',
             now=10.0,
             flush_callback=lambda: flushed.append("flush"),
         )
@@ -47,12 +47,12 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
     def test_handle_sms_collector_line_flushes_previous_before_new_callback(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 first", now=10.0)
+        collector.start("+8613123123123 first", now=10.0)
         flushed = []
 
         decision = handle_sms_collector_line(
             collector,
-            SMS_CALLBACK_PREFIX + " +8613812345678 second",
+            SMS_CALLBACK_PREFIX + " +8613123123123 second",
             now=11.0,
             flush_callback=lambda: flushed.append("flush"),
         )
@@ -60,11 +60,11 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertTrue(decision.started)
         self.assertTrue(decision.flushed)
         self.assertEqual(flushed, ["flush"])
-        self.assertEqual(collector.callback_head, "+8613812345678 second")
+        self.assertEqual(collector.callback_head, "+8613123123123 second")
 
     def test_handle_sms_collector_line_consumes_fragment_and_boundary(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 first", now=10.0)
+        collector.start("+8613123123123 first", now=10.0)
         flushed = []
 
         consumed = handle_sms_collector_line(
@@ -89,7 +89,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
     def test_handle_sms_collector_line_keeps_plus_digit_continuation(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 first", now=10.0)
+        collector.start("+8613123123123 first", now=10.0)
         flushed = []
 
         consumed = handle_sms_collector_line(
@@ -115,12 +115,12 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
     def test_collector_flush_returns_raw_callback_output(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 first", now=10.0)
+        collector.start("+8613123123123 first", now=10.0)
 
         self.assertEqual(collector.consume_line("follow line", now=10.1), "consumed")
         collected = collector.flush()
 
-        self.assertEqual(collected.callback_text, "+8613812345678 first")
+        self.assertEqual(collected.callback_text, "+8613123123123 first")
         self.assertEqual(collected.raw_lines, ["follow line"])
 
     def test_collector_does_not_parse_sms_content_while_buffering(self):
@@ -129,16 +129,16 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
         collector = SmsPendingCollector(fail_parse)
 
-        self.assertTrue(collector.start("+8613812345678 first", now=10.0))
+        self.assertTrue(collector.start("+8613123123123 first", now=10.0))
         self.assertEqual(collector.consume_line("follow line", now=10.1), "consumed")
         collected = collector.flush()
 
-        self.assertEqual(collected.callback_text, "+8613812345678 first")
+        self.assertEqual(collected.callback_text, "+8613123123123 first")
         self.assertEqual(collected.raw_lines, ["follow line"])
 
     def test_collector_does_not_cap_raw_lines(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 first", now=10.0)
+        collector.start("+8613123123123 first", now=10.0)
 
         self.assertEqual(collector.consume_line("line1", now=10.1), "consumed")
         self.assertEqual(collector.consume_line("line2", now=10.2), "consumed")
@@ -149,7 +149,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
 
     def test_flush_pending_sms_delegates_to_sms_processing(self):
         collector = SmsPendingCollector(parse_head)
-        collector.start("+8613812345678 hello", now=10.0)
+        collector.start("+8613123123123 hello", now=10.0)
         calls = []
 
         result = flush_pending_sms(
@@ -172,7 +172,7 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertEqual(result, "shown")
         self.assertFalse(collector.active)
         self.assertIn(("push", "hello"), calls)
-        self.assertIn(("cloud", "+8613812345678 hello", "hello"), calls)
+        self.assertIn(("cloud", "+8613123123123 hello", "hello"), calls)
         self.assertIn(("popup", "hello"), calls)
         self.assertIn(("alert",), calls)
 

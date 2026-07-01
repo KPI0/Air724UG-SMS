@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.serial_runtime import (
@@ -136,7 +136,7 @@ class SerialRuntimeTests(unittest.TestCase):
     def test_blank_line_flushes_expired_sms(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)
-        state.sms_collector.start("+8613812345678 hello code", now=10.0)
+        state.sms_collector.start("+8613123123123 hello code", now=10.0)
 
         result = handle_serial_runtime_line(
             state,
@@ -182,7 +182,7 @@ class SerialRuntimeTests(unittest.TestCase):
 
         result = handle_serial_runtime_line(
             state,
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             10.0,
             "COM5",
             False,
@@ -192,13 +192,13 @@ class SerialRuntimeTests(unittest.TestCase):
         )
 
         self.assertFalse(result.continue_read)
-        self.assertEqual(state.call_state.last_clip_num, "+8613812345678")
+        self.assertEqual(state.call_state.last_clip_num, "+8613123123123")
         self.assertEqual(state.call_state.ring_timeout_target, 22.0)
-        self.assertIn(("call_popup", ("+8613812345678",)), calls)
+        self.assertIn(("call_popup", ("+8613123123123",)), calls)
         self.assertTrue(any(
             item[0] == "push"
             and item[2].get("event_type") == "call"
-            and item[2].get("variables", {}).get("caller") == "+8613812345678"
+            and item[2].get("variables", {}).get("caller") == "+8613123123123"
             for item in calls
         ))
 
@@ -208,18 +208,18 @@ class SerialRuntimeTests(unittest.TestCase):
 
         result = handle_serial_runtime_line(
             state,
-            '+CLIP: "+8613812345678",129',
+            '+CLIP: "+8613123123123",129',
             10.0,
             "COM5",
             False,
-            runtime_config(call_filter_mode="Blacklist", call_blacklist=["13812345678"]),
+            runtime_config(call_filter_mode="Blacklist", call_blacklist=["13123123123"]),
             runtime_callbacks(calls),
             {},
         )
 
         self.assertTrue(result.continue_read)
         self.assertIn(("hangup",), calls)
-        self.assertNotIn(("call_popup", ("+8613812345678",)), calls)
+        self.assertNotIn(("call_popup", ("+8613123123123",)), calls)
 
     def test_sms_callback_starts_collection(self):
         calls = []
@@ -227,7 +227,7 @@ class SerialRuntimeTests(unittest.TestCase):
 
         result = handle_serial_runtime_line(
             state,
-            "[I]-[handler_sms.smsCallback] +8613812345678 hello",
+            "[I]-[handler_sms.smsCallback] +8613123123123 hello",
             10.0,
             "COM5",
             False,
@@ -238,13 +238,13 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result.continue_read)
         self.assertTrue(state.sms_collector.active)
-        self.assertEqual(state.sms_collector.callback_head, "+8613812345678 hello")
+        self.assertEqual(state.sms_collector.callback_head, "+8613123123123 hello")
 
     def test_sms_callback_keeps_plus_digit_continuation_until_urc_boundary(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)
         lines = [
-            "[I]-[handler_sms.smsCallback] +8613812345678 first line",
+            "[I]-[handler_sms.smsCallback] +8613123123123 first line",
             "+100.00 元到账",
             "+CMTI: \"SM\",1",
         ]

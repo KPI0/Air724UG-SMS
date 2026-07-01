@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import time
 import json
 
@@ -47,7 +47,7 @@ class CloudSecurityTests(unittest.TestCase):
         self.assertIn("已隐藏", preview)
 
     def test_safe_preview_masks_sms_summary_metadata(self):
-        phone = "+8613812345678"
+        phone = "+8613123123123"
         message = "验证码 1234"
         preview = safe_preview(json_text({
             "cmd": "AT+CMGF=0",
