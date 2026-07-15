@@ -2,7 +2,7 @@ import re
 import urllib.parse
 
 
-CLOUD_WS_DEFAULT_PATH = "/websocket"
+CLOUD_WS_DEFAULT_PATH = "/ws/device"
 SMS_CALLBACK_HEAD_REGEX = re.compile(
     r"^\s*(\+?\d+)\s+\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*(.*)$",
     re.DOTALL,

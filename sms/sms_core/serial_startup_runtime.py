@@ -2,7 +2,7 @@ import time
 
 from sms_core.serial_ports import unlocked_ports
 from sms_core.serial_reconnect import is_serial_open_denied, serial_open_denied_repeat_key
-from sms_core.serial_sender import write_serial_command_result
+from sms_core.serial_sender import DEFAULT_SERIAL_TRANSACTION_LOCK, write_serial_command_result
 
 
 def resolve_serial_target_port_runtime(
@@ -59,14 +59,16 @@ def open_and_initialize_serial_runtime(
     serial_error_ui,
     set_status,
     write_command=write_serial_command_result,
+    transaction_lock=DEFAULT_SERIAL_TRANSACTION_LOCK,
     is_open_denied=is_serial_open_denied,
     open_denied_repeat_key=serial_open_denied_repeat_key,
     monotonic=time.monotonic,
 ):
-    with serial_lock:
+    with transaction_lock:
         try:
-            serial_obj = open_serial(target_port, baud)
-            set_serial_obj(serial_obj)
+            with serial_lock:
+                serial_obj = open_serial(target_port, baud)
+                set_serial_obj(serial_obj)
         except Exception as exc:
             if is_open_denied(str(exc)):
                 serial_error_ui(

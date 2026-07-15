@@ -71,6 +71,10 @@ def run_serial_app_runtime(
         state["set_log_prefix"]("system")
         callbacks.get("set_local_number", lambda *_args: None)("")
         callbacks["close_call_popup"]()
+        callbacks.get(
+            "cancel_sms_send",
+            DEFAULT_SMS_PDU_SEND_COORDINATOR.cancel_active,
+        )(f"串口连接已断开：{error}")
         apply_disconnect_effects(
             error,
             target_port,
@@ -217,6 +221,17 @@ def run_serial_reader_namespace_runtime(
     apply_disconnect_effects,
     run_reader=run_serial_app_from_wiring,
 ):
+    sms_send_coordinator = namespace.get(
+        "SMS_SEND_COORDINATOR",
+        DEFAULT_SMS_PDU_SEND_COORDINATOR,
+    )
+
+    def observe_sms_send_line(line):
+        return sms_send_coordinator.observe_line(
+            line,
+            connection=namespace.get("serial_obj"),
+        )
+
     return run_reader(
         parse_callback_head=parse_callback_head,
         values={
@@ -243,10 +258,8 @@ def run_serial_reader_namespace_runtime(
             "set_temperature": namespace["set_temperature"],
             "set_signal": namespace["set_signal"],
             "set_local_number": lambda value: namespace.__setitem__("LOCAL_NUMBER", value),
-            "observe_sms_send_line": namespace.get(
-                "SMS_SEND_COORDINATOR",
-                DEFAULT_SMS_PDU_SEND_COORDINATOR,
-            ).observe_line,
+            "observe_sms_send_line": observe_sms_send_line,
+            "cancel_sms_send": lambda error="串口连接已断开": sms_send_coordinator.cancel_active(error),
             "set_status": namespace["set_status"],
             "close_call_popup": namespace["close_call_popup"],
             "send_call_hangup": namespace["send_call_hangup_command"],

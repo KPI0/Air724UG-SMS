@@ -85,7 +85,8 @@ def open_voice_text_dialog(parent, current_text, on_preview, on_save, center_win
         value = read_text()
         if value is None:
             return
-        on_save(value)
+        if on_save(value) is False:
+            return
         win.destroy()
 
     tk.Button(win, text="试听", width=10, command=preview).grid(
@@ -122,16 +123,21 @@ def open_log_cleanup_dialog(
     frame = tk.Frame(win, padx=14, pady=12)
     frame.pack(fill=tk.BOTH, expand=True)
 
-    tk.Label(frame, text="保留最近 N 天日志：", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
+    tk.Label(frame, text="删除", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
 
     days_var = tk.StringVar(value=str(current_days))
     days_entry = tk.Entry(frame, textvariable=days_var, width=10)
     days_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
-    tk.Label(frame, text="天", font=("微软雅黑", 10)).grid(row=0, column=2, sticky="w", padx=(6, 0))
+    tk.Label(frame, text="天以前的日志", font=("微软雅黑", 10)).grid(
+        row=0, column=2, sticky="w", padx=(6, 0)
+    )
 
     tk.Label(
         frame,
-        text="说明：会删除 sms_logs 目录下超过 N 天的 sms_*.txt 日志（含 sms_system / sms_COMx）。",
+        text=(
+            "说明：以当前日期为基准，删除早于 N 天前的 sms_*.txt 日志。"
+            "例如设置 3 天，将保留今天及前 3 天的日志（含 sms_system / sms_COMx）。"
+        ),
         fg="gray",
         font=("微软雅黑", 9),
         wraplength=360,
@@ -149,12 +155,13 @@ def open_log_cleanup_dialog(
 
         if not messagebox.askyesno(
             "确认",
-            f"确定设置为自动清理，并保留最近 {days} 天日志吗？",
+            f"确定启用自动清理，并删除 {days} 天以前的日志吗？",
             parent=win,
         ):
             return
 
-        on_apply(days)
+        if on_apply(days) is False:
+            return
         messagebox.showinfo(
             "完成",
             "已启用自动日志清理（程序运行期间会定期清理）。",

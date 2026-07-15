@@ -59,6 +59,13 @@ class SmsPduCorrectionCache:
         self._segments_by_key = {}
         self._last_corrected_message = None
 
+    def reset(self):
+        self._collecting = False
+        self._pdu_lines.clear()
+        self._complete_by_key.clear()
+        self._segments_by_key.clear()
+        self._last_corrected_message = None
+
     def observe_line(self, line: str, now: float, log=None):
         text = str(line or "").strip()
 

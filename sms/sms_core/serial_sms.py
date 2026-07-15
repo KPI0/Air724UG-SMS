@@ -170,7 +170,7 @@ def flush_pending_sms(
         pending = assembler.add_message(pending, now=now, log=concat_log)
         if pending is None:
             return "pending"
-    return process_pending_sms(
+    return process_pending_sms_items(
         pending,
         keywords,
         log_unmatched_sms,
@@ -186,3 +186,43 @@ def flush_pending_sms(
         file_log,
         system_ui,
     )
+
+
+def process_pending_sms_items(
+    pending,
+    keywords,
+    log_unmatched_sms,
+    log_dir,
+    log_prefix,
+    ignore_repeat_state,
+    error_repeat_limit,
+    enqueue_push,
+    send_cloud_sms_event,
+    port_ui,
+    play_alert,
+    show_sms_popup,
+    file_log,
+    system_ui,
+):
+    if pending is None:
+        return "pending"
+    pending_items = pending if isinstance(pending, list) else [pending]
+    result = "pending"
+    for pending_item in pending_items:
+        result = process_pending_sms(
+            pending_item,
+            keywords,
+            log_unmatched_sms,
+            log_dir,
+            log_prefix,
+            ignore_repeat_state,
+            error_repeat_limit,
+            enqueue_push,
+            send_cloud_sms_event,
+            port_ui,
+            play_alert,
+            show_sms_popup,
+            file_log,
+            system_ui,
+        )
+    return result

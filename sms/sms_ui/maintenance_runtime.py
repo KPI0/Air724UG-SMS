@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass
 
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_core.threading_runtime import start_daemon_thread
 from sms_core.updates import (
     format_proxy_test_result,
@@ -136,6 +137,7 @@ def apply_log_cleanup_runtime(
     schedule_cleanup,
     interval_hours,
 ):
+    config_snapshot = snapshot_config_section(config, "ui")
     try:
         if not config.has_section("ui"):
             config["ui"] = {}
@@ -143,6 +145,7 @@ def apply_log_cleanup_runtime(
         config.set("ui", "log_retention_days", str(days))
         _save_config_or_raise(save_config)
     except Exception as exc:
+        restore_config_section(config, "ui", config_snapshot)
         system_ui(f"❌ 自动日志清理配置保存失败：{exc}", "normal")
         return False
 
@@ -166,7 +169,7 @@ def open_log_cleanup_dialog_runtime(
     open_dialog=open_log_cleanup_dialog,
 ):
     def apply_cleanup(days):
-        apply_log_cleanup_runtime(
+        return apply_log_cleanup_runtime(
             days,
             config=config,
             save_config=save_config,
@@ -260,11 +263,14 @@ def schedule_auto_log_cleanup_app_runtime(
     )
 
 
+UPDATE_CONFIG_DEFAULTS = {
+    "api_proxy_base": "https://github-api.daybyday.top/",
+    "proxy_base": "https://gh-proxy.com/",
+}
+
+
 def ensure_update_config(config, defaults=None):
-    values = defaults or {
-        "api_proxy_base": "https://github-api.daybyday.top/",
-        "proxy_base": "https://gh-proxy.com/",
-    }
+    values = defaults or UPDATE_CONFIG_DEFAULTS
     if not config.has_section("update"):
         config["update"] = dict(values)
         return True
@@ -272,10 +278,15 @@ def ensure_update_config(config, defaults=None):
 
 
 def save_update_proxy_config(config, api_proxy_base, proxy_base, save_config):
-    ensure_update_config(config)
-    config.set("update", "proxy_base", normalize_proxy_base(proxy_base))
-    config.set("update", "api_proxy_base", normalize_proxy_base(api_proxy_base))
-    return _save_config_or_raise(save_config)
+    config_snapshot = snapshot_config_section(config, "update")
+    try:
+        ensure_update_config(config)
+        config.set("update", "proxy_base", normalize_proxy_base(proxy_base))
+        config.set("update", "api_proxy_base", normalize_proxy_base(api_proxy_base))
+        return _save_config_or_raise(save_config)
+    except Exception:
+        restore_config_section(config, "update", config_snapshot)
+        raise
 
 
 def test_update_proxy_async(
@@ -320,8 +331,6 @@ def open_update_proxy_dialog_runtime(
     open_dialog=open_update_proxy_dialog,
     test_async=test_update_proxy_async,
 ):
-    ensure_update_config(config)
-
     def save(api_proxy_base, proxy_base, _win):
         return save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
 
@@ -342,8 +351,16 @@ def open_update_proxy_dialog_runtime(
 
     open_dialog(
         parent,
-        config.get("update", "api_proxy_base", fallback=""),
-        config.get("update", "proxy_base", fallback=""),
+        config.get(
+            "update",
+            "api_proxy_base",
+            fallback=UPDATE_CONFIG_DEFAULTS["api_proxy_base"],
+        ),
+        config.get(
+            "update",
+            "proxy_base",
+            fallback=UPDATE_CONFIG_DEFAULTS["proxy_base"],
+        ),
         save,
         test_connection,
         center_window,

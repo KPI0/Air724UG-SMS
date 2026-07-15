@@ -97,13 +97,17 @@ def schedule_next_midnight_clear_namespace_runtime(namespace):
     now_func = getattr(datetime_source, "now", None)
     if now_func is None:
         now_func = datetime_source.datetime.now
+    state = namespace.setdefault("_MIDNIGHT_CLEAR_STATE", {})
+    root = namespace["root"]
 
     def do_schedule():
         return schedule_next_midnight_clear_runtime(
             tk_alive=namespace["tk_alive"],
-            schedule_after=namespace["root"].after,
+            schedule_after=root.after,
+            cancel_after=getattr(root, "after_cancel", None),
             clear_callback=namespace["clear_text_area_for_new_day"],
             now_func=now_func,
+            state=state,
         )
 
     return namespace["run_on_ui_thread"](do_schedule, namespace["ui_post"])

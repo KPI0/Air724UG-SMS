@@ -26,6 +26,27 @@ class StartupConfigValues:
     mode: str
 
 
+def snapshot_config_section(config, section):
+    section = str(section)
+    if not config.has_section(section):
+        return None
+    return {
+        option: config.get(section, option, raw=True)
+        for option in config.options(section)
+    }
+
+
+def restore_config_section(config, section, snapshot):
+    section = str(section)
+    if config.has_section(section):
+        config.remove_section(section)
+    if snapshot is None:
+        return
+    config.add_section(section)
+    for option, value in snapshot.items():
+        config.set(section, str(option), str(value))
+
+
 def initialize_config_runtime(
     *,
     config,

@@ -28,4 +28,7 @@ class SmsReceivePipeline:
         )
 
     def reset(self):
+        reset_cache = getattr(self.correction_cache, "reset", None)
+        if callable(reset_cache):
+            reset_cache()
         self.long_sms_assembler.reset()

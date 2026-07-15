@@ -20,7 +20,6 @@ def install_maintenance_namespace_bindings(namespace):
     def clear_text_area_for_new_day():
         namespace["clear_window"]()
         namespace["system_ui"]("📅 新的一天，窗口已清空")
-        namespace["schedule_next_midnight_clear"]()
 
     namespace.update({
         "open_log_dir": bind("open_log_dir_namespace_runtime"),

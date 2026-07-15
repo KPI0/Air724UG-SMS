@@ -68,7 +68,8 @@ def toggle_multi_instance_namespace_runtime(
     *,
     toggle_runtime=toggle_multi_instance_runtime,
 ):
-    return toggle_runtime(
+    previous = bool(namespace["ALLOW_MULTI_INSTANCE"])
+    result = toggle_runtime(
         namespace["multi_instance_var"].get(),
         namespace["config"],
         namespace["safe_save_config"],
@@ -77,10 +78,17 @@ def toggle_multi_instance_namespace_runtime(
         show_notice=lambda title, message: namespace["ui_messagebox"]("info", title, message),
         log_error=namespace.get("log_file_only"),
     )
+    if result is None:
+        try:
+            namespace["multi_instance_var"].set(previous)
+        except Exception:
+            pass
+    return result
 
 
 def toggle_popup_namespace_runtime(namespace, *, toggle_runtime=toggle_popup_runtime):
-    return toggle_runtime(
+    previous = bool(namespace["POPUP_ENABLED"])
+    result = toggle_runtime(
         namespace["popup_var"].get(),
         namespace["config"],
         namespace["safe_save_config"],
@@ -88,6 +96,12 @@ def toggle_popup_namespace_runtime(namespace, *, toggle_runtime=toggle_popup_run
         namespace["system_ui"],
         log_error=namespace.get("log_file_only"),
     )
+    if result is None:
+        try:
+            namespace["popup_var"].set(previous)
+        except Exception:
+            pass
+    return result
 
 
 def restart_software_namespace_runtime(

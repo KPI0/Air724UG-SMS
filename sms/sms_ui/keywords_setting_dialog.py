@@ -69,7 +69,10 @@ def open_keywords_setting_dialog(
             return
 
         keywords.append(value)
-        on_keywords_changed("add", value=value)
+        if on_keywords_changed("add", value=value) is False:
+            keywords.pop()
+            refresh_list()
+            return
         refresh_list(select_index=len(keywords) - 1)
 
     def delete_keyword():
@@ -83,7 +86,10 @@ def open_keywords_setting_dialog(
             return
 
         old_value = keywords.pop(idx)
-        on_keywords_changed("delete", value=old_value)
+        if on_keywords_changed("delete", value=old_value) is False:
+            keywords.insert(idx, old_value)
+            refresh_list(select_index=idx)
+            return
         entry_var.set("")
         refresh_list(select_index=min(idx, len(keywords) - 1))
 
@@ -104,7 +110,10 @@ def open_keywords_setting_dialog(
 
         old_value = keywords[idx]
         keywords[idx] = value
-        on_keywords_changed("edit", value=value, old_value=old_value)
+        if on_keywords_changed("edit", value=value, old_value=old_value) is False:
+            keywords[idx] = old_value
+            refresh_list(select_index=idx)
+            return
         refresh_list(select_index=idx)
 
     tk.Button(right, text="增加", width=10, command=add_keyword).pack(anchor="w", pady=(0, 6))
@@ -123,9 +132,15 @@ def open_keywords_setting_dialog(
     tip.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 6))
 
     log_unmatched_var = tk.BooleanVar(value=log_unmatched)
+    last_log_unmatched = bool(log_unmatched)
 
     def toggle_log_unmatched():
-        on_log_unmatched_changed(log_unmatched_var.get())
+        nonlocal last_log_unmatched
+        enabled = bool(log_unmatched_var.get())
+        if on_log_unmatched_changed(enabled) is False:
+            log_unmatched_var.set(last_log_unmatched)
+            return
+        last_log_unmatched = enabled
 
     chk_unmatched = ttk.Checkbutton(
         frame,

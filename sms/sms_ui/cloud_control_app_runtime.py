@@ -8,6 +8,7 @@ from sms_core.cloud_runtime import (
     validate_cloud_start,
     write_cloud_control_settings,
 )
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_ui.cloud_control_window import open_cloud_control_window_runtime
 
 
@@ -36,24 +37,27 @@ def save_cloud_control_setting_runtime(
     update_settings=update_cloud_control_settings,
     write_settings=write_cloud_control_settings,
 ):
+    previous_settings = current_settings()
     settings = update_settings(
-        current_settings(),
+        previous_settings,
         enabled=enabled,
         url=url,
         reconnect_interval=reconnect_interval,
         device_secret=device_secret,
         auto_upload=auto_upload,
     )
-    apply_settings(settings)
+    config_snapshot = snapshot_config_section(config, "cloud_control")
 
     try:
         write_settings(config, settings)
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception as exc:
+        restore_config_section(config, "cloud_control", config_snapshot)
         system_ui(f"❌ 云端控制配置保存失败：{exc}", "normal")
         return None
 
+    apply_settings(settings)
     return settings
 
 

@@ -1,3 +1,4 @@
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_ui.serial_settings_dialog import open_serial_setting_dialog
 
 
@@ -6,7 +7,7 @@ def serial_settings_status(mode, port, baud):
 
 
 def serial_settings_save_failed_status():
-    return "❌ 串口设置保存失败，设置可能不会在重启后保留"
+    return "❌ 串口设置保存失败，已保留原设置"
 
 
 def apply_serial_setting_runtime(
@@ -22,7 +23,7 @@ def apply_serial_setting_runtime(
     wake_serial,
     system_ui,
 ):
-    set_serial_state(mode, port, baud)
+    config_snapshot = snapshot_config_section(config, "serial")
     if not config.has_section("serial"):
         config["serial"] = {}
     config.set("serial", "mode", mode)
@@ -32,9 +33,11 @@ def apply_serial_setting_runtime(
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception:
+        restore_config_section(config, "serial", config_snapshot)
         system_ui(serial_settings_save_failed_status())
         return False
 
+    set_serial_state(mode, port, baud)
     set_status("🟡 应用中，重连…", "orange")
     safe_close_serial()
     try:
@@ -64,7 +67,7 @@ def open_serial_setting_runtime(
     open_dialog=open_serial_setting_dialog,
 ):
     def apply(mode, port, baud):
-        apply_serial_setting_runtime(
+        return apply_serial_setting_runtime(
             mode,
             port,
             baud,

@@ -285,8 +285,9 @@ async def handle_cloud_message_runtime(
 
         set_authorized(False)
         set_auth_status_from_ack(data)
+        set_cloud_status("🌐 授权失败", "#cc0000")
         log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
-        return
+        return "auth_failed"
 
     if not is_authorized():
         log("已拒绝云端指令：设备尚未获得服务端授权")

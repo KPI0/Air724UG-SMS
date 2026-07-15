@@ -53,10 +53,12 @@ def open_cloud_control_window_dialog(
         values = form.read(force_enabled=True)
         if values is not None:
             form.enabled_var.set(True)
-            on_connect(values, win)
+            if on_connect(values, win) is False:
+                form.sync_from_state()
 
     def disconnect():
-        on_disconnect(form.disconnect_values(), win)
+        if on_disconnect(form.disconnect_values(), win) is False:
+            form.sync_from_state()
 
     def close():
         on_close(win)
@@ -97,7 +99,15 @@ def open_cloud_control_window_runtime(
 
     def on_auto_upload_changed(auto_upload, _win):
         was_public = bool(state_provider().get("auto_upload"))
-        save_setting(auto_upload=auto_upload)
+        if save_setting(auto_upload=auto_upload) in (None, False):
+            # The checkbox is toggled by Tk before the transactional save
+            # completes.  Keep the form and any dependent cloud state aligned
+            # with the last persisted settings when the save is rejected.
+            try:
+                _win._sync_form_from_state()
+            except Exception:
+                pass
+            return False
         try:
             connected, has_loop, has_conn = connection_state_provider()
             action = cloud_auto_upload_action(was_public, auto_upload, connected, has_loop, has_conn)
@@ -107,29 +117,37 @@ def open_cloud_control_window_runtime(
                 schedule_unregister("auto_upload_disabled")
         except Exception:
             pass
+        return True
 
     def save_values(values, win):
         kwargs = cloud_control_save_kwargs(values)
-        if save_setting(**kwargs) is None:
+        if save_setting(**kwargs) in (None, False):
             messagebox.showerror("保存失败", "云端控制配置保存失败，请检查配置文件是否可写。", parent=win)
-            return
+            try:
+                win._sync_form_from_state()
+            except Exception:
+                pass
+            return False
         messagebox.showinfo("配置已保存", "云端控制配置已成功保存！", parent=win)
         if kwargs["enabled"]:
             restart_control(show_errors=True)
         else:
             stop_control()
         cloud_log("配置已保存")
+        return True
 
     def connect_values(values, _win):
-        if save_setting(**cloud_control_save_kwargs(values, enabled_override=True)) is None:
-            return
+        if save_setting(**cloud_control_save_kwargs(values, enabled_override=True)) in (None, False):
+            return False
         restart_control(show_errors=True)
+        return True
 
     def disconnect_values(values, _win):
-        if save_setting(**cloud_control_save_kwargs(values, enabled_override=False)) is None:
-            return
+        if save_setting(**cloud_control_save_kwargs(values, enabled_override=False)) in (None, False):
+            return False
         stop_control()
         cloud_log("已手动断开")
+        return True
 
     def close_window(win):
         try:

@@ -118,7 +118,7 @@ async def wait_cloud_login_ack_runtime(
             return True
 
         log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
-        return True
+        return False
 
     return False
 
@@ -167,20 +167,29 @@ async def cloud_ws_main_runtime(
 
             async with connect(url, ping_interval=30, ping_timeout=30) as ws:
                 set_connection_state(ws, connected=True, authorized=False)
-                current_backoff = base_cloud_backoff(reconnect_interval)
                 set_cloud_status("🌐 等待授权", "#b26a00")
                 log(f"已连接：{url}", show_main=True)
                 await send_register(ws)
                 if not await wait_login_ack(ws):
+                    set_connection_state(None, connected=False, authorized=False)
+                    reset_serial_log_state()
+                    set_cloud_status("🌐 授权失败", "#cc0000")
                     await ws.close()
                     raise RuntimeError("设备登录未通过服务端确认")
+                current_backoff = base_cloud_backoff(reconnect_interval)
 
                 while not stop_event.is_set():
                     try:
                         msg = await wait_for(ws.recv(), timeout=0.5)
                     except asyncio.TimeoutError:
                         continue
-                    await handle_message(ws, msg)
+                    message_result = await handle_message(ws, msg)
+                    if message_result == "auth_failed":
+                        set_connection_state(None, connected=False, authorized=False)
+                        reset_serial_log_state()
+                        set_cloud_status("🌐 授权失败", "#cc0000")
+                        await ws.close()
+                        raise RuntimeError("设备会话授权已失效")
 
         except asyncio.CancelledError:
             break

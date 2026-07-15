@@ -9,9 +9,9 @@ def show_url_reference(parent):
     messagebox.showinfo(
         "WebSocket 地址参考",
         "参考格式：\n"
-        "wss://example.com/websocket\n"
-        "ws://192.168.1.100:8000/websocket\n\n"
-        "如果只填写 ws://主机:端口，程序会自动补 /websocket。\n"
+        "wss://example.com/ws/device\n"
+        "ws://192.168.1.100:8000/ws/device\n\n"
+        "如果只填写 ws://主机:端口，程序会自动补 /ws/device。\n"
         "地址必须以 ws:// 或 wss:// 开头。",
         parent=parent,
     )
@@ -73,7 +73,7 @@ class CloudControlFormController:
             1,
             "WebSocket 地址：",
             self.url_var,
-            "wss://example.com/websocket",
+            "wss://example.com/ws/device",
             visible=True,
             help_command=lambda: show_url_reference(self.win),
         )
@@ -106,7 +106,13 @@ class CloudControlFormController:
         if auto_upload and not confirm_public_device(self.win):
             self.auto_upload_var.set(False)
             return
-        self.on_auto_upload_changed(auto_upload, self.win)
+        result = self.on_auto_upload_changed(auto_upload, self.win)
+        if result is False:
+            # A failed transactional save must not leave the visual toggle
+            # ahead of the persisted state.  The runtime callback normally
+            # refreshes the complete form; this local fallback also keeps the
+            # controller safe for injected callbacks used by tests/embedders.
+            self.auto_upload_var.set(not auto_upload)
 
     def sync_from_state(self):
         latest = self.state_provider()

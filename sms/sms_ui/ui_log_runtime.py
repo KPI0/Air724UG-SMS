@@ -99,15 +99,54 @@ def schedule_next_midnight_clear_runtime(
     *,
     tk_alive,
     schedule_after,
+    cancel_after=None,
     clear_callback,
     now_func=datetime.now,
+    state=None,
 ):
+    """Schedule one idempotent midnight callback for the UI log window.
+
+    ``state`` keeps the active Tk timer, a generation token for stale callbacks,
+    and the last date that was cleared. This prevents duplicate midnight logs
+    after repeated scheduling, clock adjustments, or delayed callbacks.
+    """
+    state = state if state is not None else {}
     try:
+        previous_after_id = state.get("after_id")
+        if previous_after_id is not None and cancel_after is not None:
+            try:
+                cancel_after(previous_after_id)
+            except Exception:
+                pass
+        state["after_id"] = None
+
+        generation = int(state.get("generation") or 0) + 1
+        state["generation"] = generation
         now = now_func()
         next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         if tk_alive():
             delay_ms = int((next_midnight - now).total_seconds() * 1000)
-            schedule_after(delay_ms, clear_callback)
+
+            def on_midnight():
+                if state.get("generation") != generation:
+                    return
+                state["after_id"] = None
+                try:
+                    today = now_func().date()
+                    if state.get("last_cleared_date") != today:
+                        state["last_cleared_date"] = today
+                        clear_callback()
+                finally:
+                    schedule_next_midnight_clear_runtime(
+                        tk_alive=tk_alive,
+                        schedule_after=schedule_after,
+                        cancel_after=cancel_after,
+                        clear_callback=clear_callback,
+                        now_func=now_func,
+                        state=state,
+                    )
+
+            state["after_id"] = schedule_after(delay_ms, on_midnight)
             return delay_ms
     except Exception:
         pass

@@ -39,6 +39,10 @@ class SerialRuntimeState:
     def reset_call_state(self):
         self.call_state = CallState()
 
+    def reset_sms_state(self):
+        self.sms_collector.reset()
+        self.sms_pipeline.reset()
+
 
 @dataclass(frozen=True)
 class SerialRuntimeResult:
@@ -125,6 +129,9 @@ class SerialLineDecoder:
 
         raw = self._drop_artificial_newline_after_incomplete_character(bytes(raw))
         self.text_buffer += self.decoder.decode(raw, final=False)
+        if self.text_buffer.strip() == ">":
+            self.text_buffer = ""
+            return [">"]
         lines = []
         pending = []
         for part in self.text_buffer.splitlines(keepends=True):
@@ -344,6 +351,7 @@ def run_serial_runtime_thread(
         sync_app_call_state()
 
     def handle_error(error, target_port):
+        state.reset_sms_state()
         state.reset_call_state()
         sync_app_call_state()
         return handle_disconnect(error, target_port)

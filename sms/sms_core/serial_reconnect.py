@@ -1,4 +1,5 @@
 from sms_core.status_text import format_connecting_status
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 
 
 SERIAL_PORT_GONE_MARKERS = (
@@ -59,7 +60,7 @@ def manual_rebind_runtime(
 
     old_port = current_port
     new_port = candidate.device
-    set_port(new_port)
+    config_snapshot = snapshot_config_section(config, "serial")
 
     try:
         if not config.has_section("serial"):
@@ -70,11 +71,11 @@ def manual_rebind_runtime(
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception as exc:
-        # The in-memory port has already switched, so rebinding can still
-        # proceed; but a failed save means the new port is lost on restart.
-        # Surface it instead of swallowing so the user can re-save manually.
-        system_ui(f"⚠️ 串口重绑定已切换到 {new_port}，但配置保存失败：{exc}", "normal")
+        restore_config_section(config, "serial", config_snapshot)
+        system_ui(f"⚠️ 串口重绑定已取消，配置保存失败：{exc}", "normal")
+        return False
 
+    set_port(new_port)
     system_ui(hint_formatter(old_port, new_port, candidate.description, reason), "normal")
     set_status(format_connecting_status(new_port), "orange")
 

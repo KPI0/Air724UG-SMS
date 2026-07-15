@@ -108,7 +108,8 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
             return
 
         color = color_var.get().strip() or "#ff0000"
-        on_save(size, color)
+        if on_save(size, color) is False:
+            return
         win.destroy()
 
     buttons = tk.Frame(frame)

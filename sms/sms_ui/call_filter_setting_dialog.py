@@ -25,9 +25,15 @@ def open_call_filter_setting_dialog(
     mode_frm.pack(fill="x", pady=(0, 15))
 
     mode_var = tk.StringVar(value=mode)
+    current_mode = mode
 
     def change_mode():
-        on_mode_changed(mode_var.get())
+        nonlocal current_mode
+        next_mode = mode_var.get()
+        if on_mode_changed(next_mode) is False:
+            mode_var.set(current_mode)
+            return
+        current_mode = next_mode
 
     tk.Radiobutton(
         mode_frm,
@@ -101,7 +107,10 @@ def open_call_filter_setting_dialog(
                 return
 
             target_list.append(value)
-            on_list_changed(list_kind, action="add", value=value)
+            if on_list_changed(list_kind, action="add", value=value) is False:
+                target_list.pop()
+                refresh()
+                return
             refresh()
             entry_var.set("")
 
@@ -112,7 +121,10 @@ def open_call_filter_setting_dialog(
 
             idx = sel[0]
             value = target_list.pop(idx)
-            on_list_changed(list_kind, action="delete", value=value)
+            if on_list_changed(list_kind, action="delete", value=value) is False:
+                target_list.insert(idx, value)
+                refresh(select_index=idx)
+                return
             entry_var.set("")
             refresh(select_index=min(idx, len(target_list) - 1))
 
@@ -140,7 +152,10 @@ def open_call_filter_setting_dialog(
                 return
 
             target_list[idx] = new_value
-            on_list_changed(list_kind, action="edit", value=new_value, old_value=old_value)
+            if on_list_changed(list_kind, action="edit", value=new_value, old_value=old_value) is False:
+                target_list[idx] = old_value
+                refresh(select_index=idx)
+                return
             refresh(select_index=idx)
 
         listbox.bind("<<ListboxSelect>>", on_select)

@@ -1,4 +1,5 @@
 from sms_core.third_push_config import ensure_third_push_config_values, read_third_push_settings
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_ui.third_push_app_runtime import (
     enqueue_third_push_app_runtime,
     open_third_push_values_app_runtime,
@@ -10,12 +11,15 @@ from sms_ui.third_push_app_runtime import (
 
 
 def ensure_third_push_config_namespace_runtime(namespace, *, save=False):
+    config_snapshot = snapshot_config_section(namespace["config"], "third_push")
     changed = ensure_third_push_config_values(namespace["config"])
     if changed and save:
         try:
-            namespace["safe_save_config"]()
+            if namespace["safe_save_config"]() is False:
+                raise RuntimeError("配置保存失败")
         except Exception:
-            pass
+            restore_config_section(namespace["config"], "third_push", config_snapshot)
+            return False
     return changed
 
 

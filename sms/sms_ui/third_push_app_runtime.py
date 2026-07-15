@@ -1,4 +1,5 @@
 from sms_core.third_push import third_push_state
+from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_core.third_push_config import ThirdPushSettings, update_third_push_settings, write_third_push_settings
 from sms_core.third_push_runtime import enqueue_third_push_runtime, third_push_worker_runtime
 from sms_core.third_push import format_message as format_third_push_message
@@ -21,23 +22,26 @@ def save_third_push_setting_runtime(
     update_settings=update_third_push_settings,
     write_settings=write_third_push_settings,
 ):
+    previous_settings = current_settings()
     next_settings = update_settings(
-        current_settings(),
+        previous_settings,
         enabled=enabled,
         sms_enabled=sms_enabled,
         call_enabled=call_enabled,
         notify_type=notify_type,
         settings=settings,
     )
-    apply_settings(next_settings)
+    config_snapshot = snapshot_config_section(config, "third_push")
 
     try:
         write_settings(config, next_settings)
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception:
+        restore_config_section(config, "third_push", config_snapshot)
         return None
 
+    apply_settings(next_settings)
     return next_settings
 
 

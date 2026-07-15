@@ -44,7 +44,8 @@ def open_serial_setting_dialog(
         else:
             port = ""
 
-        on_apply(mode, port, baud)
+        if on_apply(mode, port, baud) is False:
+            return
         win.destroy()
 
     tk.Label(frame, text="连接模式：").grid(row=0, column=0, sticky="w", pady=(0, 6))
