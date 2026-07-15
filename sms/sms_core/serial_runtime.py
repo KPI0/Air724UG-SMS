@@ -103,20 +103,22 @@ class SerialLineDecoder:
         self.decoder = codecs.getincrementaldecoder(encoding)("replace")
         self.text_buffer = ""
 
-    def _ends_with_incomplete_character(self, raw):
-        if not raw:
+    def _ends_with_incomplete_character(self, raw, pending=b""):
+        combined = bytes(pending or b"") + bytes(raw or b"")
+        if not combined:
             return False
         try:
-            raw.decode(self.encoding, "strict")
+            combined.decode(self.encoding, "strict")
             return False
         except UnicodeDecodeError as exc:
-            return exc.reason == "unexpected end of data" and exc.end == len(raw)
+            return exc.reason == "unexpected end of data" and exc.end == len(combined)
 
     def _drop_artificial_newline_after_incomplete_character(self, raw):
+        pending = self.decoder.getstate()[0]
         for suffix in (b"\r\n", b"\n", b"\r"):
             if raw.endswith(suffix):
                 body = raw[:-len(suffix)]
-                if self._ends_with_incomplete_character(body):
+                if self._ends_with_incomplete_character(body, pending=pending):
                     return body
                 break
         return raw

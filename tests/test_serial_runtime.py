@@ -139,6 +139,27 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(decoder.feed(raw[:split_at] + b"\r\n"), [])
         self.assertEqual(decoder.feed(raw[split_at:]), [text.strip()])
 
+    def test_serial_line_decoder_joins_three_byte_character_split_across_three_lines(self):
+        decoder = SerialLineDecoder()
+        prefix = "[I]-[handler_sms.smsCallback] 10699000 26/07/15,15:04:04+32 其中"
+        character = "：".encode("utf-8")
+        suffix = "中国电信2张；中国移动1张。\r\n".encode("utf-8")
+
+        self.assertEqual(decoder.feed(prefix.encode("utf-8") + character[:1] + b"\r\n"), [])
+        self.assertEqual(decoder.feed(character[1:2] + b"\r\n"), [])
+        self.assertEqual(
+            decoder.feed(character[2:] + suffix),
+            [prefix + "：中国电信2张；中国移动1张。"],
+        )
+
+    def test_serial_line_decoder_preserves_real_newline_after_buffered_character_completes(self):
+        decoder = SerialLineDecoder()
+        character = "服".encode("utf-8")
+
+        self.assertEqual(decoder.feed(b"customer " + character[:1] + b"\r\n"), [])
+        self.assertEqual(decoder.feed(character[1:2] + b"\r\n"), [])
+        self.assertEqual(decoder.feed(character[2:] + b" hotline\r\n"), ["customer 服 hotline"])
+
     def test_serial_line_decoder_keeps_timeout_from_flushing_partial_line(self):
         decoder = SerialLineDecoder()
 
