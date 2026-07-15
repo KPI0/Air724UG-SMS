@@ -51,38 +51,51 @@ class ThirdPushAppRuntimeTests(unittest.TestCase):
         self.assertFalse(result.enabled)
         self.assertTrue(result.sms_enabled)
         self.assertEqual(result.channels, ["wecom", "bark"])
-        self.assertEqual(calls[0], ("apply", result))
-        self.assertEqual(calls[1], ("save",))
+        self.assertEqual(calls[0], ("save",))
+        self.assertEqual(calls[1], ("apply", result))
         self.assertEqual(config.get("third_push", "enabled"), "0")
         self.assertEqual(config.get("third_push", "sms_enabled"), "1")
 
     def test_save_third_push_setting_runtime_returns_none_on_save_error(self):
         calls = []
+        config = configparser.ConfigParser()
+        config["third_push"] = {
+            "enabled": "1",
+            "notify_type": '["dingtalk"]',
+            "dingtalk_webhook": "https://old.example",
+            "extra_key": "keep-me",
+        }
+        before = dict(config.items("third_push", raw=True))
 
         result = save_third_push_setting_runtime(
             current_settings=lambda: ThirdPushSettings(True, True, True, [], {}),
             apply_settings=lambda settings: calls.append(("apply", settings)),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: (_ for _ in ()).throw(RuntimeError("disk")),
             enabled=False,
         )
 
         self.assertIsNone(result)
-        self.assertFalse(calls[0][1].enabled)
+        self.assertEqual(calls, [])
+        self.assertEqual(dict(config.items("third_push", raw=True)), before)
 
     def test_save_third_push_setting_runtime_returns_none_on_false_save_result(self):
         calls = []
+        config = configparser.ConfigParser()
+        config["third_push"] = {"enabled": "1", "notify_type": '[]', "extra_key": "keep"}
+        before = dict(config.items("third_push", raw=True))
 
         result = save_third_push_setting_runtime(
             current_settings=lambda: ThirdPushSettings(True, True, True, [], {}),
             apply_settings=lambda settings: calls.append(("apply", settings)),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: False,
             enabled=False,
         )
 
         self.assertIsNone(result)
-        self.assertFalse(calls[0][1].enabled)
+        self.assertEqual(calls, [])
+        self.assertEqual(dict(config.items("third_push", raw=True)), before)
 
     def test_open_third_push_app_runtime_builds_state_and_forwards_callbacks(self):
         calls = []

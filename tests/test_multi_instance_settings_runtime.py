@@ -31,6 +31,7 @@ class MultiInstanceSettingsRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(logs), 1)
         self.assertIn("save failed", logs[0])
+        self.assertFalse(config.has_section("ui"))
 
     def test_multi_instance_status_formats_enabled_state(self):
         self.assertIn("\u5df2\u5f00\u542f", multi_instance_status(True))
@@ -87,6 +88,26 @@ class MultiInstanceSettingsRuntimeTests(unittest.TestCase):
             show_notice=lambda title, message: notices.append((title, message)),
         )
 
+        self.assertEqual(notices, [])
+
+    def test_toggle_multi_instance_runtime_rolls_back_on_save_failure(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {"allow_multi_instance": "0"}
+        states = []
+        notices = []
+
+        result = toggle_multi_instance_runtime(
+            True,
+            config,
+            lambda: False,
+            states.append,
+            lambda *_args: None,
+            show_notice=lambda *args: notices.append(args),
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(config.get("ui", "allow_multi_instance"), "0")
+        self.assertEqual(states, [])
         self.assertEqual(notices, [])
 
 

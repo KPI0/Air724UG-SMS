@@ -372,6 +372,22 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         self.assertNotIn(("10086", "26/06/28,11:15:50+32"), cache._complete_by_key)
         self.assertTrue(any("PDU CACHE EVICT" in item and "Cache=COMPLETE" in item for item in logs))
 
+    def test_reset_clears_collection_and_all_cached_messages(self):
+        cache = SmsPduCorrectionCache()
+        cache._collecting = True
+        cache._pdu_lines.append("0011")
+        cache._complete_by_key[("10086", "time")] = [object()]
+        cache._segments_by_key[("10086", 8, 42, 2)] = [object()]
+        cache._last_corrected_message = object()
+
+        cache.reset()
+
+        self.assertFalse(cache._collecting)
+        self.assertEqual(cache._pdu_lines, [])
+        self.assertEqual(cache._complete_by_key, {})
+        self.assertEqual(cache._segments_by_key, {})
+        self.assertIsNone(cache._last_corrected_message)
+
 
 if __name__ == "__main__":
     unittest.main()

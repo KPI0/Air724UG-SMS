@@ -31,6 +31,7 @@ class DesktopShortcutRuntimeTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             save_desktop_shortcut_name_runtime(config, "My SMS", lambda: False)
+        self.assertFalse(config.has_section("ui"))
 
     def test_open_desktop_shortcut_dialog_runtime_applies_create_now(self):
         config = configparser.ConfigParser()
@@ -51,8 +52,8 @@ class DesktopShortcutRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(calls[0], ("open", "root", DEFAULT_DESKTOP_SHORTCUT_NAME, "center"))
-        self.assertEqual(calls[1], ("create", "Desk Name"))
-        self.assertEqual(calls[2], ("save",))
+        self.assertEqual(calls[1], ("save",))
+        self.assertEqual(calls[2], ("create", "Desk Name"))
         self.assertIn("Desk Name.lnk", calls[3][1][0])
         self.assertEqual(config.get("ui", "desktop_shortcut_name"), "Desk Name")
 
@@ -96,6 +97,7 @@ class DesktopShortcutRuntimeTests(unittest.TestCase):
                 center_window="center",
                 open_dialog=open_dialog,
             )
+        self.assertFalse(config.has_section("ui"))
 
 
 if __name__ == "__main__":

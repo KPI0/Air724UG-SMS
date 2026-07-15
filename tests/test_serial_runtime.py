@@ -83,6 +83,19 @@ def runtime_callbacks(calls):
     )
 
 
+def flush_settled_sms(state, calls, now, *, config=None, port="COM5"):
+    handle_serial_runtime_line(
+        state,
+        "",
+        now,
+        port,
+        False,
+        config or runtime_config(),
+        runtime_callbacks(calls),
+        {},
+    )
+
+
 class SerialRuntimeTests(unittest.TestCase):
     def test_serial_line_decoder_keeps_split_utf8_character(self):
         decoder = SerialLineDecoder()
@@ -132,6 +145,17 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(decoder.feed("您正在".encode("utf-8")), [])
         self.assertEqual(decoder.feed(b""), [])
         self.assertEqual(decoder.feed("中国电信APP\r\n".encode("utf-8")), ["您正在中国电信APP"])
+
+    def test_serial_line_decoder_emits_modem_sms_prompt_without_newline(self):
+        decoder = SerialLineDecoder()
+
+        self.assertEqual(decoder.feed(b"> "), [">"])
+
+    def test_serial_line_decoder_emits_prompt_when_prompt_arrives_in_chunks(self):
+        decoder = SerialLineDecoder()
+
+        self.assertEqual(decoder.feed(b"\r\n"), [""])
+        self.assertEqual(decoder.feed(b"> "), [">"])
 
     def test_blank_line_flushes_expired_sms(self):
         calls = []
@@ -297,6 +321,7 @@ class SerialRuntimeTests(unittest.TestCase):
                 runtime_callbacks(calls),
                 {},
             )
+        flush_settled_sms(state, calls, 10.0 + len(lines) + 6.0)
 
         self.assertIn(("sms_popup", (body,)), calls)
         self.assertIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
@@ -340,6 +365,7 @@ class SerialRuntimeTests(unittest.TestCase):
                 runtime_callbacks(calls),
                 {},
             )
+        flush_settled_sms(state, calls, 10.0 + len(lines) + 6.0)
 
         self.assertIn(("sms_popup", (body,)), calls)
         self.assertIn(("cloud_sms", ("10086 26/06/28,11:15:50+32 " + body, body)), calls)
@@ -375,6 +401,13 @@ class SerialRuntimeTests(unittest.TestCase):
                 callbacks,
                 {},
             )
+        flush_settled_sms(
+            state,
+            calls,
+            10.0 + len(lines) + 6.0,
+            config=runtime_config(log_dir="logs", log_prefix="COM60"),
+            port="COM60",
+        )
 
         self.assertFalse(any(
             item[0] == "system" and "SMS CONCAT" in str(item[1])
@@ -438,6 +471,13 @@ class SerialRuntimeTests(unittest.TestCase):
                 callbacks,
                 {},
             )
+        flush_settled_sms(
+            state,
+            calls,
+            10.0 + len(lines) + 6.0,
+            config=runtime_config(log_dir="logs", log_prefix="COM60"),
+            port="COM60",
+        )
 
         self.assertTrue(any(
             item[0] == "sms_popup"
@@ -761,6 +801,24 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertEqual(app_state, [(0.0, ""), (0.0, "")])
         self.assertEqual(disconnects, [("gone", "COM5")])
+
+    def test_reset_sms_state_clears_collector_pdu_cache_and_assembler(self):
+        state = SerialRuntimeState.create(parse_head)
+        state.sms_collector.start("10086 body", 1.0)
+        state.sms_pdu_cache._collecting = True
+        state.sms_pdu_cache._pdu_lines.append("0011")
+        state.sms_pdu_cache._segments_by_key[("10086", 8, 42, 2)] = [object()]
+        state.long_sms_assembler._pending[("10086", 8, 42, 2, 0)] = {"parts": {1: "old"}}
+        state.long_sms_assembler._completed[("10086", 8, 42, 2, 0)] = {"parts": {1: "old"}}
+
+        state.reset_sms_state()
+
+        self.assertFalse(state.sms_collector.active)
+        self.assertFalse(state.sms_pdu_cache._collecting)
+        self.assertEqual(state.sms_pdu_cache._pdu_lines, [])
+        self.assertEqual(state.sms_pdu_cache._segments_by_key, {})
+        self.assertEqual(state.long_sms_assembler._pending, {})
+        self.assertEqual(state.long_sms_assembler._completed, {})
 
 
 if __name__ == "__main__":

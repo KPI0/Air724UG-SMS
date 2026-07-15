@@ -89,6 +89,12 @@ class CoreHelperTests(unittest.TestCase):
             self.flush_count += 1
 
     class FakeSmsWaiter:
+        def mark_pdu_send_started(self):
+            return True
+
+        def wait_prompt(self, _timeout):
+            return SmsPduSendResponse(True)
+
         def wait(self, _timeout):
             return SmsPduSendResponse(True)
 

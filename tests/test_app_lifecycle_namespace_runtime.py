@@ -22,6 +22,9 @@ class FakeVar:
     def get(self):
         return self.value
 
+    def set(self, value):
+        self.value = value
+
 
 class FakeOs:
     @staticmethod
@@ -143,6 +146,23 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][-1], ("log", "voice log"))
         self.assertEqual(calls[1][-1], ("log", "multi log"))
         self.assertEqual(calls[2][-1], ("log", "popup log"))
+
+    def test_toggle_namespace_runtimes_restore_menu_vars_when_save_fails(self):
+        namespace = self.base_namespace()
+
+        multi_result = toggle_multi_instance_namespace_runtime(
+            namespace,
+            toggle_runtime=lambda *args, **kwargs: None,
+        )
+        popup_result = toggle_popup_namespace_runtime(
+            namespace,
+            toggle_runtime=lambda *args, **kwargs: None,
+        )
+
+        self.assertIsNone(multi_result)
+        self.assertIsNone(popup_result)
+        self.assertFalse(namespace["multi_instance_var"].get())
+        self.assertTrue(namespace["popup_var"].get())
 
     def test_restart_software_namespace_runtime_forwards_shutdown_dependencies(self):
         namespace = self.base_namespace()

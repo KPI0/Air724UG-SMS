@@ -168,8 +168,17 @@ class SerialAppRuntimeTests(unittest.TestCase):
             def clear(self):
                 self.cleared = True
 
+        class FakeSmsCoordinator:
+            def observe_line(self, line, connection=None):
+                calls.append(("sms_line", line, connection))
+
+            def cancel_active(self, error):
+                calls.append(("sms_cancel", error))
+                return True
+
         stop_event = FakeEvent()
         wakeup_event = FakeEvent()
+        serial_obj = object()
         namespace = {
             "KEYWORDS": ["otp"],
             "LOG_UNMATCHED_SMS": True,
@@ -213,12 +222,16 @@ class SerialAppRuntimeTests(unittest.TestCase):
             "RECONNECT_INTERVAL": 2,
             "serial_wakeup_event": wakeup_event,
             "try_manual_rebind_after_error": lambda error: False,
+            "serial_obj": serial_obj,
+            "SMS_SEND_COORDINATOR": FakeSmsCoordinator(),
         }
 
         def run_reader(**kwargs):
             calls.append(kwargs)
             kwargs["values"]["log_prefix"]()
             kwargs["callbacks"]["file_log"]("line")
+            kwargs["callbacks"]["observe_sms_send_line"]("OK")
+            kwargs["callbacks"]["cancel_sms_send"]("gone")
             self.assertFalse(kwargs["state_access"]["popup_active"]())
             self.assertFalse(kwargs["reconnect_callbacks"]["stop_requested"]())
             return "ran"
@@ -234,6 +247,8 @@ class SerialAppRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0]["parse_callback_head"], "parser")
         self.assertEqual(calls[0]["apply_disconnect_effects"], "disconnect")
         self.assertIn(("file", "line"), calls)
+        self.assertIn(("sms_line", "OK", serial_obj), calls)
+        self.assertIn(("sms_cancel", "gone"), calls)
 
     def test_run_serial_app_runtime_wires_loop_callbacks(self):
         calls = []
@@ -294,6 +309,8 @@ class SerialAppRuntimeTests(unittest.TestCase):
     def test_run_serial_app_runtime_handles_disconnect(self):
         calls = []
         log_prefixes = []
+        callbacks = app_callbacks(calls)
+        callbacks["cancel_sms_send"] = lambda error: calls.append(("cancel_sms", error))
 
         def fake_run_serial_runtime_thread(**kwargs):
             return kwargs["handle_disconnect"](RuntimeError("gone"), "COM7")
@@ -301,7 +318,7 @@ class SerialAppRuntimeTests(unittest.TestCase):
         result = run_serial_app_runtime(
             parse_callback_head=lambda text: ("sender", text),
             settings=app_settings(),
-            callbacks=app_callbacks(calls),
+            callbacks=callbacks,
             state={
                 "get_call_state": lambda: (0.0, ""),
                 "set_call_state": lambda *_: None,
@@ -332,7 +349,8 @@ class SerialAppRuntimeTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(log_prefixes, ["system"])
         self.assertEqual(calls[0], ("close_popup",))
-        self.assertEqual(calls[1][0], "disconnect")
+        self.assertEqual(calls[1], ("cancel_sms", "串口连接已断开：gone"))
+        self.assertEqual(calls[2][0], "disconnect")
         self.assertEqual(calls[-1], ("rebind", "gone"))
 
 

@@ -69,14 +69,12 @@ class MaintenanceNamespaceBindingsTests(unittest.TestCase):
         namespace = self.make_namespace()
         bindings.install_maintenance_namespace_bindings(namespace)
 
-        with patch.object(bindings, "schedule_next_midnight_clear_namespace_runtime", return_value="scheduled") as schedule:
-            namespace["clear_text_area_for_new_day"]()
+        namespace["clear_text_area_for_new_day"]()
 
         self.assertEqual(namespace["calls"], [
             ("clear",),
             ("system", "📅 新的一天，窗口已清空"),
         ])
-        schedule.assert_called_once_with(namespace)
 
 
 if __name__ == "__main__":

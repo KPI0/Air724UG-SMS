@@ -90,14 +90,14 @@ class CloudRuntimeTests(unittest.TestCase):
         result = validate_cloud_start(True, "ws://127.0.0.1:8765", " ")
 
         self.assertFalse(result.ok)
-        self.assertEqual(result.url, "ws://127.0.0.1:8765/websocket")
+        self.assertEqual(result.url, "ws://127.0.0.1:8765/ws/device")
         self.assertEqual(result.status_text, "🌐 密码未配置")
 
     def test_validate_cloud_start_normalizes_valid_url(self):
         result = validate_cloud_start(True, "ws://127.0.0.1:8765", "secret")
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.url, "ws://127.0.0.1:8765/websocket")
+        self.assertEqual(result.url, "ws://127.0.0.1:8765/ws/device")
 
     def test_cloud_stopped_status(self):
         self.assertEqual(cloud_stopped_status(False), "🌐 已关闭")
@@ -157,7 +157,7 @@ class CloudRuntimeTests(unittest.TestCase):
         settings = read_cloud_control_settings(config)
         self.assertEqual(settings, CloudControlSettings(
             enabled=True,
-            url="ws://127.0.0.1:8765/websocket",
+            url="ws://127.0.0.1:8765/ws/device",
             reconnect_interval=1,
             device_secret="secret",
             auto_upload=True,
@@ -171,7 +171,7 @@ class CloudRuntimeTests(unittest.TestCase):
             device_secret=" next ",
             auto_upload=False,
         )
-        self.assertEqual(updated.url, "wss://example.com/websocket")
+        self.assertEqual(updated.url, "wss://example.com/ws/device")
         self.assertEqual(updated.reconnect_interval, 5)
         self.assertEqual(updated.device_secret, "next")
 
@@ -252,7 +252,7 @@ class CloudRuntimeTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertTrue(stop_event.cleared)
-        self.assertEqual(calls, [("imei",), ("target", "ws://host/websocket", 7)])
+        self.assertEqual(calls, [("imei",), ("target", "ws://host/ws/device", 7)])
         self.assertEqual(len(stored), 1)
         self.assertTrue(stored[0].started)
         self.assertTrue(stored[0].daemon)

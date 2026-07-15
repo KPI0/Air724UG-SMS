@@ -12,14 +12,14 @@ from sms_core.cloud_protocol import (
 
 class CloudProtocolTests(unittest.TestCase):
     def test_normalize_cloud_ws_url_appends_default_path_to_root(self):
-        """Should append /websocket to URLs with empty or / path."""
+        """Should append the dedicated device path to root URLs."""
         self.assertEqual(
             normalize_cloud_ws_url("ws://localhost:8080"),
-            "ws://localhost:8080/websocket"
+            "ws://localhost:8080/ws/device"
         )
         self.assertEqual(
             normalize_cloud_ws_url("ws://localhost:8080/"),
-            "ws://localhost:8080/websocket"
+            "ws://localhost:8080/ws/device"
         )
 
     def test_normalize_cloud_ws_url_preserves_custom_path(self):
@@ -31,7 +31,7 @@ class CloudProtocolTests(unittest.TestCase):
         """Should work with wss:// (secure WebSocket)."""
         self.assertEqual(
             normalize_cloud_ws_url("wss://example.com"),
-            "wss://example.com/websocket"
+            "wss://example.com/ws/device"
         )
 
     def test_normalize_cloud_ws_url_preserves_non_ws_urls(self):

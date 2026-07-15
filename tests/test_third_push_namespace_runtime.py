@@ -61,6 +61,20 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIn(("save_config",), namespace["calls"])
 
+    def test_ensure_restores_config_when_save_fails(self):
+        namespace = self.make_namespace()
+        namespace["safe_save_config"] = lambda: False
+
+        def ensure(config):
+            config["third_push"] = {"enabled": "1"}
+            return True
+
+        with patch.object(runtime, "ensure_third_push_config_values", side_effect=ensure):
+            changed = runtime.ensure_third_push_config_namespace_runtime(namespace, save=True)
+
+        self.assertFalse(changed)
+        self.assertFalse(namespace["config"].has_section("third_push"))
+
     def test_refresh_reads_config_and_applies_settings(self):
         namespace = self.make_namespace()
         settings = ThirdPushSettings(False, True, True, ["bark"], {"bark_url": "url"})

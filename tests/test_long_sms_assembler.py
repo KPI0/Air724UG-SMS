@@ -1,4 +1,6 @@
-﻿import unittest
+import unittest
+
+from itertools import permutations
 
 from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_sms import PendingSms
@@ -10,6 +12,12 @@ def parse_head(text):
     if len(parts) >= 3:
         return parts[0], parts[2]
     return "", str(text or "")
+
+
+def _pending_results(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 class LongSmsAssemblerTests(unittest.TestCase):
@@ -713,6 +721,12 @@ class LongSmsAssemblerTests(unittest.TestCase):
         self.assertEqual(len(assembler._pending), 2)
         self.assertFalse(any(key[2] == 0x2A for key in assembler._pending))
         self.assertTrue(any("SMS CONCAT EVICT" in item and "Ref=0x2A" in item for item in logs))
+
+    def test_wending_contract_has_no_deferred_release_api(self):
+        assembler = LongSmsAssembler(parse_head)
+        self.assertFalse(hasattr(assembler, "flush_ready"))
+        with self.assertRaises(TypeError):
+            LongSmsAssembler(parse_head, completion_settle_wait=5.0)
 
 
 if __name__ == "__main__":

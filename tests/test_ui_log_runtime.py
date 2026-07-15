@@ -180,6 +180,50 @@ class UiLogRuntimeTests(unittest.TestCase):
         self.assertEqual(delay, 60000)
         self.assertEqual(calls[0][0], 60000)
 
+    def test_schedule_next_midnight_clear_runtime_deduplicates_replaced_timer(self):
+        scheduled = []
+        cancelled = []
+        cleared = []
+        state = {}
+        now = [datetime.datetime(2026, 6, 8, 23, 59, 0)]
+
+        def schedule_after(delay_ms, callback):
+            item = (len(scheduled) + 1, delay_ms, callback)
+            scheduled.append(item)
+            return item[0]
+
+        schedule_next_midnight_clear_runtime(
+            tk_alive=lambda: True,
+            schedule_after=schedule_after,
+            cancel_after=cancelled.append,
+            clear_callback=lambda: cleared.append("clear"),
+            now_func=lambda: now[0],
+            state=state,
+        )
+        schedule_next_midnight_clear_runtime(
+            tk_alive=lambda: True,
+            schedule_after=schedule_after,
+            cancel_after=cancelled.append,
+            clear_callback=lambda: cleared.append("clear"),
+            now_func=lambda: now[0],
+            state=state,
+        )
+
+        scheduled[0][2]()
+        self.assertEqual(cancelled, [1])
+        self.assertEqual(cleared, [])
+
+        now[0] = datetime.datetime(2026, 6, 9, 0, 0, 1)
+        scheduled[1][2]()
+        self.assertEqual(cleared, ["clear"])
+
+        scheduled[1][2]()
+        self.assertEqual(cleared, ["clear"])
+
+        now[0] = datetime.datetime(2026, 6, 10, 0, 0, 1)
+        scheduled[2][2]()
+        self.assertEqual(cleared, ["clear", "clear"])
+
     def test_schedule_next_midnight_clear_runtime_skips_when_tk_dead(self):
         delay = schedule_next_midnight_clear_runtime(
             tk_alive=lambda: False,

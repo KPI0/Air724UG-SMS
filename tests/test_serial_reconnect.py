@@ -107,9 +107,11 @@ class SerialReconnectTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_manual_rebind_runtime_reports_config_save_failure(self):
-        # A failed config save must not be swallowed: the new port would be
-        # lost on restart, so the user must be told via system_ui.
         ui_messages = []
+        config = configparser.ConfigParser()
+        config["serial"] = {"mode": "Manual", "port": "COM5", "baud": "115200"}
+        ports = []
+        wakes = []
 
         ok = manual_rebind_runtime(
             mode="Manual",
@@ -119,22 +121,28 @@ class SerialReconnectTests(unittest.TestCase):
             find_luat_best_port=lambda: ("COM7", "LUAT MODEM"),
             list_ports=lambda: [],
             choose_candidate=lambda dev, desc, ports, current_port="": ManualRebindCandidate(dev, desc),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: (_ for _ in ()).throw(OSError("disk full")),
-            set_port=lambda port: None,
+            set_port=ports.append,
             system_ui=lambda text, tag: ui_messages.append(text),
             set_status=lambda text, color: None,
-            wake_serial=lambda: None,
+            wake_serial=lambda: wakes.append("wake"),
             reset_rebind_hint=lambda: None,
             hint_formatter=lambda old, new, desc, reason: "hint",
         )
 
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertEqual(config.get("serial", "port"), "COM5")
+        self.assertEqual(ports, [])
+        self.assertEqual(wakes, [])
         self.assertTrue(any("配置保存失败" in m for m in ui_messages))
         self.assertTrue(any("disk full" in m for m in ui_messages))
 
     def test_manual_rebind_runtime_reports_false_config_save_result(self):
         ui_messages = []
+        config = configparser.ConfigParser()
+        config["serial"] = {"mode": "Manual", "port": "COM5", "baud": "115200"}
+        ports = []
 
         ok = manual_rebind_runtime(
             mode="Manual",
@@ -144,9 +152,9 @@ class SerialReconnectTests(unittest.TestCase):
             find_luat_best_port=lambda: ("COM7", "LUAT MODEM"),
             list_ports=lambda: [],
             choose_candidate=lambda dev, desc, ports, current_port="": ManualRebindCandidate(dev, desc),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: False,
-            set_port=lambda port: None,
+            set_port=ports.append,
             system_ui=lambda text, tag: ui_messages.append(text),
             set_status=lambda text, color: None,
             wake_serial=lambda: None,
@@ -154,7 +162,9 @@ class SerialReconnectTests(unittest.TestCase):
             hint_formatter=lambda old, new, desc, reason: "hint",
         )
 
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertEqual(config.get("serial", "port"), "COM5")
+        self.assertEqual(ports, [])
         self.assertTrue(any("配置保存失败" in m for m in ui_messages))
 
     def test_manual_rebind_runtime_reports_wake_failure(self):

@@ -1,5 +1,6 @@
 import configparser
 import unittest
+from unittest.mock import patch
 
 from sms_core.cloud_runtime import CloudControlSettings
 from sms_ui.cloud_control_app_runtime import (
@@ -13,6 +14,7 @@ from sms_ui.cloud_control_app_runtime import (
     start_cloud_control_app_runtime,
     stop_cloud_control_app_runtime,
 )
+from sms_ui.cloud_control_window import open_cloud_control_window_runtime
 
 
 class CloudControlAppRuntimeTests(unittest.TestCase):
@@ -57,49 +59,62 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         )
 
         self.assertTrue(result.enabled)
-        self.assertEqual(result.url, "wss://example.test/websocket")
+        self.assertEqual(result.url, "wss://example.test/ws/device")
         self.assertEqual(result.reconnect_interval, 9)
         self.assertEqual(result.device_secret, "secret")
         self.assertTrue(result.auto_upload)
-        self.assertEqual(calls[0], ("apply", result))
-        self.assertEqual(calls[1], ("save",))
+        self.assertEqual(calls[0], ("save",))
+        self.assertEqual(calls[1], ("apply", result))
         self.assertEqual(config.get("cloud_control", "enabled"), "1")
         self.assertEqual(config.get("cloud_control", "auto_upload"), "1")
 
     def test_save_cloud_control_setting_runtime_reports_save_errors(self):
         calls = []
+        config = configparser.ConfigParser()
+        config["cloud_control"] = {
+            "enabled": "0",
+            "url": "ws://old",
+            "device_secret": "old-secret",
+            "device_imei": "legacy-imei",
+            "extra_key": "keep-me",
+        }
+        before = dict(config.items("cloud_control", raw=True))
 
         result = save_cloud_control_setting_runtime(
             current_settings=lambda: CloudControlSettings(),
             apply_settings=lambda settings: calls.append(("apply", settings)),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: (_ for _ in ()).throw(RuntimeError("disk")),
             system_ui=lambda *args: calls.append(("ui", args)),
             enabled=True,
         )
 
         self.assertIsNone(result)
-        applied = calls[0][1]
-        self.assertTrue(applied.enabled)
-        self.assertEqual(calls[0], ("apply", applied))
-        self.assertEqual(calls[1][0], "ui")
-        self.assertIn("disk", calls[1][1][0])
+        self.assertFalse(any(call[0] == "apply" for call in calls))
+        self.assertEqual(dict(config.items("cloud_control", raw=True)), before)
+        self.assertEqual(calls[0][0], "ui")
+        self.assertIn("disk", calls[0][1][0])
 
     def test_save_cloud_control_setting_runtime_reports_false_save_result(self):
         calls = []
+        config = configparser.ConfigParser()
+        config["cloud_control"] = {"enabled": "0", "url": "ws://old", "device_imei": "legacy"}
+        before = dict(config.items("cloud_control", raw=True))
 
         result = save_cloud_control_setting_runtime(
             current_settings=lambda: CloudControlSettings(),
             apply_settings=lambda settings: calls.append(("apply", settings)),
-            config=configparser.ConfigParser(),
+            config=config,
             save_config=lambda: False,
             system_ui=lambda *args: calls.append(("ui", args)),
             enabled=True,
         )
 
         self.assertIsNone(result)
-        self.assertEqual(calls[1][0], "ui")
-        self.assertIn("配置保存失败", calls[1][1][0])
+        self.assertFalse(any(call[0] == "apply" for call in calls))
+        self.assertEqual(dict(config.items("cloud_control", raw=True)), before)
+        self.assertEqual(calls[0][0], "ui")
+        self.assertIn("配置保存失败", calls[0][1][0])
 
     def test_cloud_window_connection_state_reports_loop_and_socket(self):
         self.assertEqual(
@@ -395,6 +410,91 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         }))
         self.assertIn(("connection", (False, True, False)), calls)
         self.assertIn(("set_window", "new_win"), calls)
+
+    def test_open_cloud_control_window_reverts_auto_upload_after_save_failure(self):
+        calls = []
+
+        class FakeWindow:
+            def _sync_form_from_state(self):
+                calls.append(("sync",))
+
+        def fake_dialog(
+            _parent,
+            state_provider,
+            _status_var,
+            on_auto_upload_changed,
+            *_callbacks,
+            **_kwargs,
+        ):
+            result = on_auto_upload_changed(True, FakeWindow())
+            calls.append(("result", result, state_provider()))
+            return "window"
+
+        with patch("sms_ui.cloud_control_window.open_cloud_control_window_dialog", side_effect=fake_dialog):
+            result = open_cloud_control_window_runtime(
+                "root",
+                None,
+                lambda: {"enabled": False, "auto_upload": False},
+                "status",
+                lambda: None,
+                lambda **_: None,
+                lambda: (True, True, True),
+                lambda: calls.append(("register",)),
+                lambda reason: calls.append(("unregister", reason)),
+                lambda **_: None,
+                lambda **_: None,
+                lambda *_: None,
+                lambda *_: False,
+                lambda *_: None,
+                "center",
+            )
+
+        self.assertEqual(result, "window")
+        self.assertIn(("sync",), calls)
+        self.assertIn(("result", False, {"enabled": False, "auto_upload": False}), calls)
+        self.assertNotIn(("register",), calls)
+        self.assertFalse(any(item[0] == "unregister" for item in calls))
+
+    def test_open_cloud_control_connect_callback_reports_save_failure(self):
+        calls = []
+
+        def fake_dialog(
+            _parent,
+            _state_provider,
+            _status_var,
+            _on_auto_upload_changed,
+            _on_save,
+            on_connect,
+            _on_disconnect,
+            _on_close,
+            *_args,
+            **_kwargs,
+        ):
+            calls.append(on_connect((True, "ws://host", 5, "secret", False), object()))
+            return "window"
+
+        with patch("sms_ui.cloud_control_window.open_cloud_control_window_dialog", side_effect=fake_dialog):
+            result = open_cloud_control_window_runtime(
+                "root",
+                None,
+                lambda: {"enabled": False, "auto_upload": False, "url": "ws://host", "secret": "secret", "reconnect_interval": 5},
+                "status",
+                lambda: None,
+                lambda **_: None,
+                lambda: (False, False, False),
+                lambda: calls.append("register"),
+                lambda _reason: calls.append("unregister"),
+                lambda **_: calls.append("restart"),
+                lambda **_: calls.append("stop"),
+                lambda *_: None,
+                lambda *_: False,
+                lambda *_: None,
+                "center",
+            )
+
+        self.assertEqual(result, "window")
+        self.assertEqual(calls[0], False)
+        self.assertNotIn("restart", calls)
 
 
 if __name__ == "__main__":

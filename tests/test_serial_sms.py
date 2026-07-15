@@ -1,6 +1,7 @@
 ﻿import unittest
 
 from sms_core.serial_sms import (
+    PendingSms,
     SMS_CALLBACK_PREFIX,
     SmsPendingCollector,
     flush_pending_sms,
@@ -175,6 +176,40 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertIn(("cloud", "+8613123123123 hello", "hello"), calls)
         self.assertIn(("popup", "hello"), calls)
         self.assertIn(("alert",), calls)
+
+    def test_flush_pending_sms_processes_multiple_completed_messages(self):
+        collector = SmsPendingCollector(parse_head)
+        collector.start("+8613123123123 trigger", now=10.0)
+        calls = []
+
+        class MultiAssembler:
+            def add_collected(self, *_args, **_kwargs):
+                return [
+                    PendingSms("+8613123123123 first", "first", []),
+                    PendingSms("+8613123123123 second", "second", []),
+                ]
+
+        result = flush_pending_sms(
+            collector,
+            keywords=[],
+            log_unmatched_sms=False,
+            log_dir=".",
+            log_prefix="COM5",
+            ignore_repeat_state={},
+            error_repeat_limit=3,
+            enqueue_push=lambda msg: calls.append(("push", msg)),
+            send_cloud_sms_event=lambda head, msg: calls.append(("cloud", head, msg)),
+            port_ui=lambda text, level: calls.append(("ui", text, level)),
+            play_alert=lambda: calls.append(("alert",)),
+            show_sms_popup=lambda msg: calls.append(("popup", msg)),
+            file_log=lambda item: calls.append(("file", item)),
+            system_ui=lambda text, level: calls.append(("system", text, level)),
+            assembler=MultiAssembler(),
+        )
+
+        self.assertEqual(result, "shown")
+        self.assertIn(("push", "first"), calls)
+        self.assertIn(("push", "second"), calls)
 
 
 if __name__ == "__main__":

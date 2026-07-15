@@ -29,6 +29,16 @@ class FakeSerial:
         self.flush_count += 1
 
 
+class CallbackSerial(FakeSerial):
+    def __init__(self, on_write):
+        super().__init__()
+        self.on_write = on_write
+
+    def write(self, payload):
+        super().write(payload)
+        self.on_write(payload)
+
+
 class TrackingLock:
     def __init__(self):
         self.depth = 0
@@ -46,10 +56,19 @@ class TrackingLock:
 
 
 class FakeSmsWaiter:
-    def __init__(self, response=None):
+    def __init__(self, response=None, prompt_response=None):
         self.response = response or SmsPduSendResponse(True)
+        self.prompt_response = prompt_response or SmsPduSendResponse(True)
         self.waits = []
+        self.prompt_waits = []
         self.cancelled = []
+
+    def wait_prompt(self, timeout):
+        self.prompt_waits.append(timeout)
+        return self.prompt_response
+
+    def mark_pdu_send_started(self):
+        return True
 
     def wait(self, timeout):
         self.waits.append(timeout)
@@ -60,14 +79,20 @@ class FakeSmsWaiter:
 
 
 class FakeSmsCoordinator:
-    def __init__(self, responses):
+    def __init__(self, responses, prompt_responses=None):
         self.responses = list(responses)
+        self.prompt_responses = list(prompt_responses or [])
         self.waiters = []
         self.finished = []
 
     def begin_segment(self, label=""):
         response = self.responses.pop(0) if self.responses else SmsPduSendResponse(True)
-        waiter = FakeSmsWaiter(response)
+        prompt_response = (
+            self.prompt_responses.pop(0)
+            if self.prompt_responses
+            else SmsPduSendResponse(True)
+        )
+        waiter = FakeSmsWaiter(response, prompt_response)
         waiter.label = label
         self.waiters.append(waiter)
         return waiter
@@ -160,7 +185,7 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual(serial_obj.writes, [])
         self.assertTrue(any("未配置短信发送确认器" in line for line in debug))
 
-    def test_write_text_sms_pdu_times_out_when_modem_does_not_confirm(self):
+    def test_write_text_sms_pdu_does_not_send_pdu_without_prompt(self):
         serial_obj = FakeSerial()
         debug = []
 
@@ -175,13 +200,222 @@ class SerialSenderResultTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
-        self.assertTrue(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
-        self.assertTrue(any("等待短信发送确认超时" in line for line in debug))
+        self.assertFalse(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
+        self.assertTrue(any("等待 Modem 的 > 提示符超时" in line for line in debug))
+
+    def test_write_text_sms_pdu_waits_for_prompt_before_writing_body(self):
+        coordinator = SmsPduSendCoordinator()
+
+        def on_write(payload):
+            if payload.startswith(b"AT+CMGS="):
+                coordinator.observe_line("> ")
+            elif payload.endswith(b"\x1a"):
+                coordinator.observe_line("+CMGS: 17")
+                coordinator.observe_line("OK")
+
+        serial_obj = CallbackSerial(on_write)
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "hello",
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+            prompt_timeout=0.1,
+            segment_timeout=0.1,
+        )
+
+        self.assertTrue(result)
+        self.assertTrue(serial_obj.writes[1].startswith(b"AT+CMGS="))
+        self.assertTrue(serial_obj.writes[2].endswith(b"\x1a"))
+
+    def test_write_text_sms_pdu_blocks_body_until_prompt_arrives(self):
+        coordinator = SmsPduSendCoordinator()
+        cmgs_written = threading.Event()
+        pdu_written = threading.Event()
+
+        def on_write(payload):
+            if payload.startswith(b"AT+CMGS="):
+                cmgs_written.set()
+            elif payload.endswith(b"\x1a"):
+                pdu_written.set()
+
+        serial_obj = CallbackSerial(on_write)
+        result_holder = []
+
+        thread = threading.Thread(
+            target=lambda: result_holder.append(
+                write_text_sms_pdu(
+                    serial_obj,
+                    "+1234",
+                    "hello",
+                    sleep_func=lambda _seconds: None,
+                    response_coordinator=coordinator,
+                    prompt_timeout=1.0,
+                    segment_timeout=1.0,
+                )
+            ),
+            daemon=True,
+        )
+        thread.start()
+
+        self.assertTrue(cmgs_written.wait(1))
+        self.assertFalse(pdu_written.is_set())
+        self.assertEqual(len(serial_obj.writes), 2)
+
+        coordinator.observe_line(">")
+        self.assertTrue(pdu_written.wait(1))
+        coordinator.observe_line("+CMGS: 17")
+        coordinator.observe_line("OK")
+        thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result_holder, [True])
+
+    def test_write_text_sms_pdu_stops_when_cmgs_fails_before_prompt(self):
+        coordinator = SmsPduSendCoordinator()
+
+        def on_write(payload):
+            if payload.startswith(b"AT+CMGS="):
+                coordinator.observe_line("+CMS ERROR: 500")
+
+        serial_obj = CallbackSerial(on_write)
+        debug = []
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "hello",
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+            prompt_timeout=0.1,
+        )
+
+        self.assertFalse(result)
+        self.assertFalse(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
+        self.assertTrue(any("+CMS ERROR: 500" in line for line in debug))
+
+    def test_write_text_sms_pdu_does_not_send_after_prompt_then_error(self):
+        coordinator = SmsPduSendCoordinator()
+
+        def on_write(payload):
+            if payload.startswith(b"AT+CMGS="):
+                coordinator.observe_line(">")
+                coordinator.observe_line("+CMS ERROR: 500")
+
+        serial_obj = CallbackSerial(on_write)
+        debug = []
+
+        result = write_text_sms_pdu(
+            serial_obj,
+            "+1234",
+            "hello",
+            push_debug=debug.append,
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+            prompt_timeout=1.0,
+        )
+
+        self.assertFalse(result)
+        self.assertFalse(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
+        self.assertTrue(any("+CMS ERROR: 500" in line for line in debug))
+
+    def test_sms_pdu_send_coordinator_wakes_prompt_wait_on_error(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+        started = threading.Event()
+        result_holder = []
+
+        def wait_for_prompt():
+            started.set()
+            result_holder.append(waiter.wait_prompt(1.0))
+
+        thread = threading.Thread(target=wait_for_prompt, daemon=True)
+        thread.start()
+        self.assertTrue(started.wait(1))
+        coordinator.observe_line("+CMS ERROR: 500")
+        thread.join(0.2)
+        coordinator.finish(waiter)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result_holder[0].error, "+CMS ERROR: 500")
+
+    def test_sms_pdu_send_coordinator_recognizes_prompt(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("[I]-[ril.proatc] > ")
+        response = waiter.wait_prompt(0)
+        coordinator.finish(waiter)
+
+        self.assertTrue(response.ok)
+
+    def test_sms_pdu_send_coordinator_ignores_untrusted_prompt_logs(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("[I]-[app.note] >")
+        coordinator.observe_line("[I]-[ril.note] >")
+        self.assertFalse(waiter.wait_prompt(0).ok)
+
+        coordinator.observe_line("[I]-[ril.proatc] >")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        coordinator.finish(waiter)
+
+    def test_waiter_atomic_pdu_commit_rejects_cancel_after_prompt(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+        writes = []
+
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        coordinator.cancel_active("串口连接已断开")
+        result = waiter.write_pdu_if_ready(
+            lambda: writes.append(b"PDU") or SerialCommandResult(True)
+        )
+        coordinator.finish(waiter)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "串口连接已断开")
+        self.assertEqual(writes, [])
+
+    def test_waiter_atomic_pdu_commit_blocks_concurrent_cancel_until_write_commits(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+        cancel_done = threading.Event()
+        cancel_thread_holder = []
+
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+
+        def writer():
+            thread = threading.Thread(
+                target=lambda: (
+                    coordinator.cancel_active("串口连接已断开"),
+                    cancel_done.set(),
+                ),
+                daemon=True,
+            )
+            cancel_thread_holder.append(thread)
+            thread.start()
+            self.assertFalse(cancel_done.wait(0.05))
+            return SerialCommandResult(True)
+
+        result = waiter.write_pdu_if_ready(writer)
+        cancel_thread_holder[0].join(1)
+        coordinator.finish(waiter)
+
+        self.assertTrue(result.ok)
+        self.assertTrue(cancel_done.is_set())
 
     def test_sms_pdu_send_coordinator_waits_for_cmgs_and_ok(self):
         coordinator = SmsPduSendCoordinator()
         waiter = coordinator.begin_segment(label="(1/1)")
 
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        self.assertTrue(waiter.mark_pdu_send_started())
         coordinator.observe_line("+CMGS: 17")
         self.assertFalse(waiter.done())
         coordinator.observe_line("[I]-[ril.proatc] OK")
@@ -189,6 +423,96 @@ class SerialSenderResultTests(unittest.TestCase):
         coordinator.finish(waiter)
 
         self.assertTrue(response.ok)
+
+    def test_sms_pdu_send_coordinator_ignores_unrelated_lines_by_phase(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("OK")
+        coordinator.observe_line("[I]-[app] previous +CMGS: 99 result")
+        coordinator.observe_line("[I]-[app] documentation says +CMS ERROR: 500")
+        coordinator.observe_line("[E]-[usbmsc.write] mount ERROR")
+        self.assertFalse(waiter.done())
+
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        self.assertTrue(waiter.mark_pdu_send_started())
+        coordinator.observe_line("OK")
+        coordinator.observe_line("[I]-[app] unrelated +CMGS: 99")
+        coordinator.observe_line("[E]-[socket] connect false ERROR")
+        self.assertFalse(waiter.done())
+
+        coordinator.observe_line("+CMGS: 17")
+        coordinator.observe_line("OK")
+        response = waiter.wait(0)
+        coordinator.finish(waiter)
+
+        self.assertTrue(response.ok)
+
+    def test_sms_pdu_send_coordinator_ignores_ril_and_lib_sms_history_errors(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(cmgs_len=12)
+
+        coordinator.observe_line("[I]-[ril.note] previous +CMS ERROR: 500")
+        coordinator.observe_line("[I]-[lib_sms rsp] documentation +CME ERROR: 10")
+        coordinator.observe_line("[I]-[lib_sms rsp] previous +CMGS AT+CMGS=12 false ERROR")
+        self.assertFalse(waiter.done())
+
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        self.assertTrue(waiter.mark_pdu_send_started())
+        coordinator.observe_line("[I]-[app] OK")
+        coordinator.observe_line("[I]-[ril.note] +CMS ERROR: 500")
+        coordinator.observe_line("[I]-[app] +CMGS: 17")
+        self.assertFalse(waiter.done())
+
+        coordinator.observe_line("+CMGS: 17")
+        coordinator.observe_line("[I]-[ril.proatc] OK")
+        self.assertTrue(waiter.wait(0).ok)
+        coordinator.finish(waiter)
+
+    def test_sms_pdu_send_coordinator_accepts_exact_trusted_ril_error(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(label="(1/1)")
+
+        coordinator.observe_line("[I]-[ril.proatc] +CMS ERROR: 500")
+        response = waiter.wait(0)
+        coordinator.finish(waiter)
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error, "+CMS ERROR: 500")
+
+    def test_sms_pdu_send_coordinator_ignores_other_cmgs_transaction_length(self):
+        coordinator = SmsPduSendCoordinator()
+        waiter = coordinator.begin_segment(cmgs_len=12)
+
+        coordinator.observe_line(">")
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        self.assertTrue(waiter.mark_pdu_send_started())
+        coordinator.observe_line("[I]-[lib_sms rsp] +CMGS AT+CMGS=99 true OK")
+        self.assertFalse(waiter.done())
+        coordinator.observe_line("[I]-[lib_sms rsp] +CMGS AT+CMGS=12 true OK")
+        self.assertTrue(waiter.wait(0).ok)
+        coordinator.finish(waiter)
+
+    def test_sms_pdu_send_coordinator_binds_lines_to_current_connection(self):
+        coordinator = SmsPduSendCoordinator()
+        connection_a = object()
+        connection_b = object()
+        waiter = coordinator.begin_segment(connection=connection_a)
+
+        coordinator.observe_line(">", connection=connection_b)
+        self.assertFalse(waiter.wait_prompt(0).ok)
+        coordinator.observe_line(">", connection=connection_a)
+        self.assertTrue(waiter.wait_prompt(0).ok)
+        self.assertTrue(waiter.mark_pdu_send_started())
+        coordinator.observe_line("+CMGS: 17", connection=connection_b)
+        coordinator.observe_line("OK", connection=connection_b)
+        self.assertFalse(waiter.done())
+        coordinator.observe_line("+CMGS: 17", connection=connection_a)
+        coordinator.observe_line("OK", connection=connection_a)
+        self.assertTrue(waiter.wait(0).ok)
+        coordinator.finish(waiter)
 
     def test_sms_pdu_send_coordinator_reports_cms_error(self):
         coordinator = SmsPduSendCoordinator()
@@ -250,8 +574,8 @@ class SerialSenderResultTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual([locked for _seconds, locked in sleep_calls], [False, False, False, False])
-        self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.0, 1.5, 1.0])
+        self.assertEqual([locked for _seconds, locked in sleep_calls], [False, False])
+        self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.5])
         self.assertEqual(ui_lines[0], ("📤 发送短信至 +1234：", "normal"))
         self.assertIn(">>> 发送: AT+CMGF=0\\r\\n", debug)
 
@@ -280,6 +604,24 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual(len(coordinator.waiters), 2)
         self.assertTrue(any("+CMS ERROR: 500" in line for line in debug))
         self.assertTrue(any("+CMS ERROR: 500" in item[0] for item in ui_lines if item))
+
+    def test_write_text_sms_pdu_locked_does_not_send_without_prompt(self):
+        serial_obj = FakeSerial()
+        lock = TrackingLock()
+        coordinator = SmsPduSendCoordinator()
+
+        result = write_text_sms_pdu_locked(
+            lock,
+            lambda: serial_obj,
+            "+1234",
+            "hello",
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+            prompt_timeout=0,
+        )
+
+        self.assertFalse(result)
+        self.assertFalse(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
 
 
 if __name__ == "__main__":

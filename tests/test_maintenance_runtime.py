@@ -235,6 +235,11 @@ class MaintenanceRuntimeTests(unittest.TestCase):
 
     def test_apply_log_cleanup_runtime_reports_save_failure(self):
         config = configparser.ConfigParser()
+        config["ui"] = {
+            "auto_log_cleanup": "0",
+            "log_retention_days": "7",
+            "extra": "keep",
+        }
         state = []
         ui_messages = []
         scheduled = []
@@ -250,6 +255,14 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
+        self.assertEqual(
+            dict(config.items("ui")),
+            {
+                "auto_log_cleanup": "0",
+                "log_retention_days": "7",
+                "extra": "keep",
+            },
+        )
         self.assertEqual(state, [])
         self.assertEqual(scheduled, [])
         self.assertIn("保存失败", ui_messages[0][0])
@@ -289,6 +302,27 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         })
         self.assertEqual(applied, [(9, True)])
         self.assertEqual(config.get("ui", "log_retention_days"), "9")
+
+    def test_open_log_cleanup_dialog_runtime_propagates_save_failure(self):
+        results = []
+
+        def open_dialog(_parent, _days, _interval, apply_cleanup, _center):
+            results.append(apply_cleanup(9))
+
+        open_log_cleanup_dialog_runtime(
+            "root",
+            7,
+            3,
+            config=configparser.ConfigParser(),
+            save_config=lambda: False,
+            set_cleanup_state=lambda *_: self.fail("state changed after failed save"),
+            system_ui=lambda *_: None,
+            schedule_cleanup=lambda **_: self.fail("cleanup scheduled after failed save"),
+            center_window="center",
+            open_dialog=open_dialog,
+        )
+
+        self.assertEqual(results, [False])
 
     def test_open_log_cleanup_dialog_app_runtime_reads_current_values(self):
         calls = []
@@ -371,6 +405,7 @@ class MaintenanceRuntimeTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             save_update_proxy_config(config, "api.example.com", "proxy.example.com", lambda: False)
+        self.assertFalse(config.has_section("update"))
 
     def test_test_update_proxy_async_posts_success_and_error_results(self):
         success = []
@@ -464,6 +499,7 @@ class MaintenanceRuntimeTests(unittest.TestCase):
                 open_dialog=open_dialog,
                 test_async=lambda *args: None,
             )
+        self.assertFalse(config.has_section("update"))
 
 
 if __name__ == "__main__":

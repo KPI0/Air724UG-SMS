@@ -6,7 +6,9 @@ import unittest
 from sms_core.config_runtime import (
     initialize_config_runtime,
     read_startup_config_values,
+    restore_config_section,
     safe_save_config_runtime,
+    snapshot_config_section,
 )
 
 
@@ -33,6 +35,23 @@ class FakeFile:
 
 
 class ConfigRuntimeTests(unittest.TestCase):
+    def test_config_section_snapshot_restores_values_and_missing_section(self):
+        config = configparser.ConfigParser()
+        config["serial"] = {"mode": "Manual", "port": "COM3", "extra": "keep"}
+        snapshot = snapshot_config_section(config, "serial")
+
+        config.set("serial", "mode", "Auto")
+        config.remove_option("serial", "extra")
+        config.set("serial", "baud", "115200")
+        restore_config_section(config, "serial", snapshot)
+
+        self.assertEqual(dict(config.items("serial", raw=True)), snapshot)
+
+        missing_snapshot = snapshot_config_section(config, "cloud_control")
+        config["cloud_control"] = {"enabled": "1"}
+        restore_config_section(config, "cloud_control", missing_snapshot)
+        self.assertFalse(config.has_section("cloud_control"))
+
     def test_read_startup_config_values_reads_ui_and_serial_settings(self):
         config = configparser.ConfigParser()
         config["ui"] = {
