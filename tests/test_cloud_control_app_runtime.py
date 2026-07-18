@@ -411,6 +411,62 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertIn(("connection", (False, True, False)), calls)
         self.assertIn(("set_window", "new_win"), calls)
 
+    def test_open_cloud_control_values_app_runtime_uses_dynamic_settings_provider(self):
+        states = [{
+            "enabled": False,
+            "auto_upload": False,
+            "url": "ws://old",
+            "secret": "old-secret",
+            "reconnect_interval": 5,
+        }]
+        observed = []
+
+        def open_window_runtime(
+            _parent,
+            _current_window,
+            state_provider,
+            *_args,
+            **_kwargs,
+        ):
+            observed.append(state_provider())
+            states[0] = {
+                "enabled": True,
+                "auto_upload": True,
+                "url": "wss://new.example/ws/device",
+                "secret": "new-secret",
+                "reconnect_interval": 9,
+            }
+            observed.append(state_provider())
+            return "window"
+
+        result = open_cloud_control_values_app_runtime(
+            "root",
+            current_window=None,
+            enabled=False,
+            auto_upload=False,
+            url="ws://snapshot",
+            secret="snapshot-secret",
+            reconnect_interval=3,
+            status_var="status",
+            refresh_settings=lambda: None,
+            save_setting=lambda **_: None,
+            get_connection_state=lambda: (False, False, False),
+            schedule_unregister=lambda _reason: None,
+            restart_control=lambda **_: None,
+            stop_control=lambda **_: None,
+            cloud_log=lambda _message: None,
+            sync_existing_window=lambda *_args: False,
+            set_window=lambda _win: None,
+            center_window="center",
+            settings_provider=lambda: dict(states[0]),
+            open_window_runtime=open_window_runtime,
+        )
+
+        self.assertEqual(result, "window")
+        self.assertFalse(observed[0]["enabled"])
+        self.assertTrue(observed[1]["enabled"])
+        self.assertEqual(observed[1]["url"], "wss://new.example/ws/device")
+
     def test_open_cloud_control_window_reverts_auto_upload_after_save_failure(self):
         calls = []
 
@@ -454,6 +510,56 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertIn(("result", False, {"enabled": False, "auto_upload": False}), calls)
         self.assertNotIn(("register",), calls)
         self.assertFalse(any(item[0] == "unregister" for item in calls))
+
+    def test_open_cloud_control_window_enabled_toggle_saves_and_restarts_or_stops(self):
+        calls = []
+
+        def fake_dialog(
+            _parent,
+            _state_provider,
+            _status_var,
+            _on_auto_upload_changed,
+            *_callbacks,
+            **kwargs,
+        ):
+            on_enabled_changed = kwargs["on_enabled_changed"]
+            values = (True, "wss://example.test/ws/device", 5, "secret", False)
+            calls.append(("enable_result", on_enabled_changed(True, values, object())))
+            calls.append(("disable_result", on_enabled_changed(False, None, object())))
+            return "window"
+
+        with patch("sms_ui.cloud_control_window.open_cloud_control_window_dialog", side_effect=fake_dialog):
+            result = open_cloud_control_window_runtime(
+                "root",
+                None,
+                lambda: {"enabled": False, "auto_upload": False},
+                "status",
+                lambda: None,
+                lambda **kwargs: calls.append(("save", kwargs)) or object(),
+                lambda: (False, False, False),
+                lambda: None,
+                lambda _reason: None,
+                lambda **kwargs: calls.append(("restart", kwargs)),
+                lambda: calls.append(("stop",)),
+                lambda message: calls.append(("log", message)),
+                lambda *_: False,
+                lambda *_: None,
+                "center",
+            )
+
+        self.assertEqual(result, "window")
+        self.assertIn(("save", {
+            "enabled": True,
+            "url": "wss://example.test/ws/device",
+            "reconnect_interval": 5,
+            "device_secret": "secret",
+            "auto_upload": False,
+        }), calls)
+        self.assertIn(("restart", {"show_errors": True}), calls)
+        self.assertIn(("save", {"enabled": False}), calls)
+        self.assertIn(("stop",), calls)
+        self.assertIn(("enable_result", True), calls)
+        self.assertIn(("disable_result", True), calls)
 
     def test_open_cloud_control_connect_callback_reports_save_failure(self):
         calls = []

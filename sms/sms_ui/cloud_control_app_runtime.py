@@ -276,17 +276,18 @@ def open_cloud_control_values_app_runtime(
     set_window,
     center_window,
     open_window_runtime=open_cloud_control_window_runtime,
+    settings_provider=None,
 ):
     return open_cloud_control_app_runtime(
         parent,
         current_window=current_window,
-        get_settings=lambda: {
+        get_settings=settings_provider or (lambda: {
             "enabled": enabled,
             "auto_upload": auto_upload,
             "url": url,
             "secret": secret,
             "reconnect_interval": reconnect_interval,
-        },
+        }),
         status_var=status_var,
         refresh_settings=refresh_settings,
         save_setting=save_setting,

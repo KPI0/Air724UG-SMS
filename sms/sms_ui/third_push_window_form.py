@@ -12,9 +12,19 @@ from sms_ui.third_push_fields import THIRD_PUSH_CHANNEL_PARAM_DEFS
 
 
 class ThirdPushFormController:
-    def __init__(self, win, frame, state, state_provider):
+    def __init__(
+        self,
+        win,
+        frame,
+        state,
+        state_provider,
+        on_option_changed=None,
+        on_dirty_changed=None,
+    ):
         self.win = win
         self.state_provider = state_provider
+        self.on_option_changed = on_option_changed or (lambda *_args: False)
+        self.on_dirty_changed = on_dirty_changed or (lambda *_args: None)
         self.enabled_var = tk.IntVar(win, value=1 if state["enabled"] else 0)
         self.sms_push_var = tk.IntVar(win, value=1 if state["sms_enabled"] else 0)
         self.call_push_var = tk.IntVar(win, value=1 if state["call_enabled"] else 0)
@@ -26,24 +36,44 @@ class ThirdPushFormController:
         self.current_channel = state["channels"][0] if state["channels"] else THIRD_PUSH_CHANNELS[0][0]
         self.custom_body_text = None
         self.channel_index = {}
+        self._syncing = False
+        self._dirty = False
+        self._saved_snapshot = self._snapshot_from_state(state)
 
         self._build_push_options(frame)
         self._build_channel_selector(frame)
         self._build_parameter_area(frame)
         self._populate_channels()
+        for var in self.entry_vars.values():
+            var.trace_add("write", lambda *_args: self._notify_dirty())
 
     def _build_push_options(self, frame):
         push_opts = ttk.Frame(frame)
         push_opts.grid(row=0, column=0, sticky="w", pady=(0, 8))
-        ttk.Checkbutton(push_opts, text="启用三方推送", variable=self.enabled_var).pack(
+        ttk.Checkbutton(
+            push_opts,
+            text="启用三方推送",
+            variable=self.enabled_var,
+            command=lambda: self._option_toggled("enabled", self.enabled_var),
+        ).pack(
             side="left",
             padx=(0, 18),
         )
-        ttk.Checkbutton(push_opts, text="短信事件推送", variable=self.sms_push_var).pack(
+        ttk.Checkbutton(
+            push_opts,
+            text="短信事件推送",
+            variable=self.sms_push_var,
+            command=lambda: self._option_toggled("sms_enabled", self.sms_push_var),
+        ).pack(
             side="left",
             padx=(0, 18),
         )
-        ttk.Checkbutton(push_opts, text="电话事件推送", variable=self.call_push_var).pack(side="left")
+        ttk.Checkbutton(
+            push_opts,
+            text="电话事件推送",
+            variable=self.call_push_var,
+            command=lambda: self._option_toggled("call_enabled", self.call_push_var),
+        ).pack(side="left")
 
     def _build_channel_selector(self, frame):
         channel_box = ttk.LabelFrame(frame, text="通知通道", padding=8)
@@ -80,8 +110,36 @@ class ThirdPushFormController:
                 self.channel_box,
                 text=label,
                 variable=var,
-                command=lambda ch=channel: self.select_channel(ch),
+                command=lambda ch=channel: self._channel_toggled(ch),
             ).grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(4, 4))
+
+    def _option_toggled(self, option, var):
+        value = bool(var.get())
+        values = None
+        if option == "enabled" and value:
+            values = self.collect(validate=True)
+            if values is None:
+                var.set(1 if self._saved_snapshot[option] else 0)
+                return
+
+        result = self.on_option_changed(option, value, values, self.win)
+        if result is False:
+            try:
+                self.sync_from_state()
+            except Exception:
+                var.set(1 if self._saved_snapshot[option] else 0)
+            return
+
+        if option == "enabled" and value:
+            self.mark_all_saved()
+        else:
+            self.mark_option_saved(option, value)
+            if self._dirty:
+                self.on_dirty_changed(True)
+
+    def _channel_toggled(self, channel):
+        self.select_channel(channel)
+        self._notify_dirty()
 
     def store_custom_body_text(self):
         text = self.custom_body_text
@@ -144,14 +202,79 @@ class ThirdPushFormController:
 
     def sync_from_state(self):
         latest = self.state_provider()
-        self.enabled_var.set(1 if latest["enabled"] else 0)
-        self.sms_push_var.set(1 if latest["sms_enabled"] else 0)
-        self.call_push_var.set(1 if latest["call_enabled"] else 0)
-        for channel, var in self.channel_vars.items():
-            var.set(channel in latest["channels"])
-        for key, var in self.entry_vars.items():
-            var.set(latest["settings"].get(key, ""))
-        self._set_custom_body_text(self.entry_vars["custom_post_body"].get())
+        self._syncing = True
+        try:
+            self.enabled_var.set(1 if latest["enabled"] else 0)
+            self.sms_push_var.set(1 if latest["sms_enabled"] else 0)
+            self.call_push_var.set(1 if latest["call_enabled"] else 0)
+            for channel, var in self.channel_vars.items():
+                var.set(channel in latest["channels"])
+            for key, var in self.entry_vars.items():
+                var.set(latest["settings"].get(key, ""))
+            self._set_custom_body_text(self.entry_vars["custom_post_body"].get())
+            self._saved_snapshot = self._snapshot_from_state(latest)
+        finally:
+            self._syncing = False
+        self._set_dirty(False)
+
+    def sync_from_state_if_clean(self):
+        self.store_custom_body_text()
+        if self.is_dirty():
+            return False
+        self.sync_from_state()
+        return True
+
+    def _snapshot_from_state(self, state):
+        selected = set(state.get("channels") or [])
+        return {
+            "enabled": bool(state.get("enabled")),
+            "sms_enabled": bool(state.get("sms_enabled")),
+            "call_enabled": bool(state.get("call_enabled")),
+            "channels": tuple(channel for channel, _label in THIRD_PUSH_CHANNELS if channel in selected),
+            "settings": {
+                key: str((state.get("settings") or {}).get(key, "")).strip()
+                for key in THIRD_PUSH_SETTINGS_KEYS
+            },
+        }
+
+    def _current_snapshot(self):
+        return {
+            "enabled": bool(self.enabled_var.get()),
+            "sms_enabled": bool(self.sms_push_var.get()),
+            "call_enabled": bool(self.call_push_var.get()),
+            "channels": tuple(
+                channel for channel, _label in THIRD_PUSH_CHANNELS
+                if self.channel_vars[channel].get()
+            ),
+            "settings": {
+                key: str(var.get()).strip()
+                for key, var in self.entry_vars.items()
+            },
+        }
+
+    def _set_dirty(self, dirty):
+        dirty = bool(dirty)
+        if dirty == self._dirty:
+            return
+        self._dirty = dirty
+        self.on_dirty_changed(dirty)
+
+    def _notify_dirty(self):
+        if self._syncing:
+            return
+        self._set_dirty(self._current_snapshot() != self._saved_snapshot)
+
+    def is_dirty(self):
+        self._notify_dirty()
+        return self._dirty
+
+    def mark_all_saved(self):
+        self._saved_snapshot = self._current_snapshot()
+        self._set_dirty(False)
+
+    def mark_option_saved(self, option, value):
+        self._saved_snapshot[option] = bool(value)
+        self._notify_dirty()
 
     def collect(self, validate=True):
         self.store_custom_body_text()
@@ -249,10 +372,15 @@ def render_channel_fields(param_box, entry_vars, spec, set_custom_text_widget):
         row += 1
 
 
-def build_action_buttons(frame, save_command, test_command, close_command):
+def build_action_buttons(frame, save_command, test_command, close_command, status_var=None):
     btn_frame = ttk.Frame(frame)
-    btn_frame.grid(row=3, column=0, sticky="e")
-    ttk.Button(btn_frame, text="保存", width=10, command=save_command).pack(side="left", padx=(0, 8))
-    ttk.Button(btn_frame, text="测试推送", width=10, command=test_command).pack(side="left", padx=(0, 8))
-    ttk.Button(btn_frame, text="关闭", width=10, command=close_command).pack(side="left")
-    return btn_frame
+    btn_frame.grid(row=3, column=0, sticky="ew")
+    if status_var is not None:
+        ttk.Label(btn_frame, textvariable=status_var, foreground="#666666").pack(side="left")
+    button_group = ttk.Frame(btn_frame)
+    button_group.pack(side="right")
+    save_button = ttk.Button(button_group, text="保存", width=10, command=save_command)
+    save_button.pack(side="left", padx=(0, 8))
+    ttk.Button(button_group, text="测试推送", width=10, command=test_command).pack(side="left", padx=(0, 8))
+    ttk.Button(button_group, text="关闭", width=10, command=close_command).pack(side="left")
+    return {"frame": btn_frame, "save_button": save_button}

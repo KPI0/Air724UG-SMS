@@ -30,9 +30,18 @@ def create_serial_debug_body(parent, quick_send):
     yscroll = ttk.Scrollbar(text_frame, orient="vertical")
     yscroll.pack(side="right", fill="y")
 
-    serial_text = tk.Text(text_frame, wrap="none", yscrollcommand=yscroll.set)
+    xscroll = ttk.Scrollbar(text_frame, orient="horizontal")
+    xscroll.pack(side="bottom", fill="x")
+
+    serial_text = tk.Text(
+        text_frame,
+        wrap="none",
+        yscrollcommand=yscroll.set,
+        xscrollcommand=xscroll.set,
+    )
     serial_text.pack(side="left", fill="both", expand=True)
     yscroll.config(command=serial_text.yview)
+    xscroll.config(command=serial_text.xview)
 
     quick_panel = ttk.LabelFrame(body, text="常用指令")
     quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=330)

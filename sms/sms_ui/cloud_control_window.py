@@ -21,6 +21,7 @@ def open_cloud_control_window_dialog(
     on_disconnect,
     on_close,
     center_window,
+    on_enabled_changed=None,
 ):
     state = state_provider()
     win = tk.Toplevel(parent)
@@ -41,6 +42,7 @@ def open_cloud_control_window_dialog(
         state_provider,
         status_var,
         on_auto_upload_changed,
+        on_enabled_changed,
     )
     win._sync_form_from_state = form.sync_from_state
 
@@ -119,6 +121,27 @@ def open_cloud_control_window_runtime(
             pass
         return True
 
+    def on_enabled_changed(enabled, values, _win):
+        if enabled:
+            kwargs = cloud_control_save_kwargs(values, enabled_override=True)
+        else:
+            kwargs = {"enabled": False}
+
+        if save_setting(**kwargs) in (None, False):
+            try:
+                _win._sync_form_from_state()
+            except Exception:
+                pass
+            return False
+
+        if enabled:
+            restart_control(show_errors=True)
+            cloud_log("云端控制已启用")
+        else:
+            stop_control()
+            cloud_log("云端控制已关闭")
+        return True
+
     def save_values(values, win):
         kwargs = cloud_control_save_kwargs(values)
         if save_setting(**kwargs) in (None, False):
@@ -166,6 +189,7 @@ def open_cloud_control_window_runtime(
         disconnect_values,
         close_window,
         center_window,
+        on_enabled_changed=on_enabled_changed,
     )
     set_window(win)
     return win

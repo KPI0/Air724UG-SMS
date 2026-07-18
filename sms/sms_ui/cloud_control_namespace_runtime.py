@@ -170,4 +170,11 @@ def open_cloud_control_window_namespace_runtime(
         sync_existing_window=sync_existing_window,
         set_window=lambda win: namespace.__setitem__("cloud_control_win", win),
         center_window=namespace["center_window"],
+        settings_provider=lambda: {
+            "enabled": namespace["CLOUD_CONTROL_ENABLED"],
+            "auto_upload": namespace["CLOUD_AUTO_UPLOAD"],
+            "url": namespace["CLOUD_WS_URL"],
+            "secret": namespace["CLOUD_DEVICE_SECRET"],
+            "reconnect_interval": namespace["CLOUD_WS_RECONNECT_INTERVAL"],
+        },
     )

@@ -72,8 +72,11 @@ def open_third_push_app_runtime(
     set_window,
     center_window,
     open_window_runtime=open_third_push_window_runtime,
+    state_provider=None,
 ):
     def current_state():
+        if state_provider is not None:
+            return state_provider()
         return third_push_state(
             enabled,
             sms_enabled,
@@ -250,4 +253,11 @@ def open_third_push_values_app_runtime(
         sync_existing_window=sync_existing_window,
         set_window=set_window,
         center_window=center_window,
+        state_provider=lambda: third_push_state(
+            enabled(),
+            sms_enabled(),
+            call_enabled(),
+            channels(),
+            settings(),
+        ),
     )

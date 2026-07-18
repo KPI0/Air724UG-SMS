@@ -28,10 +28,20 @@ def confirm_public_device(parent):
 
 
 class CloudControlFormController:
-    def __init__(self, win, frame, state, state_provider, status_var, on_auto_upload_changed):
+    def __init__(
+        self,
+        win,
+        frame,
+        state,
+        state_provider,
+        status_var,
+        on_auto_upload_changed,
+        on_enabled_changed=None,
+    ):
         self.win = win
         self.state_provider = state_provider
         self.on_auto_upload_changed = on_auto_upload_changed
+        self.on_enabled_changed = on_enabled_changed or (lambda *_args: False)
         self.enabled_var = tk.BooleanVar(win, value=state["enabled"])
         self.auto_upload_var = tk.BooleanVar(win, value=state["auto_upload"])
         self.url_var = tk.StringVar(win, value=state["url"])
@@ -57,6 +67,7 @@ class CloudControlFormController:
             top_opts_frame,
             text="启用云端控制",
             variable=self.enabled_var,
+            command=self._enabled_toggled,
         ).pack(side="left", padx=(0, 20))
         ttk.Checkbutton(
             top_opts_frame,
@@ -113,6 +124,22 @@ class CloudControlFormController:
             # refreshes the complete form; this local fallback also keeps the
             # controller safe for injected callbacks used by tests/embedders.
             self.auto_upload_var.set(not auto_upload)
+
+    def _enabled_toggled(self):
+        enabled = bool(self.enabled_var.get())
+        values = None
+        if enabled:
+            values = self.read()
+            if values is None:
+                self.enabled_var.set(False)
+                return
+
+        result = self.on_enabled_changed(enabled, values, self.win)
+        if result is False:
+            try:
+                self.sync_from_state()
+            except Exception:
+                self.enabled_var.set(not enabled)
 
     def sync_from_state(self):
         latest = self.state_provider()

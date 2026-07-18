@@ -203,6 +203,11 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         self.assertTrue(forwarded["is_connected"]())
         self.assertEqual(forwarded["get_loop"](), "loop")
         self.assertEqual(forwarded["get_ws"](), "ws")
+        self.assertTrue(forwarded["settings_provider"]()["enabled"])
+        namespace["CLOUD_CONTROL_ENABLED"] = False
+        namespace["CLOUD_WS_URL"] = "wss://new.example/ws/device"
+        self.assertFalse(forwarded["settings_provider"]()["enabled"])
+        self.assertEqual(forwarded["settings_provider"]()["url"], "wss://new.example/ws/device")
         forwarded["set_window"]("next_window")
         self.assertEqual(namespace["cloud_control_win"], "next_window")
         self.assertEqual(forwarded["run_coroutine_threadsafe"]("coro", "loop"), ("future", "coro", "loop"))
