@@ -82,6 +82,40 @@ def schedule_delayed_connected_log_namespace_runtime(
     delay=2,
     start_runtime=start_delayed_connected_log_runtime,
 ):
+    generation = int(namespace.get("serial_connection_generation", 0)) + 1
+    namespace.__setitem__("serial_connection_generation", generation)
+    connection = namespace.get("serial_obj")
+
+    def connection_is_current():
+        if generation != namespace.get("serial_connection_generation"):
+            return False
+        lock = namespace.get("serial_lock")
+        try:
+            with lock:
+                current = namespace.get("serial_obj")
+        except Exception:
+            current = namespace.get("serial_obj")
+        if generation != namespace.get("serial_connection_generation"):
+            return False
+        if current is not connection or current is None:
+            return False
+        try:
+            return bool(getattr(current, "is_open", True))
+        except Exception:
+            return False
+
+    def is_stopping():
+        if not bool(namespace.get("serial_running", True)):
+            return True
+        for name in ("serial_stop_event", "TK_SHUTDOWN"):
+            event = namespace.get(name)
+            try:
+                if event is not None and event.is_set():
+                    return True
+            except Exception:
+                pass
+        return False
+
     return start_runtime(
         port,
         baud,
@@ -96,6 +130,8 @@ def schedule_delayed_connected_log_namespace_runtime(
         app_start_mono=namespace["APP_START_MONO"],
         start_ui_delay=namespace["START_UI_DELAY"],
         format_connected_status=format_connected_status,
+        connection_is_current=connection_is_current,
+        is_stopping=is_stopping,
         log_error=namespace.get("log_file_only"),
     )
 

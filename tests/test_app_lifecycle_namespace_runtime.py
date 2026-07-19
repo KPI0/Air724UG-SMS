@@ -32,6 +32,11 @@ class FakeOs:
         return ("exit", code)
 
 
+class FakeThreadRegistry:
+    def snapshot(self):
+        return ("sms-send-1", "sms-send-2")
+
+
 class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
@@ -50,6 +55,7 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "FILE_LOG_Q": "queue",
             "VOICE_ENABLED": True,
             "ALLOW_MULTI_INSTANCE": False,
+            "APP_DIR": "app-dir",
             "POPUP_ENABLED": True,
             "config": "config",
             "multi_instance_var": FakeVar(True),
@@ -69,6 +75,7 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: ("log", message),
             "app_mutex": "mutex",
             "release_mutex_handle": lambda mutex: ("release", mutex),
+            "SMS_SEND_THREAD_REGISTRY": FakeThreadRegistry(),
         }
 
     def test_set_autostart_namespace_runtime_forwards_shortcut_dependencies(self):
@@ -99,8 +106,10 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "exited")
         forwarded = calls[0]
         self.assertEqual(forwarded["shutdown_events"], ("tk",))
-        self.assertEqual(forwarded["worker_stop_events"], ("file", "third", "serial", "wakeup"))
+        self.assertEqual(forwarded["worker_stop_events"], ("third", "serial", "wakeup"))
         self.assertEqual(forwarded["tts_stop_event"], "tts")
+        self.assertEqual(forwarded["file_log_stop_event"], "file")
+        self.assertEqual(forwarded["worker_threads"][-2:], ("sms-send-1", "sms-send-2"))
         forwarded["set_exiting"](True)
         forwarded["set_serial_running"](False)
         self.assertTrue(namespace["is_exiting"])
@@ -164,6 +173,88 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertFalse(namespace["multi_instance_var"].get())
         self.assertTrue(namespace["popup_var"].get())
 
+    def test_disabling_multi_instance_acquires_mutex_before_saving(self):
+        namespace = self.base_namespace()
+        namespace["ALLOW_MULTI_INSTANCE"] = True
+        namespace["multi_instance_var"] = FakeVar(False)
+        namespace["app_mutex"] = None
+        calls = []
+
+        result = toggle_multi_instance_namespace_runtime(
+            namespace,
+            acquire_mutex=lambda name: calls.append(("acquire", name)) or ("new-mutex", 0),
+            toggle_runtime=lambda enabled, config, save, set_multi, system_ui, **kwargs: (
+                calls.append(("toggle", enabled)),
+                set_multi(enabled),
+                False,
+            )[-1],
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(calls[0][0], "acquire")
+        self.assertEqual(calls[1], ("toggle", False))
+        self.assertEqual(namespace["app_mutex"], "new-mutex")
+        self.assertFalse(namespace["ALLOW_MULTI_INSTANCE"])
+
+    def test_disabling_multi_instance_releases_new_mutex_when_save_fails(self):
+        namespace = self.base_namespace()
+        namespace["ALLOW_MULTI_INSTANCE"] = True
+        namespace["multi_instance_var"] = FakeVar(False)
+        namespace["app_mutex"] = None
+        released = []
+        namespace["release_mutex_handle"] = released.append
+
+        result = toggle_multi_instance_namespace_runtime(
+            namespace,
+            acquire_mutex=lambda _name: ("new-mutex", 0),
+            toggle_runtime=lambda *args, **kwargs: None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(released, ["new-mutex"])
+        self.assertIsNone(namespace["app_mutex"])
+        self.assertTrue(namespace["ALLOW_MULTI_INSTANCE"])
+        self.assertTrue(namespace["multi_instance_var"].get())
+
+    def test_disabling_multi_instance_releases_new_mutex_when_toggle_raises(self):
+        namespace = self.base_namespace()
+        namespace["ALLOW_MULTI_INSTANCE"] = True
+        namespace["multi_instance_var"] = FakeVar(False)
+        namespace["app_mutex"] = None
+        released = []
+        namespace["release_mutex_handle"] = released.append
+
+        with self.assertRaisesRegex(RuntimeError, "save crashed"):
+            toggle_multi_instance_namespace_runtime(
+                namespace,
+                acquire_mutex=lambda _name: ("new-mutex", 0),
+                toggle_runtime=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("save crashed")),
+            )
+
+        self.assertEqual(released, ["new-mutex"])
+        self.assertIsNone(namespace["app_mutex"])
+
+    def test_disabling_multi_instance_keeps_setting_when_mutex_cannot_be_created(self):
+        namespace = self.base_namespace()
+        namespace["ALLOW_MULTI_INSTANCE"] = True
+        namespace["multi_instance_var"] = FakeVar(False)
+        namespace["app_mutex"] = None
+        calls = []
+        namespace["system_ui"] = lambda *args: calls.append(("ui", args))
+        namespace["ui_messagebox"] = lambda *args: calls.append(("message", args))
+
+        result = toggle_multi_instance_namespace_runtime(
+            namespace,
+            acquire_mutex=lambda _name: (None, 8),
+            toggle_runtime=lambda *args, **kwargs: calls.append(("toggle",)) or False,
+        )
+
+        self.assertIsNone(result)
+        self.assertTrue(namespace["ALLOW_MULTI_INSTANCE"])
+        self.assertTrue(namespace["multi_instance_var"].get())
+        self.assertFalse(any(call[0] == "toggle" for call in calls))
+        self.assertTrue(any(call[0] == "message" for call in calls))
+
     def test_restart_software_namespace_runtime_forwards_shutdown_dependencies(self):
         namespace = self.base_namespace()
         calls = []
@@ -177,7 +268,9 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         forwarded = calls[0]
         self.assertEqual(forwarded["autostart_flag"], "--autostart")
         self.assertEqual(forwarded["restart_helper_flag"], "--restart-helper")
-        self.assertEqual(forwarded["stop_events"], ("third", "serial", "wakeup", "file", "tts"))
+        self.assertEqual(forwarded["stop_events"], ("tk", "third", "serial", "wakeup", "tts"))
+        self.assertEqual(forwarded["file_log_stop_event"], "file")
+        self.assertEqual(forwarded["worker_threads"][-2:], ("sms-send-1", "sms-send-2"))
         self.assertEqual(forwarded["app_mutex"], "mutex")
         self.assertEqual(forwarded["file_log_queue"], "queue")
         forwarded["set_exiting"](True)

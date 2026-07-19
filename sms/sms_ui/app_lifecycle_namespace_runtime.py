@@ -1,6 +1,8 @@
 import os
 
+from sms_core.windows_runtime import acquire_mutex_with_error
 from sms_ui.app_autostart_runtime import set_autostart_runtime
+from sms_ui.app_instance_runtime import app_dir_mutex_name
 from sms_ui.app_restart_runtime import restart_software_app_runtime
 from sms_ui.app_shutdown_runtime import cleanup_and_exit_app_runtime
 from sms_ui.settings_runtime import (
@@ -8,6 +10,22 @@ from sms_ui.settings_runtime import (
     toggle_popup_runtime,
     toggle_voice_broadcast_runtime,
 )
+
+
+def _sms_send_worker_threads(namespace):
+    registry = namespace.get("SMS_SEND_THREAD_REGISTRY")
+    if registry is None:
+        return ()
+    try:
+        return tuple(registry.snapshot())
+    except Exception as exc:
+        log_error = namespace.get("log_file_only")
+        if log_error is not None:
+            try:
+                log_error(f"Snapshot SMS send threads failed: {exc!r}")
+            except Exception:
+                pass
+        return ()
 
 
 def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runtime=set_autostart_runtime):
@@ -30,7 +48,6 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         set_serial_running=lambda value: namespace.__setitem__("serial_running", bool(value)),
         shutdown_events=(namespace["TK_SHUTDOWN"],),
         worker_stop_events=(
-            namespace["file_log_stop"],
             namespace["third_push_stop"],
             namespace["serial_stop_event"],
             namespace["serial_wakeup_event"],
@@ -42,6 +59,14 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         stop_tray_icon=namespace["stop_tray_icon"],
         flush_log_queue=namespace["flush_log_queue"],
         file_log_queue=namespace["FILE_LOG_Q"],
+        file_log_thread=namespace.get("file_log_thread"),
+        file_log_stop_event=namespace["file_log_stop"],
+        worker_threads=(
+            namespace.get("third_push_thread"),
+            namespace.get("serial_thread"),
+            namespace.get("TTS_THREAD"),
+            namespace.get("cloud_ws_thread"),
+        ) + _sms_send_worker_threads(namespace),
         destroy_root=namespace["root"].destroy,
         log_error=namespace.get("log_file_only"),
     )
@@ -67,22 +92,75 @@ def toggle_multi_instance_namespace_runtime(
     namespace,
     *,
     toggle_runtime=toggle_multi_instance_runtime,
+    acquire_mutex=acquire_mutex_with_error,
 ):
     previous = bool(namespace["ALLOW_MULTI_INSTANCE"])
-    result = toggle_runtime(
-        namespace["multi_instance_var"].get(),
-        namespace["config"],
-        namespace["safe_save_config"],
-        lambda value: namespace.__setitem__("ALLOW_MULTI_INSTANCE", bool(value)),
-        namespace["system_ui"],
-        show_notice=lambda title, message: namespace["ui_messagebox"]("info", title, message),
-        log_error=namespace.get("log_file_only"),
-    )
+    enabled = bool(namespace["multi_instance_var"].get())
+    pending_mutex = None
+
+    if previous and not enabled and not namespace.get("app_mutex"):
+        try:
+            pending_mutex, last_error = acquire_mutex(app_dir_mutex_name(namespace["APP_DIR"]))
+        except Exception as exc:
+            pending_mutex = None
+            last_error = repr(exc)
+        if not pending_mutex:
+            try:
+                namespace["multi_instance_var"].set(previous)
+            except Exception:
+                pass
+            try:
+                namespace["system_ui"](
+                    "❌ 关闭程序多开失败：无法建立单实例保护，设置未更改",
+                    "normal",
+                )
+            except Exception:
+                pass
+            try:
+                namespace["ui_messagebox"](
+                    "error",
+                    "关闭多开失败",
+                    "无法建立单实例保护，请稍后重试或重新启动软件。",
+                )
+            except Exception:
+                pass
+            log_error = namespace.get("log_file_only")
+            if log_error is not None:
+                try:
+                    log_error(f"Acquire single-instance mutex while disabling multi-instance failed: {last_error}")
+                except Exception:
+                    pass
+            return None
+
+    try:
+        result = toggle_runtime(
+            enabled,
+            namespace["config"],
+            namespace["safe_save_config"],
+            lambda value: namespace.__setitem__("ALLOW_MULTI_INSTANCE", bool(value)),
+            namespace["system_ui"],
+            show_notice=lambda title, message: namespace["ui_messagebox"]("info", title, message),
+            log_error=namespace.get("log_file_only"),
+        )
+    except Exception:
+        if pending_mutex:
+            try:
+                namespace["release_mutex_handle"](pending_mutex)
+            except Exception:
+                pass
+        raise
     if result is None:
+        if pending_mutex:
+            try:
+                namespace["release_mutex_handle"](pending_mutex)
+            except Exception:
+                pass
         try:
             namespace["multi_instance_var"].set(previous)
         except Exception:
             pass
+    elif pending_mutex:
+        namespace.__setitem__("app_mutex", pending_mutex)
     return result
 
 
@@ -123,10 +201,10 @@ def restart_software_namespace_runtime(
         stop_tray_icon=namespace["stop_tray_icon"],
         safe_set_events=namespace["safe_set_events"],
         stop_events=(
+            namespace["TK_SHUTDOWN"],
             namespace["third_push_stop"],
             namespace["serial_stop_event"],
             namespace["serial_wakeup_event"],
-            namespace["file_log_stop"],
             namespace["TTS_STOP"],
         ),
         stop_cloud_control=namespace["stop_cloud_control"],
@@ -135,5 +213,13 @@ def restart_software_namespace_runtime(
         release_mutex=namespace["release_mutex_handle"],
         flush_log_queue=namespace["flush_log_queue"],
         file_log_queue=namespace["FILE_LOG_Q"],
+        file_log_thread=namespace.get("file_log_thread"),
+        file_log_stop_event=namespace["file_log_stop"],
+        worker_threads=(
+            namespace.get("third_push_thread"),
+            namespace.get("serial_thread"),
+            namespace.get("TTS_THREAD"),
+            namespace.get("cloud_ws_thread"),
+        ) + _sms_send_worker_threads(namespace),
         exit_process=os_module._exit,
     )

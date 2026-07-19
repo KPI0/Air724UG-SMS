@@ -97,6 +97,81 @@ class ConnectedLogRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, [("connected:COM7", "green")])
 
+    def test_delayed_connected_log_skips_stale_connection_after_wait(self):
+        calls = []
+
+        result = run_delayed_connected_log_runtime(
+            "COM7",
+            115200,
+            delay=2,
+            sleep=lambda delay: calls.append(("sleep", delay)),
+            reset_auto_connect_state=lambda: calls.append(("reset",)),
+            clear_serial_error_repeat_state=lambda: calls.append(("clear",)),
+            system_ui=lambda message: calls.append(("ui", message)),
+            ui_post=lambda callback: calls.append(("post", callback)),
+            root_after=lambda _delay, _callback: None,
+            get_status=lambda: "断开",
+            set_status=lambda *args: calls.append(("status", args)),
+            app_start_mono=0,
+            start_ui_delay=0,
+            connection_is_current=lambda: False,
+        )
+
+        self.assertEqual(result, "stale")
+        self.assertEqual(calls, [("sleep", 2)])
+
+    def test_delayed_connected_log_rechecks_before_emitting_connected_message(self):
+        checks = iter((True, False))
+        calls = []
+
+        result = run_delayed_connected_log_runtime(
+            "COM7",
+            115200,
+            delay=0,
+            sleep=lambda _delay: None,
+            reset_auto_connect_state=lambda: calls.append(("reset",)),
+            clear_serial_error_repeat_state=lambda: calls.append(("clear",)),
+            system_ui=lambda message: calls.append(("ui", message)),
+            ui_post=lambda callback: calls.append(("post", callback)),
+            root_after=lambda _delay, _callback: None,
+            get_status=lambda: "断开",
+            set_status=lambda *args: calls.append(("status", args)),
+            app_start_mono=0,
+            start_ui_delay=0,
+            connection_is_current=lambda: next(checks),
+        )
+
+        self.assertEqual(result, "stale")
+        self.assertEqual(calls, [("reset",), ("clear",)])
+
+    def test_delayed_connected_status_rechecks_before_ui_update(self):
+        current = [True]
+        posted = []
+        calls = []
+
+        result = run_delayed_connected_log_runtime(
+            "COM7",
+            115200,
+            delay=0,
+            sleep=lambda _delay: None,
+            reset_auto_connect_state=lambda: None,
+            clear_serial_error_repeat_state=lambda: None,
+            system_ui=lambda message: calls.append(("ui", message)),
+            ui_post=posted.append,
+            root_after=lambda _delay, callback: callback(),
+            get_status=lambda: "🔴 断开/失败：COM7（自动重连中…）",
+            set_status=lambda *args: calls.append(("status", args)),
+            app_start_mono=0,
+            start_ui_delay=0,
+            connection_is_current=lambda: current[0],
+        )
+
+        self.assertEqual(result, "scheduled")
+        self.assertEqual(len(posted), 1)
+        current[0] = False
+        posted[0]()
+        self.assertFalse(any(item[0] == "status" for item in calls))
+
     def test_start_delayed_connected_log_runtime_starts_thread(self):
         calls = []
 

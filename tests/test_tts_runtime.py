@@ -3,6 +3,7 @@ import queue
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from sms_core.tts_runtime import (
     cleanup_tts_alt_files,
@@ -11,7 +12,9 @@ from sms_core.tts_runtime import (
     ensure_tts_worker_runtime,
     generate_alert_voice_runtime,
     generate_tts_file,
+    instance_tts_file_path,
     normalize_voice_text,
+    tts_file_family,
 )
 
 
@@ -59,6 +62,10 @@ class FakeEvent:
 
 
 class TtsRuntimeTests(unittest.TestCase):
+    def test_instance_tts_file_path_keeps_first_and_splits_later_instances(self):
+        self.assertEqual(instance_tts_file_path("tts", 1), os.path.join("tts", "alert.wav"))
+        self.assertEqual(instance_tts_file_path("tts", 3), os.path.join("tts", "alert_3.wav"))
+
     def test_normalize_voice_text_uses_default_for_blank_values(self):
         self.assertEqual(normalize_voice_text("", "default"), "default")
         self.assertEqual(normalize_voice_text(" hello ", "default"), "hello")
@@ -87,6 +94,22 @@ class TtsRuntimeTests(unittest.TestCase):
             self.assertFalse(os.path.exists(stale))
             self.assertTrue(os.path.exists(other))
 
+    def test_cleanup_tts_alt_files_does_not_delete_other_instance_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            own_stale = os.path.join(tmp, "alert_2_alt_old.wav")
+            other_active = os.path.join(tmp, "alert_3_alt_active.wav")
+            for path in (own_stale, other_active):
+                with open(path, "wb") as file:
+                    file.write(b"x")
+
+            self.assertEqual(
+                cleanup_tts_alt_files(tmp, os.path.join(tmp, "alert_2.wav")),
+                1,
+            )
+            self.assertFalse(os.path.exists(own_stale))
+            self.assertTrue(os.path.exists(other_active))
+            self.assertEqual(tts_file_family(other_active), "alert_3")
+
     def test_generate_tts_file_replaces_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "alert.wav")
@@ -105,6 +128,58 @@ class TtsRuntimeTests(unittest.TestCase):
             self.assertTrue(engine.stopped)
             with open(target, "rb") as file:
                 self.assertEqual(file.read(), b"wav")
+
+    def test_generate_tts_file_uses_unique_temp_paths_across_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert.wav")
+            engines = [FakeEngine(), FakeEngine()]
+
+            generate_tts_file(
+                "one",
+                target,
+                tmp,
+                threading.Lock(),
+                engine_factory=lambda: engines[0],
+                uuid_func=lambda: "instance_one",
+            )
+            generate_tts_file(
+                "two",
+                target,
+                tmp,
+                threading.Lock(),
+                engine_factory=lambda: engines[1],
+                uuid_func=lambda: "instance_two",
+            )
+
+            self.assertTrue(engines[0].saved[1].endswith(".instance_one.tmp.wav"))
+            self.assertTrue(engines[1].saved[1].endswith(".instance_two.tmp.wav"))
+            self.assertNotEqual(engines[0].saved[1], engines[1].saved[1])
+
+    def test_generate_tts_file_uses_instance_family_for_permission_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert_2.wav")
+            engine = FakeEngine()
+            real_replace = os.replace
+            calls = []
+
+            def replace_with_first_permission_error(src, dst):
+                calls.append((src, dst))
+                if len(calls) == 1:
+                    raise PermissionError("busy")
+                return real_replace(src, dst)
+
+            with patch("sms_core.tts_runtime.os.replace", side_effect=replace_with_first_permission_error):
+                result = generate_tts_file(
+                    "hello",
+                    target,
+                    tmp,
+                    threading.Lock(),
+                    engine_factory=lambda: engine,
+                    uuid_func=lambda: "token",
+                )
+
+            self.assertEqual(result, os.path.join(tmp, "alert_2_alt_token.wav"))
+            self.assertTrue(os.path.exists(result))
 
     def test_ensure_tts_worker_runtime_starts_thread(self):
         state = {"thread": None}

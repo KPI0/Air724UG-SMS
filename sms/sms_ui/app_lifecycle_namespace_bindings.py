@@ -13,6 +13,8 @@ def install_app_lifecycle_namespace_bindings(namespace):
     bind = make_namespace_runtime_binder(namespace, globals())
 
     def cleanup_and_exit():
+        # pystray invokes menu callbacks on its worker thread. Keep the whole
+        # confirmation and shutdown flow on the Tk thread for every caller.
         def do_cleanup():
             return cleanup_and_exit_namespace_runtime(namespace)
 

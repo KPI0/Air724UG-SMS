@@ -26,6 +26,7 @@ def log_file_only_namespace_runtime(namespace, msg):
         msg,
         log_dir=namespace["LOG_DIR"],
         file_log=namespace["FILE_LOG_Q"].put_nowait,
+        instance_number=namespace.get("APP_INSTANCE_NUMBER", 1),
     )
 
 

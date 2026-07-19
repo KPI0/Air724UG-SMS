@@ -4,7 +4,9 @@ import tempfile
 import unittest
 
 from sms_core.config_runtime import (
+    ConfigInitializationError,
     initialize_config_runtime,
+    remember_config_snapshot,
     read_startup_config_values,
     restore_config_section,
     safe_save_config_runtime,
@@ -197,6 +199,24 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(config.get("serial", "baud"), "115200")
         self.assertEqual(config.get("ui", "voice_enabled"), "1")
 
+    def test_initialize_config_runtime_stops_when_missing_config_cannot_be_saved(self):
+        config = configparser.ConfigParser()
+        logs = []
+
+        with self.assertRaises(ConfigInitializationError) as raised:
+            initialize_config_runtime(
+                config=config,
+                config_file="config.ini",
+                defaults_by_section={"ui": {"voice_enabled": "1"}},
+                save_config=lambda: False,
+                path_exists=lambda _path: False,
+                log_error=logs.append,
+            )
+
+        self.assertIn("创建失败", str(raised.exception))
+        self.assertEqual(config.get("ui", "voice_enabled"), "1")
+        self.assertTrue(any("returned False" in message for message in logs))
+
     def test_initialize_config_runtime_reads_existing_config_without_saving(self):
         class FakeConfig:
             def __init__(self):
@@ -272,6 +292,29 @@ class ConfigRuntimeTests(unittest.TestCase):
             self.assertEqual(config.get("ui", "voice_enabled"), "1")
             self.assertTrue(any("Config file invalid" in message for message in logs))
 
+    def test_initialize_config_runtime_stops_when_repaired_config_cannot_be_saved(self):
+        class BrokenConfig(configparser.ConfigParser):
+            def read(self, filenames, encoding=None):
+                raise configparser.MissingSectionHeaderError(str(filenames), 1, "broken")
+
+        config = BrokenConfig(interpolation=None)
+        backups = []
+
+        with self.assertRaises(ConfigInitializationError) as raised:
+            initialize_config_runtime(
+                config=config,
+                config_file="config.ini",
+                defaults_by_section={"ui": {"voice_enabled": "1"}},
+                save_config=lambda: False,
+                path_exists=lambda _path: True,
+                backup_file=lambda source, target: backups.append((source, target)),
+                time_func=lambda: 123,
+            )
+
+        self.assertIn("修复失败", str(raised.exception))
+        self.assertEqual(backups, [("config.ini", "config.ini.broken.123.bak")])
+        self.assertEqual(config.get("ui", "voice_enabled"), "1")
+
     def test_safe_save_config_runtime_writes_temp_and_replaces_target(self):
         config = configparser.ConfigParser()
         config["ui"] = {"voice_enabled": "1"}
@@ -328,6 +371,55 @@ class ConfigRuntimeTests(unittest.TestCase):
         )
 
         self.assertFalse(result)
+
+    def test_safe_save_config_runtime_merges_stale_multi_instance_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.ini")
+            initial = configparser.ConfigParser(interpolation=None)
+            initial["ui"] = {
+                "voice_enabled": "1",
+                "popup_enabled": "1",
+                "unknown_key": "keep",
+            }
+            self.assertTrue(
+                safe_save_config_runtime(
+                    config=initial,
+                    config_file=config_file,
+                    config_lock=DummyLock(),
+                )
+            )
+
+            instance_a = configparser.ConfigParser(interpolation=None)
+            instance_b = configparser.ConfigParser(interpolation=None)
+            instance_a.read(config_file, encoding="utf-8")
+            instance_b.read(config_file, encoding="utf-8")
+            remember_config_snapshot(instance_a)
+            remember_config_snapshot(instance_b)
+
+            instance_a.set("ui", "voice_enabled", "0")
+            self.assertTrue(
+                safe_save_config_runtime(
+                    config=instance_a,
+                    config_file=config_file,
+                    config_lock=DummyLock(),
+                )
+            )
+
+            instance_b.set("ui", "popup_enabled", "0")
+            self.assertTrue(
+                safe_save_config_runtime(
+                    config=instance_b,
+                    config_file=config_file,
+                    config_lock=DummyLock(),
+                )
+            )
+
+            final = configparser.ConfigParser(interpolation=None)
+            final.read(config_file, encoding="utf-8")
+            self.assertEqual(final.get("ui", "voice_enabled"), "0")
+            self.assertEqual(final.get("ui", "popup_enabled"), "0")
+            self.assertEqual(final.get("ui", "unknown_key"), "keep")
+            self.assertEqual(instance_b.get("ui", "voice_enabled"), "0")
 
 
 if __name__ == "__main__":

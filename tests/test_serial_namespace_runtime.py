@@ -92,6 +92,8 @@ class SerialNamespaceRuntimeTests(unittest.TestCase):
             "serial_lock": "serial_lock",
             "serial": FakeSerialModule,
             "serial_obj": None,
+            "serial_connection_generation": 0,
+            "serial_running": True,
             "lock_port_mutex": lambda port: calls.append(("mutex", port)),
             "cloud_imei_query_deadline": 0,
             "serial_error_ui": lambda *args, **kwargs: calls.append(("error", args, kwargs)),
@@ -175,6 +177,7 @@ class SerialNamespaceRuntimeTests(unittest.TestCase):
 
     def test_schedule_delayed_connected_log_namespace_runtime_forwards_callbacks(self):
         namespace = self.make_namespace()
+        namespace["serial_obj"] = type("Serial", (), {"is_open": True})()
         calls = []
 
         result = schedule_delayed_connected_log_namespace_runtime(
@@ -188,11 +191,17 @@ class SerialNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "thread")
         self.assertEqual(calls[0][0], ("COM5", 115200))
         self.assertEqual(calls[0][1]["delay"], 1)
+        self.assertEqual(namespace["serial_connection_generation"], 1)
+        self.assertTrue(calls[0][1]["connection_is_current"]())
+        self.assertFalse(calls[0][1]["is_stopping"]())
         calls[0][1]["reset_auto_connect_state"]()
         calls[0][1]["clear_serial_error_repeat_state"]()
         self.assertEqual(namespace["_auto_connect_notice"].calls, [("reset",)])
         self.assertEqual(namespace["_serial_error_notice"].calls, [("clear",)])
         self.assertEqual(calls[0][1]["get_status"](), "idle")
+
+        namespace["serial_connection_generation"] += 1
+        self.assertFalse(calls[0][1]["connection_is_current"]())
 
     def test_try_manual_rebind_after_error_namespace_runtime_checks_mode_and_error(self):
         namespace = self.make_namespace()

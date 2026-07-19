@@ -103,6 +103,7 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
             "tray_icon": "icon",
             "resource_path": lambda path: f"res/{path}",
             "APP_WINDOW_TITLE": "SMS",
+            "APP_DISPLAY_TITLE": "SMS 2",
             "show_window": lambda: calls.append(("show_window",)),
             "hide_window": lambda: calls.append(("hide_window",)),
             "cleanup_and_exit": lambda: calls.append(("exit",)),
@@ -153,7 +154,7 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.create_tray_namespace_runtime(namespace), "new_icon")
         kwargs = create_runtime.call_args.kwargs
         self.assertEqual(kwargs["icon_path"], "res/icon.ico")
-        self.assertEqual(kwargs["title"], "SMS")
+        self.assertEqual(kwargs["title"], "SMS 2")
         self.assertEqual(kwargs["log_error"]("create log"), ("log", "create log"))
         kwargs["set_tray_icon"]("stored")
         self.assertEqual(namespace["tray_icon"], "stored")

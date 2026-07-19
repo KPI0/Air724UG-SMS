@@ -264,6 +264,7 @@ def run_serial_thread_loop(
     safe_close_serial,
     monotonic=time.monotonic,
     empty_target_min_delay=0.05,
+    is_stopping=lambda: False,
 ):
     while should_continue():
         target_port = get_target_port()
@@ -289,6 +290,8 @@ def run_serial_thread_loop(
                     handle_line(line)
 
         except Exception as e:
+            if is_stopping():
+                break
             if handle_error(e, target_port):
                 continue
             wait_before_retry()
@@ -370,5 +373,6 @@ def run_serial_runtime_thread(
         handle_error=handle_error,
         wait_before_retry=wait_before_retry,
         safe_close_serial=safe_close_serial,
+        is_stopping=lambda: not should_continue(),
     )
     return state

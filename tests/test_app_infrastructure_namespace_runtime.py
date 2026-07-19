@@ -46,6 +46,7 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: calls.append(("log", message)),
             "serial_lock": "serial_lock",
             "serial_obj": "serial",
+            "serial_connection_generation": 4,
             "unlock_port_mutex": lambda: calls.append(("unlock",)),
             "APP_START_MONO": 10.0,
             "START_UI_DELAY": 2.0,
@@ -80,6 +81,11 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
 
     def test_safe_close_serial_namespace_runtime_updates_serial(self):
         namespace = self.make_namespace()
+        namespace["SMS_SEND_COORDINATOR"] = type(
+            "Coordinator",
+            (),
+            {"cancel_active": lambda _self, reason: namespace["calls"].append(("cancel_sms", reason))},
+        )()
 
         def close_runtime(serial_lock, get_serial, set_serial, unlock):
             self.assertEqual(serial_lock, "serial_lock")
@@ -92,6 +98,8 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.safe_close_serial_namespace_runtime(namespace), "closed")
 
         self.assertIsNone(namespace["serial_obj"])
+        self.assertEqual(namespace["serial_connection_generation"], 5)
+        self.assertEqual(namespace["calls"][0][0], "cancel_sms")
         self.assertIn(("unlock",), namespace["calls"])
 
     def test_schedule_delayed_ui_namespace_runtime_forwards_timing(self):

@@ -128,6 +128,10 @@ class CoreHelperTests(unittest.TestCase):
             parse_date_from_log_filename("sms_COM5_2026-06-08.txt").isoformat(),
             "2026-06-08",
         )
+        self.assertEqual(
+            parse_date_from_log_filename("sms_system_3_2026-06-08.txt").isoformat(),
+            "2026-06-08",
+        )
         self.assertIsNone(parse_date_from_log_filename("README.md"))
 
     def test_cleanup_old_logs_in_dir(self):

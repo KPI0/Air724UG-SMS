@@ -1,7 +1,9 @@
+import threading
 import unittest
 from unittest.mock import patch
 
 import sms_ui.app_lifecycle_namespace_bindings as bindings
+from sms_ui.thread_runtime import run_on_ui_thread
 
 
 class FakeVar:
@@ -66,6 +68,26 @@ class AppLifecycleNamespaceBindingsTests(unittest.TestCase):
         multi.assert_called_once_with(namespace)
         popup.assert_called_once_with(namespace)
         restart.assert_called_once_with(namespace)
+
+    def test_cleanup_from_background_thread_waits_for_ui_queue(self):
+        namespace = self.make_namespace()
+        posted = []
+        namespace["run_on_ui_thread"] = run_on_ui_thread
+        namespace["ui_post"] = posted.append
+        bindings.install_app_lifecycle_namespace_bindings(namespace)
+
+        with patch.object(bindings, "cleanup_and_exit_namespace_runtime", return_value="cleaned") as cleanup:
+            worker = threading.Thread(target=namespace["cleanup_and_exit"])
+            worker.start()
+            worker.join(timeout=1)
+
+            self.assertFalse(worker.is_alive())
+            cleanup.assert_not_called()
+            self.assertEqual(len(posted), 1)
+
+            self.assertEqual(posted[0](), "cleaned")
+
+        cleanup.assert_called_once_with(namespace)
 
 
 if __name__ == "__main__":

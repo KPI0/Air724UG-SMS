@@ -6,11 +6,13 @@ from sms_core.serial_sender import (
     SmsPduSendCoordinator,
     SmsPduSendResponse,
     send_command_with_result_async,
+    send_text_sms_pdu_async,
     write_serial_command_sequence_locked,
     write_text_sms_pdu,
     write_text_sms_pdu_locked,
     write_serial_command_result,
 )
+from sms_core.threading_runtime import WorkerThreadRegistry
 
 
 class FakeSerial:
@@ -622,6 +624,44 @@ class SerialSenderResultTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertFalse(any(payload.endswith(b"\x1a") for payload in serial_obj.writes))
+
+    def test_async_sms_send_is_registered_and_cancelled_without_waiting_for_timeout(self):
+        class WaitingSerial(FakeSerial):
+            def __init__(self):
+                super().__init__()
+                self.cmgs_written = threading.Event()
+
+            def write(self, payload):
+                super().write(payload)
+                if payload.startswith(b"AT+CMGS="):
+                    self.cmgs_written.set()
+
+        serial_obj = WaitingSerial()
+        coordinator = SmsPduSendCoordinator()
+        registry = WorkerThreadRegistry()
+        ui_lines = []
+
+        thread = send_text_sms_pdu_async(
+            threading.Lock(),
+            lambda: serial_obj,
+            "+1234",
+            "hello",
+            port_ui=lambda *args: ui_lines.append(args),
+            sleep_func=lambda _seconds: None,
+            response_coordinator=coordinator,
+            prompt_timeout=5,
+            segment_timeout=5,
+            thread_registry=registry,
+        )
+
+        self.assertTrue(serial_obj.cmgs_written.wait(1))
+        self.assertIn(thread, registry.snapshot())
+        self.assertTrue(coordinator.cancel_active("软件正在退出，短信发送已取消"))
+        thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(registry.snapshot(), ())
+        self.assertTrue(any("软件正在退出" in item[0] for item in ui_lines))
 
 
 if __name__ == "__main__":

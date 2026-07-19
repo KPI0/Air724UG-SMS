@@ -22,6 +22,7 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
             "write_serial_command_result": lambda *args: calls.append(("write", args)),
             "_parse_cloud_sms_callback_head": "parser",
             "LOG_PREFIX": "system",
+            "APP_INSTANCE_NUMBER": 3,
         }
 
     def test_install_registers_expected_names_and_defaults(self):
@@ -147,6 +148,14 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
         self.assertEqual(reader.call_args.args, (namespace,))
         self.assertEqual(reader.call_args.kwargs["parse_callback_head"], "parser")
         self.assertIs(reader.call_args.kwargs["apply_disconnect_effects"], bindings.apply_serial_disconnect_effects)
+
+    def test_system_log_prefix_uses_instance_number_after_disconnect(self):
+        namespace = self.make_namespace()
+        bindings.install_serial_namespace_bindings(namespace)
+
+        namespace["set_serial_log_prefix"]("system")
+
+        self.assertEqual(namespace["LOG_PREFIX"], "system_3")
 
 
 if __name__ == "__main__":

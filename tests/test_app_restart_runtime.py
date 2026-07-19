@@ -47,6 +47,9 @@ class AppRestartRuntimeTests(unittest.TestCase):
             release_mutex=lambda mutex: calls.append(("release", mutex)),
             flush_log_queue=lambda queue: calls.append(("flush", queue)),
             file_log_queue="queue",
+            file_log_thread="file_thread",
+            file_log_stop_event="file_stop",
+            worker_threads=("producer",),
             exit_process=lambda code: calls.append(("exit", code)),
             argv=["sms.pyw", "--debug"],
             current_pid=123,
@@ -59,6 +62,9 @@ class AppRestartRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["current_pid"], 123)
         self.assertEqual(kwargs["stop_events"], ("third", "serial"))
         self.assertEqual(kwargs["file_log_queue"], "queue")
+        self.assertEqual(kwargs["file_log_thread"], "file_thread")
+        self.assertEqual(kwargs["file_log_stop_event"], "file_stop")
+        self.assertEqual(kwargs["worker_threads"], ("producer",))
         self.assertEqual(messagebox.ask_calls[0][2], "root")
         self.assertEqual(messagebox.error_calls[0][2], "root")
 

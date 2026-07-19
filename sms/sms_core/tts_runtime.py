@@ -1,8 +1,18 @@
 import os
 import queue
+import re
 import uuid
 
 from sms_core.threading_runtime import start_daemon_thread
+
+
+def instance_tts_file_path(tts_dir, instance_number=1):
+    try:
+        number = max(1, int(instance_number or 1))
+    except (TypeError, ValueError):
+        number = 1
+    filename = "alert.wav" if number == 1 else f"alert_{number}.wav"
+    return os.path.join(tts_dir, filename)
 
 
 def ensure_tts_worker_runtime(
@@ -67,8 +77,10 @@ def cleanup_tts_alt_files(tts_dir, current_file):
     removed = 0
     try:
         current = os.path.abspath(current_file)
+        family = tts_file_family(current_file)
+        alt_prefix = family + "_alt_"
         for name in os.listdir(tts_dir):
-            if not (name.startswith("alert_alt_") and name.endswith(".wav")):
+            if not (name.startswith(alt_prefix) and name.endswith(".wav")):
                 continue
             path = os.path.abspath(os.path.join(tts_dir, name))
             if path == current:
@@ -81,6 +93,16 @@ def cleanup_tts_alt_files(tts_dir, current_file):
     except Exception:
         pass
     return removed
+
+
+def tts_file_family(tts_file):
+    name = os.path.basename(str(tts_file or ""))
+    stem = name[:-4] if name.lower().endswith(".wav") else name
+    if "_alt_" in stem:
+        stem = stem.split("_alt_", 1)[0]
+    if re.fullmatch(r"alert(?:_\d+)?", stem):
+        return stem
+    return "alert"
 
 
 def normalize_voice_text(text, default_text):
@@ -131,13 +153,21 @@ def generate_tts_file(
         if target_dir:
             os.makedirs(target_dir, exist_ok=True)
         cleanup_func(tts_dir, tts_file)
-        tmp_path = tts_file + ".tmp.wav"
+        token = (uuid_func or (lambda: uuid.uuid4().hex[:12]))()
+        tmp_path = f"{tts_file}.{token}.tmp.wav"
 
         engine = engine_factory()
         try:
             engine.setProperty("rate", 150)
             engine.save_to_file(text, tmp_path)
             engine.runAndWait()
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            raise
         finally:
             # stop() must run even if runAndWait() raised, otherwise the SAPI
             # engine can be left in a busy state and leak COM resources.
@@ -154,8 +184,10 @@ def generate_tts_file(
             os.replace(tmp_path, tts_file)
             return tts_file
         except PermissionError:
-            token = (uuid_func or (lambda: uuid.uuid4().hex[:8]))()
-            fallback_file = os.path.join(tts_dir, f"alert_alt_{token}.wav")
+            fallback_file = os.path.join(
+                tts_dir,
+                f"{tts_file_family(tts_file)}_alt_{token}.wav",
+            )
             os.replace(tmp_path, fallback_file)
             return fallback_file
 
@@ -185,6 +217,13 @@ def tts_worker_loop(
         except queue.Empty:
             continue
 
+        if stop_event.is_set():
+            try:
+                request_queue.task_done()
+            except Exception:
+                pass
+            break
+
         text, force, play_after = _unpack_tts_task(task, default_text)
         current_file = get_tts_file()
 
@@ -208,14 +247,9 @@ def tts_worker_loop(
             if new_file != current_file:
                 set_tts_file(new_file)
         except Exception as exc:
-            try:
-                tmp_path = get_tts_file() + ".tmp.wav"
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-            error_callback(exc)
-            if play_after and fallback_beep is not None:
+            if not stop_event.is_set():
+                error_callback(exc)
+            if not stop_event.is_set() and play_after and fallback_beep is not None:
                 try:
                     fallback_beep()
                 except Exception:
@@ -227,5 +261,5 @@ def tts_worker_loop(
             except Exception:
                 pass
 
-        if play_after:
+        if play_after and not stop_event.is_set():
             play_after_callback(force=True)

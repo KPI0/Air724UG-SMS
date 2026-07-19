@@ -111,6 +111,7 @@ class AppShutdownTests(unittest.TestCase):
         shutdown_event = FakeEvent()
         worker_event = FakeEvent()
         tts_event = FakeEvent()
+        file_event = FakeEvent()
 
         result = cleanup_and_exit_runtime(
             is_exiting=False,
@@ -127,6 +128,11 @@ class AppShutdownTests(unittest.TestCase):
             destroy_root=lambda: calls.append(("destroy",)),
             safe_set_events=lambda *events: calls.append(("events", events)),
             flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+            file_log_thread="file_thread",
+            file_log_stop_event=file_event,
+            worker_threads=("producer_thread",),
+            wait_worker_threads=lambda threads: calls.append(("wait_workers", threads)),
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)),
         )
 
         self.assertEqual(result, "exited")
@@ -134,13 +140,15 @@ class AppShutdownTests(unittest.TestCase):
             ("exiting", True),
             ("events", (shutdown_event,)),
             ("serial", False),
-            ("events", (worker_event,)),
+            ("events", (worker_event, tts_event)),
             ("cloud", {"update_status": False}),
             ("close",),
             ("tray", {"wait_after": 0.25}),
-            ("flush", calls[7][1]),
+            ("wait_workers", ("producer_thread",)),
+            ("events", (file_event,)),
+            ("wait_file", "file_thread"),
+            ("flush", calls[10][1]),
             ("destroy",),
-            ("events", (tts_event,)),
         ])
 
     def test_cleanup_and_exit_runtime_logs_and_continues_after_cleanup_errors(self):

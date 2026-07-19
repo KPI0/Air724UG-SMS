@@ -66,6 +66,11 @@ class AppLaunchRestartTests(unittest.TestCase):
             "release_mutex": lambda handle: calls.append(("release", handle)),
             "flush_log_queue": lambda queue: calls.append(("flush", queue)),
             "file_log_queue": "queue",
+            "file_log_thread": "file_thread",
+            "file_log_stop_event": "file_stop",
+            "worker_threads": ("producer",),
+            "wait_worker_threads": lambda threads, **kwargs: calls.append(("wait_workers", threads, kwargs)),
+            "wait_file_log_worker": lambda thread, **kwargs: calls.append(("wait_file", thread, kwargs)),
             "exit_process": lambda code: calls.append(("exit", code)),
             "prepare_launch": lambda argv, autostart, restart, pid: (["helper"], "E:/sms"),
             "launch_process": lambda command, env, cwd: calls.append(("launch", command, env, cwd)),
@@ -109,7 +114,15 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIn(("events", ("third", "serial", "wakeup")), calls)
         self.assertIn(("cloud", {"update_status": False}), calls)
         self.assertIn(("close_serial",), calls)
+        producer_waits = [item for item in calls if item[0] == "wait_workers"]
+        self.assertEqual(len(producer_waits), 1)
+        self.assertEqual(producer_waits[0][1], ("producer",))
+        self.assertIn(("events", ("file_stop",)), calls)
         self.assertIn(("release", "mutex"), calls)
+        wait_calls = [item for item in calls if item[0] == "wait_file"]
+        self.assertEqual(len(wait_calls), 1)
+        self.assertEqual(wait_calls[0][1], "file_thread")
+        self.assertIn("log_error", wait_calls[0][2])
         self.assertIn(("flush", "queue"), calls)
         self.assertEqual(calls[-1], ("exit", 0))
 

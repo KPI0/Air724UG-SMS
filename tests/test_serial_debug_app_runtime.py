@@ -45,6 +45,7 @@ class SerialDebugAppRuntimeTests(unittest.TestCase):
             set_drop_count,
             clear_window_refs,
             center_window,
+            window_title,
         ):
             opened.update(
                 parent=parent,
@@ -57,6 +58,7 @@ class SerialDebugAppRuntimeTests(unittest.TestCase):
                 serial_obj=get_serial_obj(),
                 port=get_port(),
                 centered=center_window,
+                window_title=window_title,
             )
             push_serial_debug("raw")
             port_ui("port")
@@ -82,6 +84,7 @@ class SerialDebugAppRuntimeTests(unittest.TestCase):
             format_connected_status=lambda port: f"connected:{port}",
             get_port=lambda: "COM5",
             center_window="center",
+            window_title="串口调试 2",
             open_dialog=open_dialog,
         )
 
@@ -92,6 +95,7 @@ class SerialDebugAppRuntimeTests(unittest.TestCase):
         self.assertEqual(opened["drop_count"], 3)
         self.assertEqual(opened["serial_obj"], "serial")
         self.assertEqual(opened["port"], "COM5")
+        self.assertEqual(opened["window_title"], "串口调试 2")
         self.assertEqual(calls, [("debug", "raw"), ("port_ui", "port"), ("status", "status")])
         self.assertIn(("current_dial_num", ("10086",)), updates)
         self.assertIn(("debug_enabled", (False,)), updates)

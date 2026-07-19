@@ -8,6 +8,15 @@ from sms_core.threading_runtime import start_daemon_thread
 PROTECTED_STATUS_WORDS = ("响铃", "通话", "呼叫")
 
 
+def _connected_task_is_current(connection_is_current, is_stopping):
+    try:
+        if is_stopping():
+            return False
+        return bool(connection_is_current())
+    except Exception:
+        return False
+
+
 def startup_ui_delay_ms(app_start_mono, start_ui_delay, monotonic=time.monotonic):
     try:
         elapsed = monotonic() - app_start_mono
@@ -40,15 +49,23 @@ def run_delayed_connected_log_runtime(
     start_ui_delay,
     monotonic=time.monotonic,
     format_connected_status=default_format_connected_status,
+    connection_is_current=lambda: True,
+    is_stopping=lambda: False,
 ):
     try:
         sleep(delay)
+        if not _connected_task_is_current(connection_is_current, is_stopping):
+            return "stale"
         reset_auto_connect_state()
         clear_serial_error_repeat_state()
+        if not _connected_task_is_current(connection_is_current, is_stopping):
+            return "stale"
         system_ui(f"🔌 串口已连接：{port} @ {baud}")
 
         def update_status():
             try:
+                if not _connected_task_is_current(connection_is_current, is_stopping):
+                    return
                 update = connected_status_update(get_status(), port, format_connected_status)
                 if update is not None:
                     text, color = update
@@ -57,6 +74,8 @@ def run_delayed_connected_log_runtime(
                 pass
 
         def schedule_update():
+            if not _connected_task_is_current(connection_is_current, is_stopping):
+                return
             delay_ms = startup_ui_delay_ms(app_start_mono, start_ui_delay, monotonic)
             try:
                 root_after(delay_ms, update_status)
@@ -64,8 +83,9 @@ def run_delayed_connected_log_runtime(
                 update_status()
 
         ui_post(schedule_update)
+        return "scheduled"
     except Exception:
-        pass
+        return "error"
 
 
 def start_delayed_connected_log_runtime(

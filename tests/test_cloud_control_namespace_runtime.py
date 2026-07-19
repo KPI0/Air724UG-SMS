@@ -184,6 +184,22 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0], ("file", "🌐 hello"))
         self.assertEqual(calls[1], ("ui", ("🌐 hello", "normal")))
 
+    def test_cloud_log_namespace_runtime_suppresses_shutdown_messages(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        class SetEvent:
+            @staticmethod
+            def is_set():
+                return True
+
+        namespace["TK_SHUTDOWN"] = SetEvent()
+        namespace["log_file_only"] = lambda message: calls.append(("file", message))
+        namespace["ui_only"] = lambda *args: calls.append(("ui", args))
+
+        self.assertIsNone(cloud_log_namespace_runtime(namespace, "late", show_main=True))
+        self.assertEqual(calls, [])
+
     def test_open_cloud_control_window_namespace_runtime_forwards_values(self):
         namespace = self.base_namespace()
         calls = []

@@ -30,6 +30,10 @@ else:
             def GetLastError():
                 return 0
 
+            @staticmethod
+            def WaitForSingleObject(handle, timeout_ms):
+                return 0
+
     _windll = WindowsAPIStub()
 
 
@@ -72,6 +76,36 @@ def release_mutex_handle(handle):
 def acquire_mutex_with_error(mutex_name):
     handle = create_named_mutex(mutex_name)
     return handle, _windll.kernel32.GetLastError()
+
+
+def acquire_named_mutex_lock(mutex_name, timeout_ms=10000):
+    """Open a named mutex and take ownership for cross-process serialization."""
+    handle = create_named_mutex(mutex_name)
+    if not handle:
+        return None, _windll.kernel32.GetLastError()
+
+    try:
+        result = _windll.kernel32.WaitForSingleObject(handle, max(0, int(timeout_ms)))
+    except Exception:
+        close_windows_handle(handle)
+        raise
+
+    wait_object_0 = 0x00000000
+    wait_abandoned = 0x00000080
+    if result in (wait_object_0, wait_abandoned):
+        return handle, result
+
+    close_windows_handle(handle)
+    return None, result
+
+
+def release_named_mutex_lock(handle):
+    if not handle:
+        return
+    try:
+        _windll.kernel32.ReleaseMutex(handle)
+    finally:
+        close_windows_handle(handle)
 
 
 def is_existing_instance_error(last_error):

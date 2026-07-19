@@ -5,7 +5,7 @@ import time
 
 from sms_core.serial_debug import build_serial_command_payload
 from sms_core.sms_pdu import encode_text_sms_pdus
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import WorkerThreadRegistry, start_daemon_thread
 
 
 @dataclass(frozen=True)
@@ -181,6 +181,7 @@ class SmsPduSendCoordinator:
 
 
 DEFAULT_SMS_PDU_SEND_COORDINATOR = SmsPduSendCoordinator()
+DEFAULT_SMS_SEND_THREAD_REGISTRY = WorkerThreadRegistry()
 
 
 def _is_serial_open(serial_obj):
@@ -794,21 +795,42 @@ def send_text_sms_pdu_async(
     response_coordinator=None,
     segment_timeout=SMS_PDU_SEND_DEFAULT_TIMEOUT,
     prompt_timeout=None,
+    thread_registry=DEFAULT_SMS_SEND_THREAD_REGISTRY,
 ):
     coordinator = response_coordinator or DEFAULT_SMS_PDU_SEND_COORDINATOR
-    return start_daemon_thread(
-        "serial_send_sms_pdu",
-        lambda: write_text_sms_pdu_locked(
-            serial_lock,
-            get_serial,
-            phone,
-            message,
-            push_debug=push_debug,
-            port_ui=port_ui,
-            sleep_func=sleep_func,
-            response_coordinator=coordinator,
-            segment_timeout=segment_timeout,
-            prompt_timeout=prompt_timeout,
-        ),
-        log_error=log_error,
-    )
+    thread_holder = {}
+
+    def register_thread(thread):
+        thread_holder["thread"] = thread
+        if thread_registry is not None:
+            thread_registry.register(thread)
+
+    def run_send():
+        try:
+            return write_text_sms_pdu_locked(
+                serial_lock,
+                get_serial,
+                phone,
+                message,
+                push_debug=push_debug,
+                port_ui=port_ui,
+                sleep_func=sleep_func,
+                response_coordinator=coordinator,
+                segment_timeout=segment_timeout,
+                prompt_timeout=prompt_timeout,
+            )
+        finally:
+            if thread_registry is not None:
+                thread_registry.unregister(thread_holder.get("thread"))
+
+    try:
+        return start_daemon_thread(
+            "serial_send_sms_pdu",
+            run_send,
+            log_error=log_error,
+            before_start=register_thread,
+        )
+    except Exception:
+        if thread_registry is not None:
+            thread_registry.unregister(thread_holder.get("thread"))
+        raise

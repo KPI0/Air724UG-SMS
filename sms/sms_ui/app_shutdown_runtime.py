@@ -19,6 +19,9 @@ def cleanup_and_exit_app_runtime(
     file_log_queue,
     destroy_root=None,
     cleanup_runtime=cleanup_and_exit_runtime,
+    file_log_thread=None,
+    file_log_stop_event=None,
+    worker_threads=(),
     log_error=None,
 ):
     destroy_root = destroy_root or root.destroy
@@ -40,6 +43,9 @@ def cleanup_and_exit_app_runtime(
         stop_tray_icon=stop_tray_icon,
         flush_log_queue=flush_log_queue,
         file_log_queue=file_log_queue,
+        file_log_thread=file_log_thread,
+        file_log_stop_event=file_log_stop_event,
+        worker_threads=worker_threads,
         destroy_root=destroy_root,
         log_error=log_error,
     )

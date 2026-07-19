@@ -11,6 +11,7 @@ from sms_ui.ui_log_runtime import (
     run_log_runtime,
     schedule_next_midnight_clear_runtime,
     show_sms_popup_runtime,
+    system_log_prefix_runtime,
     system_ui_runtime,
     ui_only_runtime,
     write_port_log_runtime,
@@ -94,6 +95,27 @@ class UiLogRuntimeTests(unittest.TestCase):
         self.assertEqual(path, os.path.join("logs", "sms_system_2026-06-08.txt"))
         self.assertEqual(line, "2026-06-08 12:30:05 msg\n")
         self.assertEqual(written, [(path, line)])
+
+    def test_write_system_log_runtime_separates_numbered_instances(self):
+        written = []
+        now = datetime.datetime(2026, 6, 8, 12, 30, 5)
+
+        path, line = write_system_log_runtime(
+            "msg",
+            "logs",
+            written.append,
+            now=now,
+            instance_number=3,
+        )
+
+        self.assertEqual(path, os.path.join("logs", "sms_system_3_2026-06-08.txt"))
+        self.assertEqual(line, "2026-06-08 12:30:05 msg\n")
+        self.assertEqual(written, [(path, line)])
+
+    def test_system_log_prefix_runtime_keeps_first_instance_compatible(self):
+        self.assertEqual(system_log_prefix_runtime(1), "system")
+        self.assertEqual(system_log_prefix_runtime(2), "system_2")
+        self.assertEqual(system_log_prefix_runtime("bad"), "system")
 
     def test_log_file_only_runtime_swallows_queue_errors(self):
         result = log_file_only_runtime(

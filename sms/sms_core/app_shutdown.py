@@ -1,6 +1,9 @@
 import inspect
 import queue
 
+from sms_core.file_log_runtime import wait_for_file_log_worker
+from sms_core.threading_runtime import wait_for_worker_threads
+
 
 def _safe_log(log_error, message):
     if log_error is None:
@@ -82,6 +85,11 @@ def cleanup_and_exit_runtime(
     destroy_root,
     safe_set_events=safe_set_events,
     flush_log_queue=flush_log_queue,
+    file_log_thread=None,
+    file_log_stop_event=None,
+    worker_threads=(),
+    wait_worker_threads=wait_for_worker_threads,
+    wait_file_log_worker=wait_for_file_log_worker,
     log_error=None,
 ):
     if is_exiting:
@@ -93,7 +101,10 @@ def cleanup_and_exit_runtime(
     set_exiting(True)
     _call_with_optional_log_error(safe_set_events, *tuple(shutdown_events or ()), log_error=log_error)
     set_serial_running(False)
-    _call_with_optional_log_error(safe_set_events, *tuple(worker_stop_events or ()), log_error=log_error)
+    producer_stop_events = tuple(worker_stop_events or ())
+    if tts_stop_event is not None:
+        producer_stop_events += (tts_stop_event,)
+    _call_with_optional_log_error(safe_set_events, *producer_stop_events, log_error=log_error)
 
     try:
         stop_cloud_control(update_status=False)
@@ -110,12 +121,22 @@ def cleanup_and_exit_runtime(
     except Exception as exc:
         _safe_log(log_error, f"Stop tray icon during shutdown failed: {exc!r}")
 
+    _call_with_optional_log_error(
+        wait_worker_threads,
+        worker_threads,
+        log_error=log_error,
+    )
+    if file_log_stop_event is not None:
+        _call_with_optional_log_error(safe_set_events, file_log_stop_event, log_error=log_error)
+    _call_with_optional_log_error(
+        wait_file_log_worker,
+        file_log_thread,
+        log_error=log_error,
+    )
     _call_with_optional_log_error(flush_log_queue, file_log_queue, log_error=log_error)
 
     try:
         destroy_root()
     except Exception as exc:
         _safe_log(log_error, f"Destroy root during shutdown failed: {exc!r}")
-
-    _call_with_optional_log_error(safe_set_events, tts_stop_event, log_error=log_error)
     return "exited"

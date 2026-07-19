@@ -159,6 +159,7 @@ def third_push_worker_app_runtime(
             get_log_prefix=get_log_prefix,
             variables=variables,
         ),
+        should_emit_results=lambda: not stop_event.is_set(),
     )
 
 

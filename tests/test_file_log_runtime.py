@@ -5,6 +5,7 @@ from sms_core.file_log_runtime import (
     drain_available_log_lines,
     run_file_log_worker,
     start_file_log_worker,
+    wait_for_file_log_worker,
     write_log_batches,
 )
 
@@ -101,6 +102,26 @@ class FileLogRuntimeTests(unittest.TestCase):
 
         self.assertIsInstance(thread, FakeThread)
         self.assertEqual(calls, [("thread", True), ("start",)])
+
+    def test_wait_for_file_log_worker_joins_and_reports_timeout(self):
+        calls = []
+
+        class Thread:
+            def join(self, timeout):
+                calls.append(("join", timeout))
+
+            def is_alive(self):
+                return True
+
+        self.assertFalse(
+            wait_for_file_log_worker(
+                Thread(),
+                timeout=2,
+                log_error=lambda message: calls.append(("log", message)),
+            )
+        )
+        self.assertEqual(calls[0], ("join", 2.0))
+        self.assertIn("timeout", calls[1][1])
 
 
 if __name__ == "__main__":

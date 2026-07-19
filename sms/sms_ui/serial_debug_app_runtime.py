@@ -15,6 +15,7 @@ def open_serial_debug_window_runtime(
     format_connected_status,
     get_port,
     center_window,
+    window_title="串口调试",
     log_error=None,
     open_dialog=open_serial_debug_window_dialog,
 ):
@@ -39,9 +40,9 @@ def open_serial_debug_window_runtime(
         lambda: set_state("clear_window_refs"),
         center_window,
     )
-    if log_error is None:
-        window, text = open_dialog(*args)
-    else:
-        window, text = open_dialog(*args, log_error=log_error)
+    kwargs = {"window_title": window_title}
+    if log_error is not None:
+        kwargs["log_error"] = log_error
+    window, text = open_dialog(*args, **kwargs)
     set_state("window_refs", window, text)
     return window, text

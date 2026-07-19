@@ -707,6 +707,27 @@ class SerialRuntimeTests(unittest.TestCase):
             ("close",),
         ])
 
+    def test_run_serial_thread_loop_suppresses_disconnect_log_while_stopping(self):
+        calls = []
+        keep_running = [True, False]
+
+        run_serial_thread_loop(
+            should_continue=lambda: keep_running.pop(0),
+            get_target_port=lambda: "COM5",
+            resolve_target_port=lambda: "COM5",
+            set_connecting_status=lambda port: calls.append(("connecting", port)),
+            open_and_initialize_serial=lambda port: (_ for _ in ()).throw(RuntimeError("closed")),
+            on_connected_port=lambda port: calls.append(("connected", port)),
+            read_serial_line=lambda: b"",
+            handle_line=lambda line: calls.append(("line", line)),
+            handle_error=lambda error, port: calls.append(("error", str(error), port)) or False,
+            wait_before_retry=lambda: calls.append(("wait",)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            is_stopping=lambda: True,
+        )
+
+        self.assertEqual(calls, [("connecting", "COM5"), ("close",)])
+
     def test_run_serial_runtime_thread_syncs_call_state_after_line(self):
         calls = []
         app_state = [(7.0, "10086")]

@@ -125,3 +125,26 @@ def start_file_log_worker(
         log_error=guard_log,
         thread_factory=thread_factory,
     )
+
+
+def wait_for_file_log_worker(thread, timeout=5.0, *, log_error=None):
+    """Wait for an in-flight file-log batch before the process exits."""
+    if thread is None:
+        return True
+    try:
+        thread.join(timeout=max(0.0, float(timeout)))
+        if thread.is_alive():
+            if log_error is not None:
+                try:
+                    log_error("file_log_worker did not stop before shutdown timeout")
+                except Exception:
+                    pass
+            return False
+        return True
+    except Exception as exc:
+        if log_error is not None:
+            try:
+                log_error(f"Wait for file_log_worker failed: {exc!r}")
+            except Exception:
+                pass
+        return False

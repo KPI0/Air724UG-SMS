@@ -27,6 +27,7 @@ class SerialDebugNamespaceRuntimeTests(unittest.TestCase):
             "set_status": lambda value: ("status", value),
             "format_connected_status": lambda port: f"connected:{port}",
             "center_window": "center",
+            "SERIAL_DEBUG_WINDOW_TITLE": "串口调试 3",
         }
 
     def test_get_serial_debug_state_namespace_runtime_reads_known_values(self):
@@ -75,6 +76,7 @@ class SerialDebugNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["get_serial_obj"](), "serial")
         self.assertEqual(forwarded["get_port"](), "COM5")
         self.assertEqual(forwarded["center_window"], "center")
+        self.assertEqual(forwarded["window_title"], "串口调试 3")
         self.assertEqual(forwarded["get_state"]("window_refs"), ("old_win", "old_text"))
         forwarded["set_state"]("drop_count", 9)
         self.assertEqual(namespace["serial_debug_drop_count"], 9)

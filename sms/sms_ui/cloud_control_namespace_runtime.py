@@ -114,6 +114,13 @@ def save_cloud_control_setting_namespace_runtime(
 
 
 def cloud_log_namespace_runtime(namespace, message, *, show_main=False):
+    shutdown_event = namespace.get("TK_SHUTDOWN")
+    try:
+        if shutdown_event is not None and shutdown_event.is_set():
+            return None
+    except Exception:
+        pass
+
     base_msg = f"🌐 {message}"
     try:
         file_msg = namespace["_cloud_repeat_filter"](namespace["_cloud_file_notice"], base_msg)

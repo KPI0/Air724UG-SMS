@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 
 def parse_date_from_log_filename(filename: str):
     """
-    Parse dates from names like sms_system_YYYY-MM-DD.txt or sms_COM5_YYYY-MM-DD.txt.
+    Parse dates from names like sms_system_YYYY-MM-DD.txt,
+    sms_system_2_YYYY-MM-DD.txt, or sms_COM5_YYYY-MM-DD.txt.
     Returns None when the filename does not contain a supported suffix date.
     """
     match = re.search(r"_(\d{4}-\d{2}-\d{2})\.txt$", str(filename or ""))
@@ -54,4 +55,3 @@ def cleanup_old_logs_in_dir(log_dir: str, days: int, now=None) -> int:
             pass
 
     return deleted
-

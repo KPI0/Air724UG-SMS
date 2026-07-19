@@ -99,13 +99,20 @@ from sms_core.config_schema import (
     THIRD_PUSH_DEFAULTS,
 )
 from sms_core.config_runtime import (
+    ConfigInitializationError,
     initialize_config_runtime,
     read_startup_config_values,
 )
 from sms_app.serial_namespace_bindings import install_serial_namespace_bindings
-from sms_core.serial_sender import send_command_with_result_async, write_serial_command_result
+from sms_core.serial_sender import (
+    DEFAULT_SMS_PDU_SEND_COORDINATOR,
+    DEFAULT_SMS_SEND_THREAD_REGISTRY,
+    send_command_with_result_async,
+    write_serial_command_result,
+)
 from sms_core.status_text import format_connected_status
 from sms_core.threading_runtime import start_daemon_thread
+from sms_core.tts_runtime import instance_tts_file_path
 from sms_core.windows_shortcuts import (
     create_desktop_shortcut,
     create_startup_shortcut,
@@ -118,6 +125,10 @@ from sms_core.windows_runtime import (
     request_dpi_awareness,
 )
 from sms_ui.serial_debug_namespace_bindings import install_serial_debug_namespace_bindings
+from sms_ui.app_instance_runtime import (
+    claim_instance_number_app_runtime,
+    format_instance_window_title,
+)
 from sms_ui.settings_dialogs import (
     open_sms_font_dialog as _ui_open_sms_font_dialog,
 )
@@ -141,6 +152,7 @@ from sms_ui.repeat_notice_runtime import (
 from sms_ui.ui_log_namespace_runtime import (
     flush_pending_ui_logs_namespace_runtime,
 )
+from sms_ui.ui_log_runtime import system_log_prefix_runtime
 from sms_ui.ui_log_namespace_bindings import install_ui_log_namespace_bindings
 from sms_ui.utility_dialogs import (
     open_about_dialog as _ui_open_about_dialog,
@@ -153,6 +165,7 @@ from sms_ui.window_utils import sync_and_focus_existing_window
 
 def _initialize_paths_and_constants():
     global APP_DIR, CONFIG_FILE, LOG_DIR, TTS_DIR, TTS_FILE, APP_WINDOW_TITLE
+    global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE, APP_INSTANCE_NUMBER
     global RECONNECT_INTERVAL, APP_VERSION, GITHUB_OWNER, GITHUB_REPO
     global AUTOSTART_FLAG, RESTART_HELPER_FLAG, START_MINIMIZED
     global APP_START_MONO, START_UI_DELAY, VOICE_ENABLED, IMEI_REGEX
@@ -164,8 +177,11 @@ def _initialize_paths_and_constants():
     TTS_DIR = os.path.join(APP_DIR, "tts")
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
+    APP_DISPLAY_TITLE = APP_WINDOW_TITLE
+    SERIAL_DEBUG_WINDOW_TITLE = "串口调试"
+    APP_INSTANCE_NUMBER = 1
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.7.8"
+    APP_VERSION = "3.7.9"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
@@ -259,7 +275,7 @@ def _initialize_third_push_settings():
 
 def _initialize_serial_state():
     global serial_obj, serial_running, ring_timeout_target, current_dial_num, serial_lock
-    global serial_stop_event, serial_wakeup_event
+    global serial_stop_event, serial_wakeup_event, serial_connection_generation
 
     serial_obj = None
     serial_running = True
@@ -268,6 +284,7 @@ def _initialize_serial_state():
     serial_lock = threading.Lock()
     serial_stop_event = threading.Event()
     serial_wakeup_event = threading.Event()
+    serial_connection_generation = 0
 
 
 def _initialize_notice_state():
@@ -347,7 +364,10 @@ def _initialize_cloud_runtime_state():
 
 def _initialize_worker_state():
     global TTS_LOCK, TTS_REQ_Q, TTS_STOP, TTS_THREAD, THIRD_PUSH_Q, third_push_stop
-    global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, TK_SHUTDOWN, current_port_mutex, app_mutex
+    global third_push_thread, serial_thread
+    global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
+    global TK_SHUTDOWN, current_port_mutex, app_mutex
+    global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
 
     TTS_LOCK = threading.Lock()
     TTS_REQ_Q = queue.Queue(maxsize=50)
@@ -355,13 +375,18 @@ def _initialize_worker_state():
     TTS_THREAD = None
     THIRD_PUSH_Q = queue.Queue(maxsize=200)
     third_push_stop = threading.Event()
+    third_push_thread = None
+    serial_thread = None
     UI_TASK_QUEUE = queue.Queue(maxsize=10000)
     FILE_LOG_Q = queue.Queue(maxsize=50000)
     file_log_stop = threading.Event()
-    start_file_log_worker(log_queue=FILE_LOG_Q, stop_event=file_log_stop)
+    file_log_thread = start_file_log_worker(log_queue=FILE_LOG_Q, stop_event=file_log_stop)
     TK_SHUTDOWN = threading.Event()
     current_port_mutex = None
     app_mutex = None
+    instance_number_mutex = None
+    SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
+    SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
 
 
 def _initialize_runtime_state():
@@ -384,9 +409,21 @@ def _install_runtime_bindings():
 
 
 def _run_startup_guards():
+    global APP_INSTANCE_NUMBER, instance_number_mutex
+    global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE
+    global LOG_PREFIX, TTS_FILE
+
     maybe_run_restart_helper_mode(RESTART_HELPER_FLAG)
-    if not ALLOW_MULTI_INSTANCE:
-        check_single_instance()
+    check_single_instance()
+    APP_INSTANCE_NUMBER, instance_number_mutex = claim_instance_number_app_runtime(
+        app_dir=APP_DIR,
+        log_error=log_file_only,
+    )
+    APP_DISPLAY_TITLE = format_instance_window_title(APP_WINDOW_TITLE, APP_INSTANCE_NUMBER)
+    SERIAL_DEBUG_WINDOW_TITLE = format_instance_window_title("串口调试", APP_INSTANCE_NUMBER)
+    if LOG_PREFIX == "system":
+        LOG_PREFIX = system_log_prefix_runtime(APP_INSTANCE_NUMBER)
+    TTS_FILE = instance_tts_file_path(TTS_DIR, APP_INSTANCE_NUMBER)
     request_dpi_awareness()
 
 
@@ -406,7 +443,7 @@ def _create_root_window():
         path_exists=os.path.exists,
         log_error=log_file_only,
     )
-    root.title(APP_WINDOW_TITLE)
+    root.title(APP_DISPLAY_TITLE)
     root.geometry("800x520")
     root.update_idletasks()
     if not START_MINIMIZED:
@@ -450,10 +487,14 @@ def _build_main_layout():
 
 
 def _install_cloud_and_serial_bindings():
-    global _last_play_time, current_call_popup
+    global _last_play_time, current_call_popup, third_push_thread
 
     _last_play_time = 0.0
-    start_daemon_thread("third_push_worker", _third_push_worker, log_error=log_file_only)
+    third_push_thread = start_daemon_thread(
+        "third_push_worker",
+        _third_push_worker,
+        log_error=log_file_only,
+    )
     install_cloud_namespace_bindings(globals())
     current_call_popup = None
     install_serial_namespace_bindings(globals())
@@ -501,6 +542,8 @@ def _build_main_menu():
 
 
 def _start_services():
+    global serial_thread
+
     schedule_next_midnight_clear()
     if MODE == "Auto":
         set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
@@ -508,14 +551,36 @@ def _start_services():
         set_status(f"✍️ 手动模式：{PORT or '未指定'}", "orange")
     if CLOUD_CONTROL_ENABLED:
         start_cloud_control()
-    start_daemon_thread("serial_reader", read_serial, log_error=log_file_only)
+    serial_thread = start_daemon_thread("serial_reader", read_serial, log_error=log_file_only)
     schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
 
 
 def main():
     """Start the SMS listener application."""
-    _initialize_paths_and_constants()
-    _initialize_config()
+    try:
+        _initialize_paths_and_constants()
+    except OSError as exc:
+        try:
+            messagebox.showerror(
+                "运行目录初始化失败",
+                "无法创建程序运行所需的日志或语音目录。\n\n"
+                f"{exc}\n\n"
+                "请将软件放到有写入权限的目录，或调整当前目录权限后重新启动。",
+            )
+        except Exception:
+            pass
+        return False
+    try:
+        _initialize_config()
+    except ConfigInitializationError as exc:
+        try:
+            messagebox.showerror(
+                "配置初始化失败",
+                f"{exc}\n\n请检查程序目录是否有写入权限、配置文件是否被占用，然后重新启动软件。",
+            )
+        except Exception:
+            pass
+        return False
     _initialize_cloud_settings()
     _initialize_third_push_settings()
     _initialize_runtime_state()
@@ -527,3 +592,4 @@ def main():
     _build_main_menu()
     _start_services()
     root.mainloop()
+    return True

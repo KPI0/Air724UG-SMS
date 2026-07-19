@@ -8,6 +8,8 @@ SPEC = importlib.util.spec_from_file_location("target_threading_runtime", MODULE
 threading_runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(threading_runtime)
 start_daemon_thread = threading_runtime.start_daemon_thread
+wait_for_worker_threads = threading_runtime.wait_for_worker_threads
+WorkerThreadRegistry = threading_runtime.WorkerThreadRegistry
 
 
 class FakeThread:
@@ -23,6 +25,42 @@ class FakeThread:
 
 
 class ThreadingRuntimeTests(unittest.TestCase):
+    def test_worker_thread_registry_snapshots_and_removes_threads(self):
+        registry = WorkerThreadRegistry()
+        first = object()
+        second = object()
+
+        self.assertTrue(registry.register(first))
+        self.assertTrue(registry.register(second))
+        self.assertEqual(set(registry.snapshot()), {first, second})
+        self.assertTrue(registry.unregister(first))
+        self.assertFalse(registry.unregister(first))
+        self.assertEqual(registry.snapshot(), (second,))
+
+    def test_wait_for_worker_threads_joins_each_unique_thread(self):
+        calls = []
+
+        class Worker:
+            name = "worker"
+
+            def join(self, timeout):
+                calls.append(("join", timeout))
+
+            def is_alive(self):
+                return False
+
+        worker = Worker()
+        times = iter((10.0, 10.0))
+        self.assertTrue(
+            wait_for_worker_threads(
+                (worker, worker, None),
+                timeout=2,
+                monotonic=lambda: next(times),
+                current_thread=lambda: object(),
+            )
+        )
+        self.assertEqual(calls, [("join", 2.0)])
+
     def test_start_daemon_thread_logs_target_exception(self):
         logs = []
 

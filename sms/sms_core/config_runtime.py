@@ -1,9 +1,20 @@
 import configparser
+import hashlib
 import os
 import threading
 import json
 import time
 from dataclasses import dataclass
+
+from sms_core.windows_runtime import acquire_named_mutex_lock, release_named_mutex_lock
+
+
+CONFIG_SNAPSHOT_ATTR = "_sms_last_disk_snapshot"
+CONFIG_MUTEX_PREFIX = "Air724UG_SMS_Config_Write_V1"
+
+
+class ConfigInitializationError(RuntimeError):
+    """Raised when startup defaults cannot be persisted safely."""
 
 
 @dataclass(frozen=True)
@@ -47,6 +58,75 @@ def restore_config_section(config, section, snapshot):
         config.set(section, str(option), str(value))
 
 
+def snapshot_config_runtime(config):
+    return {
+        section: {
+            option: config.get(section, option, raw=True)
+            for option in config.options(section)
+        }
+        for section in config.sections()
+    }
+
+
+def restore_config_runtime(config, snapshot):
+    config.clear()
+    for section, values in dict(snapshot or {}).items():
+        config.add_section(str(section))
+        for option, value in dict(values or {}).items():
+            config.set(str(section), str(option), str(value))
+
+
+def remember_config_snapshot(config, snapshot=None):
+    try:
+        setattr(
+            config,
+            CONFIG_SNAPSHOT_ATTR,
+            snapshot_config_runtime(config) if snapshot is None else dict(snapshot),
+        )
+    except Exception:
+        pass
+
+
+def config_mutex_name(config_file):
+    normalized = os.path.normcase(os.path.abspath(str(config_file or "config.ini")))
+    digest = hashlib.sha256(normalized.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return f"{CONFIG_MUTEX_PREFIX}_{digest}"
+
+
+def merge_config_changes(disk_snapshot, baseline_snapshot, current_snapshot):
+    merged = {
+        section: dict(values)
+        for section, values in dict(disk_snapshot or {}).items()
+    }
+    baseline = dict(baseline_snapshot or {})
+    current = dict(current_snapshot or {})
+
+    for section in set(baseline) | set(current):
+        if section not in current:
+            merged.pop(section, None)
+            continue
+        if section not in baseline:
+            merged[section] = dict(current[section])
+            continue
+
+        target = merged.setdefault(section, {})
+        old_values = dict(baseline[section])
+        new_values = dict(current[section])
+        for option in set(old_values) | set(new_values):
+            if option not in new_values:
+                target.pop(option, None)
+            elif option not in old_values or new_values[option] != old_values[option]:
+                target[option] = new_values[option]
+
+    return merged
+
+
+def load_config_snapshot(config_file, *, encoding="utf-8-sig"):
+    disk_config = configparser.ConfigParser(interpolation=None)
+    disk_config.read(config_file, encoding=encoding)
+    return snapshot_config_runtime(disk_config)
+
+
 def initialize_config_runtime(
     *,
     config,
@@ -66,9 +146,23 @@ def initialize_config_runtime(
         for section, values in defaults_by_section.items():
             config[section] = dict(values)
 
+    def save_startup_defaults(action):
+        try:
+            result = save_config()
+        except Exception as exc:
+            _safe_log(log_error, f"Config {action} save raised an exception: {exc!r}")
+            raise ConfigInitializationError(
+                f"配置文件{action}失败，无法写入：{config_file}"
+            ) from exc
+        if result is False:
+            _safe_log(log_error, f"Config {action} save returned False: {config_file!r}")
+            raise ConfigInitializationError(
+                f"配置文件{action}失败，无法写入：{config_file}"
+            )
+
     if not path_exists(config_file):
         load_defaults()
-        save_config()
+        save_startup_defaults("创建")
         created = True
 
     try:
@@ -82,8 +176,9 @@ def initialize_config_runtime(
         except Exception as backup_exc:
             _safe_log(log_error, f"Config file invalid and backup failed; recreating defaults: {backup_exc!r}")
         load_defaults()
-        save_config()
+        save_startup_defaults("修复")
         created = True
+    remember_config_snapshot(config)
     return created
 
 
@@ -279,13 +374,41 @@ def safe_save_config_runtime(
     replace_file=os.replace,
     path_exists=os.path.exists,
     remove_file=os.remove,
+    acquire_process_lock=acquire_named_mutex_lock,
+    release_process_lock=release_named_mutex_lock,
+    load_snapshot=load_config_snapshot,
+    lock_timeout_ms=10000,
 ):
     tmp_file = f"{config_file}.{getpid()}.{get_thread_id()}.tmp"
+    process_lock = None
     try:
+        process_lock, lock_result = acquire_process_lock(
+            config_mutex_name(config_file),
+            timeout_ms=lock_timeout_ms,
+        )
+        if not process_lock:
+            raise RuntimeError(f"配置文件跨进程锁获取失败，结果码：{lock_result}")
+
         with config_lock:
+            current_snapshot = snapshot_config_runtime(config)
+            baseline_snapshot = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
+            if baseline_snapshot is not None and path_exists(config_file):
+                disk_snapshot = load_snapshot(config_file)
+                output_snapshot = merge_config_changes(
+                    disk_snapshot,
+                    baseline_snapshot,
+                    current_snapshot,
+                )
+            else:
+                output_snapshot = current_snapshot
+
+            output_config = configparser.ConfigParser(interpolation=None)
+            restore_config_runtime(output_config, output_snapshot)
             with open_file(tmp_file, "w", encoding="utf-8") as file_obj:
-                config.write(file_obj)
+                output_config.write(file_obj)
             replace_file(tmp_file, config_file)
+            restore_config_runtime(config, output_snapshot)
+            remember_config_snapshot(config, output_snapshot)
         return True
     except Exception as exc:
         try:
@@ -299,3 +422,13 @@ def safe_save_config_runtime(
         except Exception:
             pass
         return False
+    finally:
+        if process_lock:
+            try:
+                release_process_lock(process_lock)
+            except Exception as exc:
+                try:
+                    if log_error is not None:
+                        log_error(f"配置文件跨进程锁释放失败: {exc}")
+                except Exception:
+                    pass

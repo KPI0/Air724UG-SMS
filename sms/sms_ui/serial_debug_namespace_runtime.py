@@ -74,6 +74,7 @@ def open_serial_debug_window_namespace_runtime(
         format_connected_status=namespace["format_connected_status"],
         get_port=lambda: namespace["PORT"],
         center_window=namespace["center_window"],
+        window_title=namespace.get("SERIAL_DEBUG_WINDOW_TITLE", "串口调试"),
         log_error=namespace.get("log_file_only"),
     )
 

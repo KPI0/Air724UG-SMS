@@ -6,6 +6,9 @@ import sys
 import time
 from dataclasses import dataclass
 
+from sms_core.file_log_runtime import wait_for_file_log_worker
+from sms_core.threading_runtime import wait_for_worker_threads
+
 
 @dataclass(frozen=True)
 class RestartRuntimeResult:
@@ -153,6 +156,11 @@ def restart_software_runtime(
     prepare_launch=prepare_restart_helper_launch,
     launch_process=launch_detached_process,
     clean_env=get_clean_restart_env,
+    file_log_thread=None,
+    file_log_stop_event=None,
+    worker_threads=(),
+    wait_worker_threads=wait_for_worker_threads,
+    wait_file_log_worker=wait_for_file_log_worker,
 ):
     if is_exiting:
         return RestartRuntimeResult("already_exiting")
@@ -193,12 +201,17 @@ def restart_software_runtime(
         pass
     safe_close_serial()
 
+    wait_worker_threads(worker_threads, log_error=log_error)
+    if file_log_stop_event is not None:
+        safe_set_events(file_log_stop_event)
+
     try:
         if app_mutex:
             release_mutex(app_mutex)
     except Exception:
         pass
 
+    wait_file_log_worker(file_log_thread, log_error=log_error)
     flush_log_queue(file_log_queue)
     exit_process(0)
     return RestartRuntimeResult("exited")

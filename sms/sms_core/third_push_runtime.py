@@ -139,7 +139,9 @@ def third_push_worker_runtime(
     dispatch_func=dispatch_push_item,
     result_status_message=push_result_status_message,
     poll_timeout=0.5,
+    should_emit_results=None,
 ):
+    should_emit_results = should_emit_results or (lambda: True)
     while not stop_event.is_set():
         try:
             item = push_queue.get(timeout=poll_timeout)
@@ -155,9 +157,13 @@ def third_push_worker_runtime(
                 )
             except Exception as exc:
                 fail_message = _exception_text("三方推送任务异常", exc)
-                _safe_system_ui(system_ui, fail_message)
-                if isinstance(item, dict) and item.get("show_result"):
-                    _safe_show_result(show_result, [], [fail_message])
+                if should_emit_results():
+                    _safe_system_ui(system_ui, fail_message)
+                    if isinstance(item, dict) and item.get("show_result"):
+                        _safe_show_result(show_result, [], [fail_message])
+                continue
+
+            if not should_emit_results():
                 continue
 
             try:
@@ -176,7 +182,8 @@ def third_push_worker_runtime(
                     )
             except Exception as exc:
                 fail_message = _exception_text("三方推送结果回调异常", exc)
-                _safe_system_ui(system_ui, fail_message)
+                if should_emit_results():
+                    _safe_system_ui(system_ui, fail_message)
         finally:
             try:
                 push_queue.task_done()

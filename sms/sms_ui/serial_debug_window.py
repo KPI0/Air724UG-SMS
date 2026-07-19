@@ -45,6 +45,7 @@ def open_serial_debug_window_dialog(
     set_drop_count,
     clear_window_refs,
     center_window,
+    window_title="串口调试",
     log_error=None,
 ):
     if current_window is not None and current_window.winfo_exists():
@@ -55,7 +56,7 @@ def open_serial_debug_window_dialog(
 
     win = tk.Toplevel(parent)
     win.withdraw()
-    win.title("串口调试")
+    win.title(window_title)
     win.geometry("900x520")
     win.minsize(800, 300)
     win.lift()

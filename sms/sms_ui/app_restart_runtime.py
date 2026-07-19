@@ -28,6 +28,9 @@ def restart_software_app_runtime(
     argv=None,
     current_pid=None,
     restart_runtime=restart_software_runtime,
+    file_log_thread=None,
+    file_log_stop_event=None,
+    worker_threads=(),
 ):
     return restart_runtime(
         is_exiting=is_exiting,
@@ -54,5 +57,8 @@ def restart_software_app_runtime(
         release_mutex=release_mutex,
         flush_log_queue=flush_log_queue,
         file_log_queue=file_log_queue,
+        file_log_thread=file_log_thread,
+        file_log_stop_event=file_log_stop_event,
+        worker_threads=worker_threads,
         exit_process=exit_process,
     )

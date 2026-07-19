@@ -21,6 +21,7 @@ from sms_ui.call_popup_namespace_runtime import (
 )
 from sms_ui.repeat_notice_runtime import emit_repeat_notice
 from sms_ui.serial_debug_namespace_runtime import push_serial_debug_namespace_runtime
+from sms_ui.ui_log_runtime import system_log_prefix_runtime
 
 
 def install_serial_namespace_bindings(namespace):
@@ -61,6 +62,8 @@ def install_serial_namespace_bindings(namespace):
         )
 
     def set_serial_log_prefix(value):
+        if value == "system":
+            value = system_log_prefix_runtime(namespace.get("APP_INSTANCE_NUMBER", 1))
         namespace.__setitem__("LOG_PREFIX", value)
 
     def read_serial():

@@ -29,6 +29,16 @@ def safe_save_config_namespace_runtime(namespace):
 
 
 def safe_close_serial_namespace_runtime(namespace):
+    namespace.__setitem__(
+        "serial_connection_generation",
+        int(namespace.get("serial_connection_generation", 0)) + 1,
+    )
+    coordinator = namespace.get("SMS_SEND_COORDINATOR")
+    if coordinator is not None:
+        try:
+            coordinator.cancel_active("串口连接已关闭，短信发送已取消")
+        except Exception as exc:
+            _safe_log(namespace, f"Cancel active SMS send before serial close failed: {exc!r}")
     return safe_close_serial_runtime(
         namespace["serial_lock"],
         lambda: namespace["serial_obj"],

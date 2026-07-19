@@ -41,18 +41,33 @@ def write_port_log_runtime(msg, log_dir, log_prefix, file_log, now=None):
     return path, line
 
 
-def write_system_log_runtime(msg, log_dir, file_log, now=None):
+def system_log_prefix_runtime(instance_number=1):
+    try:
+        number = max(1, int(instance_number or 1))
+    except (TypeError, ValueError):
+        number = 1
+    return "system" if number == 1 else f"system_{number}"
+
+
+def write_system_log_runtime(msg, log_dir, file_log, now=None, *, instance_number=1):
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
-    path = os.path.join(log_dir, f"sms_system_{today}.txt")
+    prefix = system_log_prefix_runtime(instance_number)
+    path = os.path.join(log_dir, f"sms_{prefix}_{today}.txt")
     line = f"{now:%Y-%m-%d %H:%M:%S} {msg}\n"
     file_log((path, line))
     return path, line
 
 
-def log_file_only_runtime(msg, *, log_dir, file_log, now=None):
+def log_file_only_runtime(msg, *, log_dir, file_log, now=None, instance_number=1):
     try:
-        return write_system_log_runtime(msg, log_dir, file_log, now=now)
+        return write_system_log_runtime(
+            msg,
+            log_dir,
+            file_log,
+            now=now,
+            instance_number=instance_number,
+        )
     except Exception:
         return None
 

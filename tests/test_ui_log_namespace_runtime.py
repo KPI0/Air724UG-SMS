@@ -1,3 +1,5 @@
+from datetime import datetime
+import os
 import queue
 import unittest
 
@@ -56,6 +58,7 @@ class UiLogNamespaceRuntimeTests(unittest.TestCase):
             "FILE_LOG_Q": FakeFileQueue(),
             "LOG_DIR": "logs",
             "LOG_PREFIX": "COM5",
+            "APP_INSTANCE_NUMBER": 3,
             "PENDING_UI_LOGS": queue.Queue(),
             "tk": FakeTk,
             "text_area": FakeText(),
@@ -84,7 +87,10 @@ class UiLogNamespaceRuntimeTests(unittest.TestCase):
         result = log_file_only_namespace_runtime(namespace, "msg")
 
         self.assertIsNotNone(result)
-        self.assertEqual(namespace["FILE_LOG_Q"].items[0][0].startswith("logs"), True)
+        self.assertEqual(
+            namespace["FILE_LOG_Q"].items[0][0],
+            os.path.join("logs", f"sms_system_3_{datetime.now():%Y-%m-%d}.txt"),
+        )
         self.assertIn("msg", namespace["FILE_LOG_Q"].items[0][1])
 
     def test_ui_only_and_system_ui_forward_namespace_callbacks(self):
