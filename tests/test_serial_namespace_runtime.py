@@ -81,6 +81,7 @@ class SerialNamespaceRuntimeTests(unittest.TestCase):
             "list_ports": FakeListPorts([FakePort("COM7")]),
             "choose_manual_rebind_candidate": lambda *_args, **_kwargs: "candidate",
             "config": "config",
+            "CONFIG_LOCK": "config_lock",
             "safe_save_config": lambda: calls.append(("save_config",)),
             "system_ui": lambda *args: calls.append(("system_ui", args)),
             "set_status": lambda *args: calls.append(("status", args)),
@@ -129,6 +130,7 @@ class SerialNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["PORT"], "COM7")
         self.assertEqual(calls[0][0], "changed")
         self.assertEqual(calls[0][1]["mode"], "Manual")
+        self.assertEqual(calls[0][1]["config_lock"], "config_lock")
         self.assertEqual(calls[0][1]["list_ports"]()[0].device, "COM7")
         self.assertEqual(namespace["serial_wakeup_event"].calls, [("set",)])
         self.assertEqual(namespace["_rebind_hint_notice"].calls, [("reset",)])

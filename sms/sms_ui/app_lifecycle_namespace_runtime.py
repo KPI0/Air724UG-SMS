@@ -12,20 +12,34 @@ from sms_ui.settings_runtime import (
 )
 
 
-def _sms_send_worker_threads(namespace):
-    registry = namespace.get("SMS_SEND_THREAD_REGISTRY")
-    if registry is None:
-        return ()
-    try:
-        return tuple(registry.snapshot())
-    except Exception as exc:
-        log_error = namespace.get("log_file_only")
-        if log_error is not None:
-            try:
-                log_error(f"Snapshot SMS send threads failed: {exc!r}")
-            except Exception:
-                pass
-        return ()
+def _registered_serial_worker_threads(namespace):
+    threads = []
+    for registry_name in (
+        "SERIAL_COMMAND_THREAD_REGISTRY",
+        "SMS_SEND_THREAD_REGISTRY",
+    ):
+        registry = namespace.get(registry_name)
+        if registry is None:
+            continue
+        try:
+            threads.extend(registry.snapshot())
+        except Exception as exc:
+            log_error = namespace.get("log_file_only")
+            if log_error is not None:
+                try:
+                    log_error(f"Snapshot {registry_name} failed: {exc!r}")
+                except Exception:
+                    pass
+    return tuple(threads)
+
+
+def _shutdown_worker_threads(namespace):
+    return (
+        namespace.get("third_push_thread"),
+        namespace.get("serial_thread"),
+        namespace.get("TTS_THREAD"),
+        namespace.get("cloud_ws_thread"),
+    ) + _registered_serial_worker_threads(namespace)
 
 
 def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runtime=set_autostart_runtime):
@@ -61,12 +75,7 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         file_log_queue=namespace["FILE_LOG_Q"],
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
-        worker_threads=(
-            namespace.get("third_push_thread"),
-            namespace.get("serial_thread"),
-            namespace.get("TTS_THREAD"),
-            namespace.get("cloud_ws_thread"),
-        ) + _sms_send_worker_threads(namespace),
+        worker_threads=lambda: _shutdown_worker_threads(namespace),
         destroy_root=namespace["root"].destroy,
         log_error=namespace.get("log_file_only"),
     )
@@ -215,11 +224,6 @@ def restart_software_namespace_runtime(
         file_log_queue=namespace["FILE_LOG_Q"],
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
-        worker_threads=(
-            namespace.get("third_push_thread"),
-            namespace.get("serial_thread"),
-            namespace.get("TTS_THREAD"),
-            namespace.get("cloud_ws_thread"),
-        ) + _sms_send_worker_threads(namespace),
+        worker_threads=lambda: _shutdown_worker_threads(namespace),
         exit_process=os_module._exit,
     )

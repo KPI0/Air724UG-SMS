@@ -1,4 +1,5 @@
 import configparser
+import threading
 import unittest
 
 from sms_core.serial_reconnect import (
@@ -81,6 +82,34 @@ class SerialReconnectTests(unittest.TestCase):
         self.assertIn(("ui", "COM5->COM7:LUAT MODEM:changed", "normal"), calls)
         self.assertIn(("wake",), calls)
         self.assertIn(("reset",), calls)
+
+    def test_manual_rebind_holds_config_lock_through_save(self):
+        config = configparser.ConfigParser()
+        config["serial"] = {"mode": "Manual", "port": "COM5", "baud": "115200"}
+        lock = threading.RLock()
+        ownership = []
+
+        ok = manual_rebind_runtime(
+            mode="Manual",
+            current_port="COM5",
+            baud=115200,
+            reason="changed",
+            find_luat_best_port=lambda: ("COM7", "LUAT MODEM"),
+            list_ports=lambda: [],
+            choose_candidate=lambda dev, desc, ports, current_port="": ManualRebindCandidate(dev, desc),
+            config=config,
+            config_lock=lock,
+            save_config=lambda: ownership.append(lock._is_owned()),
+            set_port=lambda _port: None,
+            system_ui=lambda *_args: None,
+            set_status=lambda *_args: None,
+            wake_serial=lambda: None,
+            reset_rebind_hint=lambda: None,
+            hint_formatter=lambda *_args: "hint",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(ownership, [True])
 
     def test_manual_rebind_runtime_ignores_non_manual_mode(self):
         calls = []

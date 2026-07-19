@@ -24,6 +24,7 @@ class SerialReconnectAppRuntimeTests(unittest.TestCase):
             list_ports=lambda: [],
             choose_candidate=lambda *_args, **_kwargs: None,
             config="config",
+            config_lock="config_lock",
             save_config=lambda: calls.append(("save",)),
             set_port=lambda port: calls.append(("port", port)),
             system_ui=lambda *_args: None,
@@ -41,6 +42,7 @@ class SerialReconnectAppRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["baud"], 115200)
         self.assertEqual(kwargs["reason"], "changed")
         self.assertEqual(kwargs["config"], "config")
+        self.assertEqual(kwargs["config_lock"], "config_lock")
         self.assertIn(("port", "COM7"), calls)
         self.assertIn(("reset",), calls)
 

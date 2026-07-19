@@ -318,6 +318,7 @@ class SettingsRuntimeTests(unittest.TestCase):
             on_keywords_changed,
             on_log_unmatched_changed,
             _center,
+            **_kwargs,
         ):
             callback_results.append(on_keywords_changed("add", value="bank"))
             callback_results.append(on_log_unmatched_changed(True))
@@ -356,6 +357,7 @@ class SettingsRuntimeTests(unittest.TestCase):
             on_mode_changed,
             on_list_changed,
             _center,
+            **_kwargs,
         ):
             callback_results.append(on_mode_changed("Whitelist"))
             callback_results.append(

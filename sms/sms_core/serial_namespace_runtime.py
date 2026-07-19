@@ -24,6 +24,7 @@ def try_rebind_manual_port_namespace_runtime(
         list_ports=namespace["list_ports"].comports,
         choose_candidate=namespace["choose_manual_rebind_candidate"],
         config=namespace["config"],
+        config_lock=namespace["CONFIG_LOCK"],
         save_config=namespace["safe_save_config"],
         set_port=lambda port: namespace.__setitem__("PORT", port),
         system_ui=namespace["system_ui"],

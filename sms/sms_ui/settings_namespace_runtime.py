@@ -108,6 +108,11 @@ def open_keywords_setting_namespace_runtime(
         lambda enabled: namespace.__setitem__("LOG_UNMATCHED_SMS", bool(enabled)),
         namespace["center_window"],
         namespace.get("log_file_only"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "keywords",
+            callback,
+        ),
+        get_log_unmatched=lambda: namespace["LOG_UNMATCHED_SMS"],
     )
 
 
@@ -127,4 +132,9 @@ def open_call_filter_setting_namespace_runtime(
         lambda mode: namespace.__setitem__("CALL_FILTER_MODE", mode),
         namespace["center_window"],
         namespace.get("log_file_only"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "call_filter",
+            callback,
+        ),
+        get_mode=lambda: namespace["CALL_FILTER_MODE"],
     )

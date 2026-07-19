@@ -337,6 +337,35 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(replaced, [("config.ini.10.20.tmp", "config.ini")])
         self.assertTrue(any("[ui]" in item for item in writes))
 
+    def test_safe_save_acquires_process_mutex_while_holding_config_lock(self):
+        class TrackingLock:
+            def __init__(self):
+                self.held = False
+
+            def __enter__(self):
+                self.held = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.held = False
+                return False
+
+        lock = TrackingLock()
+        process_lock_checks = []
+
+        result = safe_save_config_runtime(
+            config=configparser.ConfigParser(),
+            config_file="config.ini",
+            config_lock=lock,
+            open_file=lambda *_args, **_kwargs: FakeFile([]),
+            replace_file=lambda *_args: None,
+            acquire_process_lock=lambda *_args, **_kwargs: process_lock_checks.append(lock.held) or ("mutex", 0),
+            release_process_lock=lambda _lock: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(process_lock_checks, [True])
+
     def test_safe_save_config_runtime_removes_temp_and_logs_on_error(self):
         logs = []
         removed = []

@@ -242,6 +242,9 @@ def open_keywords_setting_runtime(
     set_log_unmatched,
     center_window,
     log_error=None,
+    *,
+    register_external_refresh=None,
+    get_log_unmatched=None,
 ):
     def on_keywords_changed(action, value=None, old_value=None):
         if not save_keywords_config(config, keywords, safe_save, log_error=log_error):
@@ -269,6 +272,8 @@ def open_keywords_setting_runtime(
         on_keywords_changed,
         on_log_unmatched_changed,
         center_window,
+        register_external_refresh=register_external_refresh,
+        get_log_unmatched=get_log_unmatched,
     )
 
 
@@ -326,6 +331,9 @@ def open_call_filter_setting_runtime(
     set_mode,
     center_window,
     log_error=None,
+    *,
+    register_external_refresh=None,
+    get_mode=None,
 ):
     def on_mode_changed(next_mode):
         if save_call_filter_mode(config, next_mode, safe_save, log_error=log_error):
@@ -358,4 +366,6 @@ def open_call_filter_setting_runtime(
         on_mode_changed,
         on_list_changed,
         center_window,
+        register_external_refresh=register_external_refresh,
+        get_mode=get_mode,
     )

@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import threading
 from datetime import datetime
 
 from sms_core.cloud_message_runtime import (
@@ -13,6 +14,7 @@ from sms_core.cloud_serial_log_runtime import (
     schedule_cloud_serial_log_drain,
     send_cloud_serial_log_runtime,
 )
+from sms_core.serial_sender import start_registered_serial_worker
 
 
 def _call_with_optional_log_error(func, *args, log_error=None, **kwargs):
@@ -136,6 +138,44 @@ def send_cloud_serial_command_namespace_runtime(
     )
 
 
+async def run_registered_cloud_serial_command_namespace_runtime(
+    namespace,
+    loop,
+    command,
+    command_data=None,
+    *,
+    start_worker=start_registered_serial_worker,
+):
+    result_future = loop.create_future()
+
+    def finish(result):
+        if not result_future.done():
+            result_future.set_result(result)
+
+    def worker():
+        try:
+            result = namespace["_cloud_send_serial_command"](command, command_data)
+        except Exception as exc:
+            result = (False, f"发送失败：{exc}")
+        try:
+            loop.call_soon_threadsafe(finish, result)
+        except Exception:
+            pass
+
+    try:
+        start_worker(
+            "cloud_serial_command",
+            worker,
+            log_error=namespace.get("log_file_only"),
+            thread_registry=namespace["SERIAL_COMMAND_THREAD_REGISTRY"],
+            thread_factory=namespace.get("threading", threading).Thread,
+        )
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+
+    return await result_future
+
+
 async def handle_cloud_message_namespace_runtime(
     namespace,
     ws,
@@ -161,9 +201,9 @@ async def handle_cloud_message_namespace_runtime(
         time_text=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         timestamp=namespace["_cloud_now_ts"],
         status_payload=namespace["_cloud_send_status_payload"],
-        send_serial_command=lambda command, command_data=None: loop.run_in_executor(
-            None,
-            namespace["_cloud_send_serial_command"],
+        send_serial_command=lambda command, command_data=None: run_registered_cloud_serial_command_namespace_runtime(
+            namespace,
+            loop,
             command,
             command_data,
         ),

@@ -1,7 +1,10 @@
 import threading
 import time
 
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.serial_sender import (
+    DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    start_registered_serial_worker,
+)
 
 
 IMEI_READ_COMMAND = "AT+CGSN"
@@ -133,6 +136,8 @@ def request_cloud_device_imei_runtime(
     monotonic=time.monotonic,
     push_serial_debug=None,
     thread_factory=threading.Thread,
+    thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    start_worker=start_registered_serial_worker,
 ):
     def task():
         request_cloud_device_imei_worker(
@@ -146,10 +151,11 @@ def request_cloud_device_imei_runtime(
         )
 
     try:
-        start_daemon_thread(
+        start_worker(
             "cloud_device_imei_request",
             task,
             log_error=cloud_log,
+            thread_registry=thread_registry,
             thread_factory=thread_factory,
         )
         return True, "已尝试发送读取IMEI指令"

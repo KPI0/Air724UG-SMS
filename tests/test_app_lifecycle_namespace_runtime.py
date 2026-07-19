@@ -33,8 +33,11 @@ class FakeOs:
 
 
 class FakeThreadRegistry:
+    def __init__(self, threads):
+        self.threads = tuple(threads)
+
     def snapshot(self):
-        return ("sms-send-1", "sms-send-2")
+        return self.threads
 
 
 class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
@@ -75,7 +78,12 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: ("log", message),
             "app_mutex": "mutex",
             "release_mutex_handle": lambda mutex: ("release", mutex),
-            "SMS_SEND_THREAD_REGISTRY": FakeThreadRegistry(),
+            "SERIAL_COMMAND_THREAD_REGISTRY": FakeThreadRegistry(
+                ("serial-command-1", "serial-command-2")
+            ),
+            "SMS_SEND_THREAD_REGISTRY": FakeThreadRegistry(
+                ("sms-send-1", "sms-send-2")
+            ),
         }
 
     def test_set_autostart_namespace_runtime_forwards_shortcut_dependencies(self):
@@ -109,7 +117,10 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["worker_stop_events"], ("third", "serial", "wakeup"))
         self.assertEqual(forwarded["tts_stop_event"], "tts")
         self.assertEqual(forwarded["file_log_stop_event"], "file")
-        self.assertEqual(forwarded["worker_threads"][-2:], ("sms-send-1", "sms-send-2"))
+        self.assertEqual(
+            forwarded["worker_threads"]()[-4:],
+            ("serial-command-1", "serial-command-2", "sms-send-1", "sms-send-2"),
+        )
         forwarded["set_exiting"](True)
         forwarded["set_serial_running"](False)
         self.assertTrue(namespace["is_exiting"])
@@ -270,7 +281,10 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["restart_helper_flag"], "--restart-helper")
         self.assertEqual(forwarded["stop_events"], ("tk", "third", "serial", "wakeup", "tts"))
         self.assertEqual(forwarded["file_log_stop_event"], "file")
-        self.assertEqual(forwarded["worker_threads"][-2:], ("sms-send-1", "sms-send-2"))
+        self.assertEqual(
+            forwarded["worker_threads"]()[-4:],
+            ("serial-command-1", "serial-command-2", "sms-send-1", "sms-send-2"),
+        )
         self.assertEqual(forwarded["app_mutex"], "mutex")
         self.assertEqual(forwarded["file_log_queue"], "queue")
         forwarded["set_exiting"](True)
@@ -278,6 +292,21 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertTrue(namespace["is_exiting"])
         self.assertFalse(namespace["serial_running"])
         self.assertEqual(forwarded["exit_process"](0), ("exit", 0))
+
+    def test_shutdown_worker_snapshot_is_deferred_until_cleanup_requests_it(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        cleanup_and_exit_namespace_runtime(
+            namespace,
+            cleanup_app_runtime=lambda **kwargs: calls.append(kwargs) or "exited",
+        )
+
+        namespace["SERIAL_COMMAND_THREAD_REGISTRY"].threads += ("late-command",)
+        namespace["SMS_SEND_THREAD_REGISTRY"].threads += ("late-sms",)
+        snapshot = calls[0]["worker_threads"]()
+        self.assertIn("late-command", snapshot)
+        self.assertIn("late-sms", snapshot)
 
 
 if __name__ == "__main__":

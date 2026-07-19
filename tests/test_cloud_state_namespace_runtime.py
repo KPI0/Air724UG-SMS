@@ -14,6 +14,7 @@ from sms_core.cloud_state_namespace_runtime import (
     request_cloud_device_imei_namespace_runtime,
     set_cloud_device_imei_namespace_runtime,
 )
+from sms_core.threading_runtime import WorkerThreadRegistry
 
 
 class FakeTime:
@@ -43,6 +44,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
             "CLOUD_REPLAY_CACHE_MAX": 100,
             "serial_lock": "lock",
             "serial_obj": "serial",
+            "SERIAL_COMMAND_THREAD_REGISTRY": WorkerThreadRegistry(),
             "PORT": "COM5",
             "BAUD": 115200,
             "MODE": "Manual",
@@ -136,6 +138,10 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(request_result, "requested")
         self.assertEqual(capture_result, "captured")
         self.assertEqual(calls[0][1]["get_serial"](), "serial")
+        self.assertIs(
+            calls[0][1]["thread_registry"],
+            namespace["SERIAL_COMMAND_THREAD_REGISTRY"],
+        )
         self.assertEqual(calls[1][2]["query_deadline"], 20.0)
         self.assertEqual(namespace["cloud_imei_query_deadline"], 0.0)
         calls[0][1]["set_query_deadline"](16.0)

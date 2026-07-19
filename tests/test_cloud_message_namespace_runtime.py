@@ -12,6 +12,7 @@ from sms_core.cloud_message_namespace_runtime import (
     send_cloud_serial_log_namespace_runtime,
     send_cloud_sms_event_namespace_runtime,
 )
+from sms_core.threading_runtime import WorkerThreadRegistry
 
 
 class FakeLoop:
@@ -36,6 +37,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "BAUD": 115200,
             "serial_lock": "lock",
             "serial_obj": "serial",
+            "SERIAL_COMMAND_THREAD_REGISTRY": WorkerThreadRegistry(),
             "asyncio": asyncio,
             "_cloud_build_serial_log_payload": lambda text, ts, identity, port, baud: {
                 "text": text,
@@ -186,6 +188,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["status_payload"](), {"status": "ok"})
         self.assertEqual(forwarded["show_window"](), "show")
         self.assertEqual(forwarded["hide_window"](), "hide")
+        self.assertEqual(namespace["SERIAL_COMMAND_THREAD_REGISTRY"].snapshot(), ())
 
 
 async def _async_value(value):

@@ -10,6 +10,9 @@ def open_call_filter_setting_dialog(
     on_mode_changed,
     on_list_changed,
     center_window,
+    *,
+    register_external_refresh=None,
+    get_mode=None,
 ):
     win = tk.Toplevel(parent)
     win.withdraw()
@@ -165,8 +168,33 @@ def open_call_filter_setting_dialog(
         ttk.Button(right_frm, text="修改", command=edit_number).pack(fill="x", pady=4)
         refresh()
 
-    build_list_tab(tab_white, whitelist, "whitelist", "白名单")
-    build_list_tab(tab_black, blacklist, "blacklist", "黑名单")
+        def refresh_external():
+            entry_var.set("")
+            refresh()
+
+        return refresh_external
+
+    refresh_whitelist = build_list_tab(tab_white, whitelist, "whitelist", "白名单")
+    refresh_blacklist = build_list_tab(tab_black, blacklist, "blacklist", "黑名单")
+
+    unregister_external_refresh = None
+
+    def refresh_external_config():
+        nonlocal current_mode
+        current_mode = get_mode() if get_mode is not None else current_mode
+        mode_var.set(current_mode)
+        refresh_whitelist()
+        refresh_blacklist()
+
+    if register_external_refresh is not None:
+        unregister_external_refresh = register_external_refresh(refresh_external_config)
+
+    def unregister_on_destroy(event):
+        if event.widget is not win or unregister_external_refresh is None:
+            return
+        unregister_external_refresh()
+
+    win.bind("<Destroy>", unregister_on_destroy, add="+")
 
     tk.Button(frm, text="关闭窗口", width=12, command=win.destroy).pack(anchor="e", pady=(12, 0))
 

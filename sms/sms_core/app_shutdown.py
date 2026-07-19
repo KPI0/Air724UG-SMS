@@ -121,18 +121,43 @@ def cleanup_and_exit_runtime(
     except Exception as exc:
         _safe_log(log_error, f"Stop tray icon during shutdown failed: {exc!r}")
 
-    _call_with_optional_log_error(
-        wait_worker_threads,
-        worker_threads,
-        log_error=log_error,
-    )
+    try:
+        threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
+    except Exception as exc:
+        _safe_log(log_error, f"Snapshot shutdown worker threads failed: {exc!r}")
+        threads_to_wait = ()
+    try:
+        workers_stopped = _call_with_optional_log_error(
+            wait_worker_threads,
+            threads_to_wait,
+            log_error=log_error,
+        )
+    except Exception as exc:
+        _safe_log(log_error, f"Wait for producer worker threads raised: {exc!r}")
+        return "worker_wait_failed"
+    if workers_stopped is False:
+        _safe_log(
+            log_error,
+            "Producer worker threads are still running; file logger stop, final flush, and window destruction were aborted",
+        )
+        return "worker_wait_failed"
     if file_log_stop_event is not None:
         _call_with_optional_log_error(safe_set_events, file_log_stop_event, log_error=log_error)
-    _call_with_optional_log_error(
-        wait_file_log_worker,
-        file_log_thread,
-        log_error=log_error,
-    )
+    try:
+        file_log_stopped = _call_with_optional_log_error(
+            wait_file_log_worker,
+            file_log_thread,
+            log_error=log_error,
+        )
+    except Exception as exc:
+        _safe_log(log_error, f"Wait for file log worker raised: {exc!r}")
+        return "file_log_wait_failed"
+    if file_log_stopped is False:
+        _safe_log(
+            log_error,
+            "File log worker is still running; final flush and window destruction were aborted",
+        )
+        return "file_log_wait_failed"
     _call_with_optional_log_error(flush_log_queue, file_log_queue, log_error=log_error)
 
     try:

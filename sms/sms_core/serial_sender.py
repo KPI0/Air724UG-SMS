@@ -182,6 +182,7 @@ class SmsPduSendCoordinator:
 
 DEFAULT_SMS_PDU_SEND_COORDINATOR = SmsPduSendCoordinator()
 DEFAULT_SMS_SEND_THREAD_REGISTRY = WorkerThreadRegistry()
+DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY = WorkerThreadRegistry()
 
 
 def _is_serial_open(serial_obj):
@@ -720,8 +721,52 @@ def _run_serial_command_with_result(serial_lock, get_serial, command, append_crl
         on_result(result)
 
 
-def send_command_async(serial_lock, get_serial, command, append_crlf=True, push_debug=None, log_error=None):
-    return start_daemon_thread(
+def start_registered_serial_worker(
+    name,
+    target,
+    *,
+    log_error=None,
+    thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    thread_factory=threading.Thread,
+):
+    thread_holder = {}
+
+    def register_thread(thread):
+        thread_holder["thread"] = thread
+        if thread_registry is not None:
+            thread_registry.register(thread)
+
+    def run_registered():
+        try:
+            return target()
+        finally:
+            if thread_registry is not None:
+                thread_registry.unregister(thread_holder.get("thread"))
+
+    try:
+        return start_daemon_thread(
+            name,
+            run_registered,
+            log_error=log_error,
+            before_start=register_thread,
+            thread_factory=thread_factory,
+        )
+    except Exception:
+        if thread_registry is not None:
+            thread_registry.unregister(thread_holder.get("thread"))
+        raise
+
+
+def send_command_async(
+    serial_lock,
+    get_serial,
+    command,
+    append_crlf=True,
+    push_debug=None,
+    log_error=None,
+    thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+):
+    return start_registered_serial_worker(
         "serial_send_command",
         lambda: _run_with_serial(
             serial_lock,
@@ -734,6 +779,7 @@ def send_command_async(serial_lock, get_serial, command, append_crlf=True, push_
             ),
         ),
         log_error=log_error,
+        thread_registry=thread_registry,
     )
 
 
@@ -745,8 +791,9 @@ def send_command_with_result_async(
     push_debug=None,
     on_result=None,
     log_error=None,
+    thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
 ):
-    return start_daemon_thread(
+    return start_registered_serial_worker(
         "serial_send_command_with_result",
         lambda: _run_serial_command_with_result(
             serial_lock,
@@ -757,6 +804,7 @@ def send_command_with_result_async(
             on_result,
         ),
         log_error=log_error,
+        thread_registry=thread_registry,
     )
 
 
@@ -768,8 +816,9 @@ def send_command_sequence_async(
     delay_sec=0.3,
     log_error=None,
     sleep_func=time.sleep,
+    thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
 ):
-    return start_daemon_thread(
+    return start_registered_serial_worker(
         "serial_send_sequence",
         lambda: write_serial_command_sequence_locked(
             serial_lock,
@@ -780,6 +829,7 @@ def send_command_sequence_async(
             sleep_func=sleep_func,
         ),
         log_error=log_error,
+        thread_registry=thread_registry,
     )
 
 

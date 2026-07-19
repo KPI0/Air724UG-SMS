@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 from sms_core.status_text import format_connecting_status
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
 
@@ -35,6 +37,7 @@ def manual_rebind_runtime(
     list_ports,
     choose_candidate,
     config,
+    config_lock=None,
     save_config,
     set_port,
     system_ui,
@@ -60,20 +63,22 @@ def manual_rebind_runtime(
 
     old_port = current_port
     new_port = candidate.device
-    config_snapshot = snapshot_config_section(config, "serial")
+    lock_context = config_lock if config_lock is not None else nullcontext()
 
-    try:
-        if not config.has_section("serial"):
-            config["serial"] = {}
-        config.set("serial", "mode", "Manual")
-        config.set("serial", "port", new_port)
-        config.set("serial", "baud", str(baud))
-        if save_config() is False:
-            raise RuntimeError("配置保存失败")
-    except Exception as exc:
-        restore_config_section(config, "serial", config_snapshot)
-        system_ui(f"⚠️ 串口重绑定已取消，配置保存失败：{exc}", "normal")
-        return False
+    with lock_context:
+        config_snapshot = snapshot_config_section(config, "serial")
+        try:
+            if not config.has_section("serial"):
+                config["serial"] = {}
+            config.set("serial", "mode", "Manual")
+            config.set("serial", "port", new_port)
+            config.set("serial", "baud", str(baud))
+            if save_config() is False:
+                raise RuntimeError("配置保存失败")
+        except Exception as exc:
+            restore_config_section(config, "serial", config_snapshot)
+            system_ui(f"⚠️ 串口重绑定已取消，配置保存失败：{exc}", "normal")
+            return False
 
     set_port(new_port)
     system_ui(hint_formatter(old_port, new_port, candidate.description, reason), "normal")

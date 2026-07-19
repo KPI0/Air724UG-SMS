@@ -69,6 +69,7 @@ def request_cloud_device_imei_namespace_runtime(
         monotonic=namespace.get("time", time).monotonic,
         push_serial_debug=namespace["_push_serial_debug"],
         thread_factory=namespace.get("threading", threading).Thread,
+        thread_registry=namespace["SERIAL_COMMAND_THREAD_REGISTRY"],
     )
 
 

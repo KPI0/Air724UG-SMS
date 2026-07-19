@@ -105,6 +105,7 @@ from sms_core.config_runtime import (
 )
 from sms_app.serial_namespace_bindings import install_serial_namespace_bindings
 from sms_core.serial_sender import (
+    DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
     DEFAULT_SMS_PDU_SEND_COORDINATOR,
     DEFAULT_SMS_SEND_THREAD_REGISTRY,
     send_command_with_result_async,
@@ -133,6 +134,8 @@ from sms_ui.settings_dialogs import (
     open_sms_font_dialog as _ui_open_sms_font_dialog,
 )
 from sms_ui.settings_namespace_bindings import install_settings_namespace_bindings
+from sms_ui.config_sync_namespace_bindings import install_config_sync_namespace_bindings
+from sms_ui.config_sync_runtime import ConfigFileWatchState
 from sms_ui.third_push_namespace_bindings import install_third_push_namespace_bindings
 from sms_ui.maintenance_runtime import (
     AutoLogCleanupState,
@@ -181,7 +184,7 @@ def _initialize_paths_and_constants():
     SERIAL_DEBUG_WINDOW_TITLE = "串口调试"
     APP_INSTANCE_NUMBER = 1
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.7.9"
+    APP_VERSION = "3.8.0"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
@@ -320,6 +323,7 @@ def _initialize_notice_state():
 def _initialize_ui_state():
     global PENDING_UI_LOGS, LOG_PREFIX, LOCAL_NUMBER
     global AUTO_CLEANUP_INTERVAL_HOURS, AUTO_LOG_CLEANUP_STATE, SERIAL_DEBUG_ENABLED
+    global CONFIG_FILE_WATCH_STATE
     global serial_debug_queue, serial_debug_win, serial_debug_text, serial_debug_drop_count
     global cloud_control_win, third_push_win
 
@@ -328,6 +332,7 @@ def _initialize_ui_state():
     LOCAL_NUMBER = ""
     AUTO_CLEANUP_INTERVAL_HOURS = 24
     AUTO_LOG_CLEANUP_STATE = AutoLogCleanupState()
+    CONFIG_FILE_WATCH_STATE = ConfigFileWatchState()
     SERIAL_DEBUG_ENABLED = False
     serial_debug_queue = queue.Queue(maxsize=5000)
     serial_debug_win = None
@@ -368,6 +373,7 @@ def _initialize_worker_state():
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
+    global SERIAL_COMMAND_THREAD_REGISTRY
 
     TTS_LOCK = threading.Lock()
     TTS_REQ_Q = queue.Queue(maxsize=50)
@@ -387,6 +393,7 @@ def _initialize_worker_state():
     instance_number_mutex = None
     SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
+    SERIAL_COMMAND_THREAD_REGISTRY = DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY
 
 
 def _initialize_runtime_state():
@@ -401,6 +408,7 @@ def _install_runtime_bindings():
     install_ui_log_namespace_bindings(globals())
     install_audio_namespace_bindings(globals())
     install_settings_namespace_bindings(globals())
+    install_config_sync_namespace_bindings(globals())
     install_app_lifecycle_namespace_bindings(globals())
     install_app_ui_namespace_bindings(globals())
     install_serial_debug_namespace_bindings(globals())
@@ -545,6 +553,7 @@ def _start_services():
     global serial_thread
 
     schedule_next_midnight_clear()
+    start_config_file_watch()
     if MODE == "Auto":
         set_status("🔍 自动模式：扫描 LUAT Modem 中…", "orange")
     else:

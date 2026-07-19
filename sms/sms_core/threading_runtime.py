@@ -69,17 +69,25 @@ def start_daemon_thread(
 
 def wait_for_worker_threads(
     threads,
-    timeout=20.0,
+    timeout=None,
     *,
     log_error=None,
     monotonic=time.monotonic,
     current_thread=threading.current_thread,
 ):
-    """Wait for producer threads to stop before the file logger is stopped."""
-    try:
-        deadline = monotonic() + max(0.0, float(timeout))
-    except Exception:
-        deadline = monotonic() + 20.0
+    """Wait for producer threads before the file logger is stopped.
+
+    Production shutdown uses the default ``None`` timeout so registered
+    serial and other producer threads cannot cross the final-log boundary.
+    A finite timeout remains available for diagnostics and tests; callers must
+    treat a ``False`` result as a hard stop and must not continue shutdown.
+    """
+    deadline = None
+    if timeout is not None:
+        try:
+            deadline = monotonic() + max(0.0, float(timeout))
+        except Exception:
+            deadline = monotonic() + 20.0
 
     current = current_thread()
     all_stopped = True
@@ -92,8 +100,11 @@ def wait_for_worker_threads(
             continue
         seen.add(marker)
         try:
-            remaining = max(0.0, deadline - monotonic())
-            thread.join(timeout=remaining)
+            if deadline is None:
+                thread.join()
+            else:
+                remaining = max(0.0, deadline - monotonic())
+                thread.join(timeout=remaining)
             if thread.is_alive():
                 all_stopped = False
                 if log_error is not None:

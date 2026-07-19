@@ -201,9 +201,46 @@ def restart_software_runtime(
         pass
     safe_close_serial()
 
-    wait_worker_threads(worker_threads, log_error=log_error)
+    try:
+        threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
+    except Exception as exc:
+        log_error(f"Snapshot restart worker threads failed: {exc!r}")
+        threads_to_wait = ()
+    try:
+        workers_stopped = wait_worker_threads(threads_to_wait, log_error=log_error)
+    except Exception as exc:
+        try:
+            log_error(f"Wait for producer worker threads during restart raised: {exc!r}")
+        except Exception:
+            pass
+        return RestartRuntimeResult("worker_wait_failed", exc)
+    if workers_stopped is False:
+        try:
+            log_error(
+                "Producer worker threads are still running; file logger stop, final flush, mutex release, and restart exit were aborted"
+            )
+        except Exception:
+            pass
+        return RestartRuntimeResult("worker_wait_failed")
     if file_log_stop_event is not None:
         safe_set_events(file_log_stop_event)
+
+    try:
+        file_log_stopped = wait_file_log_worker(file_log_thread, log_error=log_error)
+    except Exception as exc:
+        try:
+            log_error(f"Wait for file log worker during restart raised: {exc!r}")
+        except Exception:
+            pass
+        return RestartRuntimeResult("file_log_wait_failed", exc)
+    if file_log_stopped is False:
+        try:
+            log_error(
+                "File log worker is still running; final flush, mutex release, and restart exit were aborted"
+            )
+        except Exception:
+            pass
+        return RestartRuntimeResult("file_log_wait_failed")
 
     try:
         if app_mutex:
@@ -211,7 +248,6 @@ def restart_software_runtime(
     except Exception:
         pass
 
-    wait_file_log_worker(file_log_thread, log_error=log_error)
     flush_log_queue(file_log_queue)
     exit_process(0)
     return RestartRuntimeResult("exited")

@@ -61,6 +61,26 @@ class ThreadingRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(calls, [("join", 2.0)])
 
+    def test_wait_for_worker_threads_blocks_without_production_timeout(self):
+        calls = []
+
+        class Worker:
+            name = "worker"
+
+            def join(self, timeout=None):
+                calls.append(("join", timeout))
+
+            def is_alive(self):
+                return False
+
+        self.assertTrue(
+            wait_for_worker_threads(
+                (Worker(),),
+                current_thread=lambda: object(),
+            )
+        )
+        self.assertEqual(calls, [("join", None)])
+
     def test_start_daemon_thread_logs_target_exception(self):
         logs = []
 

@@ -127,12 +127,20 @@ def start_file_log_worker(
     )
 
 
-def wait_for_file_log_worker(thread, timeout=5.0, *, log_error=None):
-    """Wait for an in-flight file-log batch before the process exits."""
+def wait_for_file_log_worker(thread, timeout=None, *, log_error=None):
+    """Wait for the file logger before final queue flush and process exit.
+
+    Production shutdown uses the default ``None`` timeout so an in-flight
+    batch can never be abandoned.  A finite timeout remains available for
+    diagnostics and tests, but callers must treat ``False`` as a hard stop.
+    """
     if thread is None:
         return True
     try:
-        thread.join(timeout=max(0.0, float(timeout)))
+        if timeout is None:
+            thread.join()
+        else:
+            thread.join(timeout=max(0.0, float(timeout)))
         if thread.is_alive():
             if log_error is not None:
                 try:

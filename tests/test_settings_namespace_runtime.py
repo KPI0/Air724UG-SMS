@@ -45,6 +45,11 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
             "serial_wakeup_event": FakeWakeEvent(),
             "create_desktop_shortcut": lambda name: ("shortcut", name),
             "log_file_only": lambda message: ("log", message),
+            "register_config_sync_refresher": lambda group, callback: (
+                "unregister",
+                group,
+                callback,
+            ),
         }
 
     def test_open_sms_font_dialog_namespace_runtime_forwards_and_sets_font(self):
@@ -124,14 +129,21 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
 
         result = open_keywords_setting_namespace_runtime(
             namespace,
-            open_setting_runtime=lambda *args: calls.append(args) or "keywords",
+            open_setting_runtime=lambda *args, **kwargs: calls.append((args, kwargs)) or "keywords",
         )
 
         self.assertEqual(result, "keywords")
-        self.assertEqual(calls[0][:6], ("root", ["code"], False, "config", namespace["safe_save_config"], namespace["system_ui"]))
-        calls[0][6](True)
-        self.assertEqual(calls[0][8]("keyword log"), ("log", "keyword log"))
+        args, kwargs = calls[0]
+        self.assertEqual(args[:6], ("root", ["code"], False, "config", namespace["safe_save_config"], namespace["system_ui"]))
+        args[6](True)
+        self.assertEqual(args[8]("keyword log"), ("log", "keyword log"))
         self.assertTrue(namespace["LOG_UNMATCHED_SMS"])
+        refresh = lambda: None
+        self.assertEqual(
+            kwargs["register_external_refresh"](refresh),
+            ("unregister", "keywords", refresh),
+        )
+        self.assertTrue(kwargs["get_log_unmatched"]())
 
     def test_open_call_filter_setting_namespace_runtime_forwards_and_sets_mode(self):
         namespace = self.base_namespace()
@@ -139,11 +151,12 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
 
         result = open_call_filter_setting_namespace_runtime(
             namespace,
-            open_setting_runtime=lambda *args: calls.append(args) or "filter",
+            open_setting_runtime=lambda *args, **kwargs: calls.append((args, kwargs)) or "filter",
         )
 
         self.assertEqual(result, "filter")
-        self.assertEqual(calls[0][:6], (
+        args, kwargs = calls[0]
+        self.assertEqual(args[:6], (
             "root",
             "Disabled",
             ["10086"],
@@ -151,9 +164,15 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
             "config",
             namespace["safe_save_config"],
         ))
-        calls[0][7]("Whitelist")
-        self.assertEqual(calls[0][9]("filter log"), ("log", "filter log"))
+        args[7]("Whitelist")
+        self.assertEqual(args[9]("filter log"), ("log", "filter log"))
         self.assertEqual(namespace["CALL_FILTER_MODE"], "Whitelist")
+        refresh = lambda: None
+        self.assertEqual(
+            kwargs["register_external_refresh"](refresh),
+            ("unregister", "call_filter", refresh),
+        )
+        self.assertEqual(kwargs["get_mode"](), "Whitelist")
 
 
 if __name__ == "__main__":

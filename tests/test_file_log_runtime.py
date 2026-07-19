@@ -123,6 +123,19 @@ class FileLogRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0], ("join", 2.0))
         self.assertIn("timeout", calls[1][1])
 
+    def test_wait_for_file_log_worker_blocks_without_production_timeout(self):
+        calls = []
+
+        class Thread:
+            def join(self, timeout=None):
+                calls.append(("join", timeout))
+
+            def is_alive(self):
+                return False
+
+        self.assertTrue(wait_for_file_log_worker(Thread()))
+        self.assertEqual(calls, [("join", None)])
+
 
 if __name__ == "__main__":
     unittest.main()

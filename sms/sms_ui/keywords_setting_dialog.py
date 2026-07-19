@@ -9,6 +9,9 @@ def open_keywords_setting_dialog(
     on_keywords_changed,
     on_log_unmatched_changed,
     center_window,
+    *,
+    register_external_refresh=None,
+    get_log_unmatched=None,
 ):
     win = tk.Toplevel(parent)
     win.withdraw()
@@ -149,6 +152,28 @@ def open_keywords_setting_dialog(
         command=toggle_log_unmatched,
     )
     chk_unmatched.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+    unregister_external_refresh = None
+
+    def refresh_external_config():
+        nonlocal last_log_unmatched
+        refresh_list()
+        entry_var.set("")
+        next_log_unmatched = bool(
+            get_log_unmatched() if get_log_unmatched is not None else last_log_unmatched
+        )
+        last_log_unmatched = next_log_unmatched
+        log_unmatched_var.set(next_log_unmatched)
+
+    if register_external_refresh is not None:
+        unregister_external_refresh = register_external_refresh(refresh_external_config)
+
+    def unregister_on_destroy(event):
+        if event.widget is not win or unregister_external_refresh is None:
+            return
+        unregister_external_refresh()
+
+    win.bind("<Destroy>", unregister_on_destroy, add="+")
 
     bottom = tk.Frame(frame)
     bottom.grid(row=7, column=0, columnspan=2, sticky="e", pady=(0, 10))

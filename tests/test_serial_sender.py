@@ -1,10 +1,13 @@
 import threading
 import unittest
+from unittest.mock import patch
 
 from sms_core.serial_sender import (
     SerialCommandResult,
     SmsPduSendCoordinator,
     SmsPduSendResponse,
+    send_command_async,
+    send_command_sequence_async,
     send_command_with_result_async,
     send_text_sms_pdu_async,
     write_serial_command_sequence_locked,
@@ -662,6 +665,91 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(registry.snapshot(), ())
         self.assertTrue(any("软件正在退出" in item[0] for item in ui_lines))
+
+    def test_all_async_serial_command_types_register_until_write_finishes(self):
+        class BlockingSerial(FakeSerial):
+            def __init__(self):
+                super().__init__()
+                self.write_entered = threading.Event()
+                self.release_write = threading.Event()
+
+            def write(self, payload):
+                self.write_entered.set()
+                self.release_write.wait(2)
+                super().write(payload)
+
+        starters = (
+            lambda serial_obj, registry: send_command_async(
+                threading.Lock(),
+                lambda: serial_obj,
+                "AT",
+                thread_registry=registry,
+            ),
+            lambda serial_obj, registry: send_command_with_result_async(
+                threading.Lock(),
+                lambda: serial_obj,
+                "ATI",
+                thread_registry=registry,
+            ),
+            lambda serial_obj, registry: send_command_sequence_async(
+                threading.Lock(),
+                lambda: serial_obj,
+                ["AT", "ATI"],
+                sleep_func=lambda _seconds: None,
+                thread_registry=registry,
+            ),
+        )
+
+        for start in starters:
+            with self.subTest(start=start):
+                serial_obj = BlockingSerial()
+                registry = WorkerThreadRegistry()
+                thread = start(serial_obj, registry)
+
+                self.assertTrue(serial_obj.write_entered.wait(1))
+                self.assertIn(thread, registry.snapshot())
+                serial_obj.release_write.set()
+                thread.join(2)
+
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(registry.snapshot(), ())
+
+    def test_serial_command_thread_unregisters_when_result_callback_raises(self):
+        registry = WorkerThreadRegistry()
+        logs = []
+
+        thread = send_command_with_result_async(
+            threading.Lock(),
+            lambda: FakeSerial(),
+            "ATA",
+            on_result=lambda _result: (_ for _ in ()).throw(RuntimeError("callback failed")),
+            log_error=logs.append,
+            thread_registry=registry,
+        )
+        thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(registry.snapshot(), ())
+        self.assertTrue(any("callback failed" in message for message in logs))
+
+    def test_serial_command_thread_unregisters_when_thread_start_fails(self):
+        registry = WorkerThreadRegistry()
+        fake_thread = object()
+
+        def fail_start(_name, _target, *, before_start, **_kwargs):
+            before_start(fake_thread)
+            raise RuntimeError("start failed")
+
+        with patch("sms_core.serial_sender.start_daemon_thread", side_effect=fail_start):
+            with self.assertRaisesRegex(RuntimeError, "start failed"):
+                send_command_async(
+                    threading.Lock(),
+                    lambda: FakeSerial(),
+                    "AT",
+                    thread_registry=registry,
+                )
+
+        self.assertEqual(registry.snapshot(), ())
 
 
 if __name__ == "__main__":

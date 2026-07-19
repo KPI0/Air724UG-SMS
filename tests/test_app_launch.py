@@ -126,6 +126,82 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIn(("flush", "queue"), calls)
         self.assertEqual(calls[-1], ("exit", 0))
 
+    def test_restart_resolves_worker_snapshot_after_stopping_producers(self):
+        calls = []
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                worker_threads=lambda: calls.append(("snapshot",)) or ("late-worker",),
+            )
+        )
+
+        self.assertEqual(result.status, "exited")
+        self.assertLess(calls.index(("close_serial",)), calls.index(("snapshot",)))
+        waits = [item for item in calls if item[0] == "wait_workers"]
+        self.assertEqual(waits[0][1], ("late-worker",))
+
+    def test_restart_does_not_stop_file_logger_or_exit_when_producer_is_running(self):
+        calls = []
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                wait_worker_threads=lambda threads, **kwargs: False,
+            )
+        )
+
+        self.assertEqual(result.status, "worker_wait_failed")
+        self.assertNotIn(("events", ("file_stop",)), calls)
+        self.assertFalse(any(item[0] == "wait_file" for item in calls))
+        self.assertFalse(any(item[0] == "flush" for item in calls))
+        self.assertFalse(any(item[0] == "release" for item in calls))
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_does_not_continue_when_producer_wait_raises(self):
+        calls = []
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                wait_worker_threads=lambda threads, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("join failed")
+                ),
+            )
+        )
+
+        self.assertEqual(result.status, "worker_wait_failed")
+        self.assertIsInstance(result.error, RuntimeError)
+        self.assertFalse(any(item[0] in ("wait_file", "flush", "release", "exit") for item in calls))
+
+    def test_restart_does_not_flush_release_mutex_or_exit_when_file_logger_is_running(self):
+        calls = []
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                wait_file_log_worker=lambda thread, **kwargs: False,
+            )
+        )
+
+        self.assertEqual(result.status, "file_log_wait_failed")
+        self.assertFalse(any(item[0] == "flush" for item in calls))
+        self.assertFalse(any(item[0] == "release" for item in calls))
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_does_not_exit_when_file_logger_wait_raises(self):
+        calls = []
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                wait_file_log_worker=lambda thread, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("join failed")
+                ),
+            )
+        )
+
+        self.assertEqual(result.status, "file_log_wait_failed")
+        self.assertIsInstance(result.error, RuntimeError)
+        self.assertFalse(any(item[0] == "flush" for item in calls))
+        self.assertFalse(any(item[0] == "release" for item in calls))
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+
 
 if __name__ == "__main__":
     unittest.main()

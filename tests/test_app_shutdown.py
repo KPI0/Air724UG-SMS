@@ -151,6 +151,142 @@ class AppShutdownTests(unittest.TestCase):
             ("destroy",),
         ])
 
+    def test_cleanup_resolves_worker_snapshot_after_stopping_producers(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            worker_threads=lambda: calls.append(("snapshot",)) or ("late-worker",),
+            wait_worker_threads=lambda threads: calls.append(("wait", threads)),
+            wait_file_log_worker=lambda thread: None,
+            flush_log_queue=lambda log_queue: None,
+        )
+
+        self.assertEqual(result, "exited")
+        self.assertLess(calls.index(("close",)), calls.index(("snapshot",)))
+        self.assertEqual(calls[calls.index(("snapshot",)) + 1], ("wait", ("late-worker",)))
+
+    def test_cleanup_does_not_stop_file_logger_or_exit_when_producer_is_running(self):
+        calls = []
+        file_event = FakeEvent()
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(), worker_stop_events=(), tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: None,
+            safe_close_serial=lambda: None,
+            stop_tray_icon=lambda **kwargs: None,
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            file_log_thread="file_thread",
+            file_log_stop_event=file_event,
+            worker_threads=("serial-command",),
+            wait_worker_threads=lambda threads: False,
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)),
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+        )
+
+        self.assertEqual(result, "worker_wait_failed")
+        self.assertEqual(file_event.set_count, 0)
+        self.assertNotIn(("wait_file", "file_thread"), calls)
+        self.assertNotIn(("flush", "queue"), calls)
+        self.assertNotIn(("destroy",), calls)
+
+    def test_cleanup_does_not_continue_when_producer_wait_raises(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(), worker_stop_events=(), tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: None,
+            safe_close_serial=lambda: None,
+            stop_tray_icon=lambda **kwargs: None,
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            worker_threads=("serial-command",),
+            wait_worker_threads=lambda threads: (_ for _ in ()).throw(RuntimeError("join failed")),
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)),
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+            log_error=lambda message: calls.append(("log", message)),
+        )
+
+        self.assertEqual(result, "worker_wait_failed")
+        self.assertFalse(any(item[0] in ("wait_file", "flush", "destroy") for item in calls))
+        self.assertTrue(any("join failed" in item[1] for item in calls if item[0] == "log"))
+
+    def test_cleanup_does_not_flush_or_destroy_when_file_logger_is_still_running(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            file_log_thread="file_thread",
+            file_log_stop_event=FakeEvent(),
+            worker_threads=(),
+            wait_worker_threads=lambda threads: True,
+            wait_file_log_worker=lambda thread: False,
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+        )
+
+        self.assertEqual(result, "file_log_wait_failed")
+        self.assertNotIn(("flush", "queue"), calls)
+        self.assertNotIn(("destroy",), calls)
+
+    def test_cleanup_does_not_flush_or_destroy_when_file_logger_wait_raises(self):
+        calls = []
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(), worker_stop_events=(), tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: None,
+            safe_close_serial=lambda: None,
+            stop_tray_icon=lambda **kwargs: None,
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            file_log_thread="file_thread",
+            file_log_stop_event=FakeEvent(),
+            worker_threads=(),
+            wait_worker_threads=lambda threads: True,
+            wait_file_log_worker=lambda thread: (_ for _ in ()).throw(RuntimeError("join failed")),
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+            log_error=lambda message: calls.append(("log", message)),
+        )
+
+        self.assertEqual(result, "file_log_wait_failed")
+        self.assertNotIn(("flush", "queue"), calls)
+        self.assertNotIn(("destroy",), calls)
+        self.assertTrue(any("join failed" in item[1] for item in calls if item[0] == "log"))
+
     def test_cleanup_and_exit_runtime_logs_and_continues_after_cleanup_errors(self):
         logs = []
         calls = []

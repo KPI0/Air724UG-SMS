@@ -382,14 +382,14 @@ def safe_save_config_runtime(
     tmp_file = f"{config_file}.{getpid()}.{get_thread_id()}.tmp"
     process_lock = None
     try:
-        process_lock, lock_result = acquire_process_lock(
-            config_mutex_name(config_file),
-            timeout_ms=lock_timeout_ms,
-        )
-        if not process_lock:
-            raise RuntimeError(f"配置文件跨进程锁获取失败，结果码：{lock_result}")
-
         with config_lock:
+            process_lock, lock_result = acquire_process_lock(
+                config_mutex_name(config_file),
+                timeout_ms=lock_timeout_ms,
+            )
+            if not process_lock:
+                raise RuntimeError(f"配置文件跨进程锁获取失败，结果码：{lock_result}")
+
             current_snapshot = snapshot_config_runtime(config)
             baseline_snapshot = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
             if baseline_snapshot is not None and path_exists(config_file):
