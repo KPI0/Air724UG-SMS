@@ -125,7 +125,7 @@ def cleanup_and_exit_runtime(
         threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
     except Exception as exc:
         _safe_log(log_error, f"Snapshot shutdown worker threads failed: {exc!r}")
-        threads_to_wait = ()
+        return "worker_wait_failed"
     try:
         workers_stopped = _call_with_optional_log_error(
             wait_worker_threads,

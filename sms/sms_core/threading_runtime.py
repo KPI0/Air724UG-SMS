@@ -30,6 +30,31 @@ class WorkerThreadRegistry:
             return tuple(self._threads)
 
 
+class SingleFlightTaskState:
+    """Thread-safe state for tasks that allow only one active invocation."""
+
+    def __init__(self, lock_factory=threading.Lock):
+        self._lock = lock_factory()
+        self._active = False
+
+    def try_acquire(self):
+        with self._lock:
+            if self._active:
+                return False
+            self._active = True
+            return True
+
+    def release(self):
+        with self._lock:
+            was_active = self._active
+            self._active = False
+            return was_active
+
+    def is_active(self):
+        with self._lock:
+            return self._active
+
+
 def format_thread_exception(name, exc):
     title = f"后台线程异常退出 [{name}]: {exc or exc.__class__.__name__}"
     return title + "\n" + traceback.format_exc()
@@ -65,6 +90,43 @@ def start_daemon_thread(
         before_start(thread)
     thread.start()
     return thread
+
+
+def start_registered_daemon_thread(
+    name,
+    target,
+    *,
+    thread_registry,
+    log_error=None,
+    thread_factory=threading.Thread,
+):
+    """Start a daemon worker whose full lifetime is visible to shutdown."""
+    thread_holder = {}
+
+    def register_thread(thread):
+        thread_holder["thread"] = thread
+        if thread_registry is not None:
+            thread_registry.register(thread)
+
+    def run_registered():
+        try:
+            return target()
+        finally:
+            if thread_registry is not None:
+                thread_registry.unregister(thread_holder.get("thread"))
+
+    try:
+        return start_daemon_thread(
+            name,
+            run_registered,
+            log_error=log_error,
+            before_start=register_thread,
+            thread_factory=thread_factory,
+        )
+    except Exception:
+        if thread_registry is not None:
+            thread_registry.unregister(thread_holder.get("thread"))
+        raise
 
 
 def wait_for_worker_threads(

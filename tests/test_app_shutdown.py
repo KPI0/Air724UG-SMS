@@ -177,6 +177,46 @@ class AppShutdownTests(unittest.TestCase):
         self.assertLess(calls.index(("close",)), calls.index(("snapshot",)))
         self.assertEqual(calls[calls.index(("snapshot",)) + 1], ("wait", ("late-worker",)))
 
+    def test_cleanup_aborts_when_worker_snapshot_raises(self):
+        calls = []
+        file_event = FakeEvent()
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            file_log_thread="file_thread",
+            file_log_stop_event=file_event,
+            worker_threads=lambda: (_ for _ in ()).throw(
+                RuntimeError("snapshot failed")
+            ),
+            wait_worker_threads=lambda threads: calls.append(("wait_workers", threads)),
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)),
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+            log_error=lambda message: calls.append(("log", message)),
+        )
+
+        self.assertEqual(result, "worker_wait_failed")
+        self.assertTrue(
+            any("snapshot failed" in item[1] for item in calls if item[0] == "log")
+        )
+        self.assertEqual(file_event.set_count, 0)
+        self.assertFalse(
+            any(
+                item[0] in ("wait_workers", "wait_file", "flush", "destroy")
+                for item in calls
+            )
+        )
+
     def test_cleanup_does_not_stop_file_logger_or_exit_when_producer_is_running(self):
         calls = []
         file_event = FakeEvent()

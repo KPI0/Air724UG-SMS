@@ -3,6 +3,7 @@ import queue
 
 from sms_ui.thread_runtime import (
     run_on_ui_thread,
+    post_ui_if_running_runtime,
     schedule_delayed_ui_runtime,
     tk_alive_runtime,
     ui_messagebox_runtime,
@@ -137,6 +138,36 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(logs), 1)
         self.assertIn("queue closed", logs[0])
+
+    def test_post_ui_if_running_checks_shutdown_before_queue_and_execution(self):
+        state = {"stopping": False}
+        posted = []
+        calls = []
+        skipped = []
+
+        self.assertTrue(
+            post_ui_if_running_runtime(
+                posted.append,
+                lambda: calls.append("ran"),
+                lambda: state["stopping"],
+                on_skipped=lambda: skipped.append("late"),
+            )
+        )
+        state["stopping"] = True
+        posted[0]()
+        self.assertEqual(calls, [])
+        self.assertEqual(skipped, ["late"])
+
+        self.assertFalse(
+            post_ui_if_running_runtime(
+                posted.append,
+                lambda: calls.append("late"),
+                lambda: True,
+                on_skipped=lambda: skipped.append("immediate"),
+            )
+        )
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(skipped, ["late", "immediate"])
 
     def test_ui_pump_runtime_runs_tasks_and_reschedules(self):
         calls = []

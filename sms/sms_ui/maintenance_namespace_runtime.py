@@ -57,6 +57,9 @@ def open_update_proxy_dialog_namespace_runtime(
         ui_post=namespace["ui_post"],
         center_window=namespace["center_window"],
         log_error=namespace.get("log_file_only"),
+        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set()
+        or bool(namespace.get("is_exiting")),
+        thread_registry=namespace.get("UPDATE_THREAD_REGISTRY"),
     )
 
 
@@ -118,4 +121,8 @@ def check_update_and_prompt_namespace_runtime(
         ask_open_download=namespace["messagebox"].askyesno,
         open_url=webbrowser_module.open,
         log_error=namespace.get("log_file_only"),
+        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set()
+        or bool(namespace.get("is_exiting")),
+        thread_registry=namespace.get("UPDATE_THREAD_REGISTRY"),
+        task_state=namespace.get("UPDATE_CHECK_TASK_STATE"),
     )

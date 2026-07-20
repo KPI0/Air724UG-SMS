@@ -8,8 +8,10 @@ SPEC = importlib.util.spec_from_file_location("target_threading_runtime", MODULE
 threading_runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(threading_runtime)
 start_daemon_thread = threading_runtime.start_daemon_thread
+start_registered_daemon_thread = threading_runtime.start_registered_daemon_thread
 wait_for_worker_threads = threading_runtime.wait_for_worker_threads
 WorkerThreadRegistry = threading_runtime.WorkerThreadRegistry
+SingleFlightTaskState = threading_runtime.SingleFlightTaskState
 
 
 class FakeThread:
@@ -36,6 +38,17 @@ class ThreadingRuntimeTests(unittest.TestCase):
         self.assertTrue(registry.unregister(first))
         self.assertFalse(registry.unregister(first))
         self.assertEqual(registry.snapshot(), (second,))
+
+    def test_single_flight_task_state_allows_only_one_active_task(self):
+        state = SingleFlightTaskState()
+
+        self.assertTrue(state.try_acquire())
+        self.assertTrue(state.is_active())
+        self.assertFalse(state.try_acquire())
+        self.assertTrue(state.release())
+        self.assertFalse(state.is_active())
+        self.assertFalse(state.release())
+        self.assertTrue(state.try_acquire())
 
     def test_wait_for_worker_threads_joins_each_unique_thread(self):
         calls = []
@@ -118,6 +131,37 @@ class ThreadingRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(calls, [("before", thread), "start", "target"])
+
+    def test_registered_daemon_thread_is_visible_until_target_finishes(self):
+        registry = WorkerThreadRegistry()
+        seen = []
+
+        thread = start_registered_daemon_thread(
+            "registered",
+            lambda: seen.extend(registry.snapshot()),
+            thread_registry=registry,
+            thread_factory=FakeThread,
+        )
+
+        self.assertEqual(seen, [thread])
+        self.assertEqual(registry.snapshot(), ())
+
+    def test_registered_daemon_thread_unregisters_when_start_fails(self):
+        registry = WorkerThreadRegistry()
+
+        class BrokenThread(FakeThread):
+            def start(self):
+                raise RuntimeError("start failed")
+
+        with self.assertRaisesRegex(RuntimeError, "start failed"):
+            start_registered_daemon_thread(
+                "broken",
+                lambda: None,
+                thread_registry=registry,
+                thread_factory=BrokenThread,
+            )
+
+        self.assertEqual(registry.snapshot(), ())
 
 
 if __name__ == "__main__":

@@ -2,12 +2,13 @@ import threading
 from dataclasses import dataclass
 
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import start_registered_daemon_thread
 from sms_core.updates import (
     format_proxy_test_result,
     normalize_proxy_base,
     test_update_proxy_connectivity,
 )
+from sms_ui.thread_runtime import post_ui_if_running_runtime
 from sms_ui.update_proxy_dialog import open_update_proxy_dialog
 from sms_ui.utility_dialogs import open_log_cleanup_dialog
 
@@ -302,17 +303,32 @@ def test_update_proxy_async(
     formatter=format_proxy_test_result,
     thread_factory=threading.Thread,
     log_error=None,
+    is_stopping=lambda: False,
+    thread_registry=None,
 ):
     def worker():
+        if is_stopping():
+            return None
         try:
             result = connectivity_func(owner, repo, api_proxy_base, proxy_base)
-            ui_post(lambda: on_success(formatter(result)))
+            post_ui_if_running_runtime(
+                ui_post,
+                lambda: on_success(formatter(result)),
+                is_stopping,
+            )
         except Exception as exc:
-            ui_post(lambda exc=exc: on_error(str(exc)))
+            post_ui_if_running_runtime(
+                ui_post,
+                lambda exc=exc: on_error(str(exc)),
+                is_stopping,
+            )
 
-    return start_daemon_thread(
+    if is_stopping():
+        return None
+    return start_registered_daemon_thread(
         "update_proxy_test",
         worker,
+        thread_registry=thread_registry,
         log_error=log_error,
         thread_factory=thread_factory,
     )
@@ -328,6 +344,8 @@ def open_update_proxy_dialog_runtime(
     ui_post,
     center_window,
     log_error=None,
+    is_stopping=None,
+    thread_registry=None,
     open_dialog=open_update_proxy_dialog,
     test_async=test_update_proxy_async,
 ):
@@ -335,19 +353,23 @@ def open_update_proxy_dialog_runtime(
         return save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
 
     def test_connection(api_proxy_base, proxy_base, on_success, on_error):
-        if log_error is None:
-            test_async(owner, repo, api_proxy_base, proxy_base, on_success, on_error, ui_post)
-        else:
-            test_async(
-                owner,
-                repo,
-                api_proxy_base,
-                proxy_base,
-                on_success,
-                on_error,
-                ui_post,
-                log_error=log_error,
-            )
+        test_kwargs = {}
+        if log_error is not None:
+            test_kwargs["log_error"] = log_error
+        if is_stopping is not None:
+            test_kwargs["is_stopping"] = is_stopping
+        if thread_registry is not None:
+            test_kwargs["thread_registry"] = thread_registry
+        test_async(
+            owner,
+            repo,
+            api_proxy_base,
+            proxy_base,
+            on_success,
+            on_error,
+            ui_post,
+            **test_kwargs,
+        )
 
     open_dialog(
         parent,

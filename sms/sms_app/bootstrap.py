@@ -112,7 +112,11 @@ from sms_core.serial_sender import (
     write_serial_command_result,
 )
 from sms_core.status_text import format_connected_status
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import (
+    SingleFlightTaskState,
+    WorkerThreadRegistry,
+    start_daemon_thread,
+)
 from sms_core.tts_runtime import instance_tts_file_path
 from sms_core.windows_shortcuts import (
     create_desktop_shortcut,
@@ -184,7 +188,7 @@ def _initialize_paths_and_constants():
     SERIAL_DEBUG_WINDOW_TITLE = "串口调试"
     APP_INSTANCE_NUMBER = 1
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.8.0"
+    APP_VERSION = "3.8.1"
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
@@ -373,7 +377,7 @@ def _initialize_worker_state():
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
-    global SERIAL_COMMAND_THREAD_REGISTRY
+    global SERIAL_COMMAND_THREAD_REGISTRY, UPDATE_THREAD_REGISTRY, UPDATE_CHECK_TASK_STATE
 
     TTS_LOCK = threading.Lock()
     TTS_REQ_Q = queue.Queue(maxsize=50)
@@ -394,6 +398,8 @@ def _initialize_worker_state():
     SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
     SERIAL_COMMAND_THREAD_REGISTRY = DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY
+    UPDATE_THREAD_REGISTRY = WorkerThreadRegistry()
+    UPDATE_CHECK_TASK_STATE = SingleFlightTaskState()
 
 
 def _initialize_runtime_state():

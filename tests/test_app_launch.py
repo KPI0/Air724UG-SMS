@@ -2,6 +2,7 @@ import unittest
 
 from sms_core.app_launch import (
     build_restart_helper_command,
+    cancel_launched_process,
     decode_restart_args,
     filtered_restart_args,
     prepare_restart_helper_launch,
@@ -10,6 +11,22 @@ from sms_core.app_launch import (
 
 
 class AppLaunchRestartTests(unittest.TestCase):
+    def test_cancel_launched_process_terminates_running_helper(self):
+        calls = []
+
+        class Process:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                calls.append(("terminate",))
+
+            def wait(self, timeout=None):
+                calls.append(("wait", timeout))
+
+        self.assertTrue(cancel_launched_process(Process(), timeout=1.5))
+        self.assertEqual(calls, [("terminate",), ("wait", 1.5)])
+
     def test_filtered_restart_args_removes_restart_only_flags(self):
         self.assertEqual(
             filtered_restart_args(
@@ -73,7 +90,10 @@ class AppLaunchRestartTests(unittest.TestCase):
             "wait_file_log_worker": lambda thread, **kwargs: calls.append(("wait_file", thread, kwargs)),
             "exit_process": lambda code: calls.append(("exit", code)),
             "prepare_launch": lambda argv, autostart, restart, pid: (["helper"], "E:/sms"),
-            "launch_process": lambda command, env, cwd: calls.append(("launch", command, env, cwd)),
+            "launch_process": lambda command, env, cwd: (
+                calls.append(("launch", command, env, cwd)) or "helper-process"
+            ),
+            "cancel_launch": lambda process: calls.append(("cancel", process)) or True,
             "clean_env": lambda: {"clean": "1"},
         }
         values.update(overrides)
@@ -125,6 +145,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIn("log_error", wait_calls[0][2])
         self.assertIn(("flush", "queue"), calls)
         self.assertEqual(calls[-1], ("exit", 0))
+        self.assertFalse(any(item[0] == "cancel" for item in calls))
 
     def test_restart_resolves_worker_snapshot_after_stopping_producers(self):
         calls = []
@@ -139,6 +160,34 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertLess(calls.index(("close_serial",)), calls.index(("snapshot",)))
         waits = [item for item in calls if item[0] == "wait_workers"]
         self.assertEqual(waits[0][1], ("late-worker",))
+
+    def test_restart_aborts_and_cancels_helper_when_worker_snapshot_raises(self):
+        calls = []
+
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                worker_threads=lambda: (_ for _ in ()).throw(
+                    RuntimeError("snapshot failed")
+                ),
+            )
+        )
+
+        self.assertEqual(result.status, "worker_wait_failed")
+        self.assertIsInstance(result.error, RuntimeError)
+        self.assertTrue(
+            any(
+                item[0] == "log_error" and "snapshot failed" in item[1]
+                for item in calls
+            )
+        )
+        self.assertFalse(
+            any(
+                item[0] in ("wait_workers", "wait_file", "flush", "release", "exit")
+                for item in calls
+            )
+        )
+        self.assertIn(("cancel", "helper-process"), calls)
 
     def test_restart_does_not_stop_file_logger_or_exit_when_producer_is_running(self):
         calls = []
@@ -155,6 +204,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertFalse(any(item[0] == "flush" for item in calls))
         self.assertFalse(any(item[0] == "release" for item in calls))
         self.assertFalse(any(item[0] == "exit" for item in calls))
+        self.assertIn(("cancel", "helper-process"), calls)
 
     def test_restart_does_not_continue_when_producer_wait_raises(self):
         calls = []
@@ -170,6 +220,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertEqual(result.status, "worker_wait_failed")
         self.assertIsInstance(result.error, RuntimeError)
         self.assertFalse(any(item[0] in ("wait_file", "flush", "release", "exit") for item in calls))
+        self.assertIn(("cancel", "helper-process"), calls)
 
     def test_restart_does_not_flush_release_mutex_or_exit_when_file_logger_is_running(self):
         calls = []
@@ -184,6 +235,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertFalse(any(item[0] == "flush" for item in calls))
         self.assertFalse(any(item[0] == "release" for item in calls))
         self.assertFalse(any(item[0] == "exit" for item in calls))
+        self.assertIn(("cancel", "helper-process"), calls)
 
     def test_restart_does_not_exit_when_file_logger_wait_raises(self):
         calls = []
@@ -200,6 +252,21 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIsInstance(result.error, RuntimeError)
         self.assertFalse(any(item[0] == "flush" for item in calls))
         self.assertFalse(any(item[0] == "release" for item in calls))
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+        self.assertIn(("cancel", "helper-process"), calls)
+
+    def test_restart_cancels_helper_when_cleanup_raises(self):
+        calls = []
+
+        with self.assertRaisesRegex(RuntimeError, "close failed"):
+            restart_software_runtime(
+                **self._runtime_kwargs(
+                    calls,
+                    safe_close_serial=lambda: (_ for _ in ()).throw(RuntimeError("close failed")),
+                )
+            )
+
+        self.assertIn(("cancel", "helper-process"), calls)
         self.assertFalse(any(item[0] == "exit" for item in calls))
 
 

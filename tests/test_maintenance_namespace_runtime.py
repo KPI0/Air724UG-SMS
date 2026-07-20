@@ -60,6 +60,14 @@ class FakeWebbrowser:
         return ("open_url", url)
 
 
+class FakeStopEvent:
+    def __init__(self, stopped=False):
+        self.stopped = stopped
+
+    def is_set(self):
+        return self.stopped
+
+
 class MaintenanceNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
@@ -84,6 +92,9 @@ class MaintenanceNamespaceRuntimeTests(unittest.TestCase):
             "ui_post": lambda callback: callback(),
             "cleanup_old_logs": lambda days: ("cleanup", days),
             "tk_alive": lambda: True,
+            "TK_SHUTDOWN": FakeStopEvent(),
+            "UPDATE_THREAD_REGISTRY": "update-registry",
+            "UPDATE_CHECK_TASK_STATE": "update-check-state",
             "_auto_log_cleanup_tick": lambda: "tick",
         }
 
@@ -135,6 +146,8 @@ class MaintenanceNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["owner"], "owner")
         self.assertEqual(forwarded["repo"], "repo")
         self.assertEqual(forwarded["config"], "config")
+        self.assertFalse(forwarded["is_stopping"]())
+        self.assertEqual(forwarded["thread_registry"], "update-registry")
 
     def test_auto_log_cleanup_namespace_runtimes_forward_callbacks(self):
         namespace = self.base_namespace()
@@ -182,6 +195,12 @@ class MaintenanceNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["get_update_config"](), ("proxy", "api:config"))
         self.assertEqual(forwarded["show_info"]("t", "m"), ("info", ("t", "m")))
         self.assertEqual(forwarded["open_url"]("https://example.test"), ("open_url", "https://example.test"))
+        self.assertFalse(forwarded["is_stopping"]())
+        self.assertEqual(forwarded["thread_registry"], "update-registry")
+        self.assertEqual(forwarded["task_state"], "update-check-state")
+
+        namespace["TK_SHUTDOWN"].stopped = True
+        self.assertTrue(forwarded["is_stopping"]())
 
 
 if __name__ == "__main__":

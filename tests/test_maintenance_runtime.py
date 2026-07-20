@@ -1,6 +1,7 @@
 import configparser
 import unittest
 
+from sms_core.threading_runtime import WorkerThreadRegistry
 from sms_ui.maintenance_runtime import (
     AutoLogCleanupState,
     apply_log_cleanup_runtime,
@@ -29,6 +30,11 @@ class ImmediateThread:
     def start(self):
         self.started = True
         self.target()
+
+
+class DeferredThread(ImmediateThread):
+    def start(self):
+        self.started = True
 
 
 class MaintenanceRuntimeTests(unittest.TestCase):
@@ -441,6 +447,66 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(errors, ["boom"])
+
+    def test_update_proxy_worker_is_registered_until_it_finishes(self):
+        registry = WorkerThreadRegistry()
+
+        thread = test_update_proxy_async(
+            "owner",
+            "repo",
+            "api",
+            "proxy",
+            lambda _value: None,
+            lambda _value: None,
+            ui_post=lambda callback: callback(),
+            connectivity_func=lambda *args: {"args": args},
+            thread_factory=DeferredThread,
+            thread_registry=registry,
+        )
+
+        self.assertEqual(registry.snapshot(), (thread,))
+        thread.target()
+        self.assertEqual(registry.snapshot(), ())
+
+    def test_update_proxy_skips_work_and_late_ui_callbacks_during_shutdown(self):
+        state = {"stopping": True}
+        posted = []
+        calls = []
+
+        thread = test_update_proxy_async(
+            "owner",
+            "repo",
+            "api",
+            "proxy",
+            lambda value: calls.append(("success", value)),
+            lambda value: calls.append(("error", value)),
+            ui_post=posted.append,
+            connectivity_func=lambda *args: self.fail("proxy test started during shutdown"),
+            thread_factory=ImmediateThread,
+            is_stopping=lambda: state["stopping"],
+        )
+
+        self.assertIsNone(thread)
+        self.assertEqual(posted, [])
+
+        state["stopping"] = False
+        test_update_proxy_async(
+            "owner",
+            "repo",
+            "api",
+            "proxy",
+            lambda value: calls.append(("success", value)),
+            lambda value: calls.append(("error", value)),
+            ui_post=posted.append,
+            connectivity_func=lambda *args: "connected",
+            formatter=lambda result: result,
+            thread_factory=ImmediateThread,
+            is_stopping=lambda: state["stopping"],
+        )
+        self.assertEqual(len(posted), 1)
+        state["stopping"] = True
+        posted[0]()
+        self.assertEqual(calls, [])
 
     def test_open_update_proxy_dialog_runtime_wires_save_and_test_callbacks(self):
         config = configparser.ConfigParser()

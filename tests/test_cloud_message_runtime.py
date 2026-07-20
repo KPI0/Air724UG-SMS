@@ -137,6 +137,39 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertFalse(state["authorized"])
         self.assertTrue(any(item[0] == "status" and item[1][0] == "🌐 授权失败" for item in calls))
 
+    def test_waiting_auth_ack_keeps_connection_without_authorizing(self):
+        state = {"authorized": True}
+        calls = []
+
+        async def reply(_payload):
+            raise AssertionError("auth ack must not send a command reply")
+
+        result = run(handle_cloud_message_runtime(
+            json.dumps({
+                "type": "device_login_ack",
+                "auth_status": "waiting",
+                "message": "waiting for binding",
+            }),
+            is_authorized=lambda: state["authorized"],
+            set_authorized=lambda value: state.__setitem__("authorized", bool(value)),
+            reply=reply,
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            set_auth_status_from_ack=lambda data: calls.append(("ack", data)),
+            set_cloud_status=lambda *args: calls.append(("status", args)),
+            check_replay_window=lambda *_args, **_kwargs: None,
+            auth_matches=lambda _data: True,
+            time_text=lambda: "now",
+            timestamp=lambda: 123,
+            status_payload=lambda: {},
+            send_serial_command=lambda *_args: None,
+            show_window=lambda: None,
+            hide_window=lambda: None,
+        ))
+
+        self.assertEqual(result, "waiting")
+        self.assertFalse(state["authorized"])
+        self.assertTrue(any(item[0] == "status" and item[1][0] == "🌐 等待授权" for item in calls))
+
     def test_unauthorized_command_replies_with_task_ids(self):
         state, calls, replies, replay_checks = run(self._handle(json.dumps({
             "cmd": "ATI",

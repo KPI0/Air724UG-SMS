@@ -50,6 +50,24 @@ def ui_post_runtime(task_queue, callback, args=(), kwargs=None, *, on_full=None,
         _safe_log(log_error, f"UI task enqueue failed: {exc!r}")
 
 
+def post_ui_if_running_runtime(ui_post, callback, is_stopping, *, on_skipped=None):
+    """Queue a UI callback that becomes inert once shutdown starts."""
+    if is_stopping():
+        if on_skipped is not None:
+            on_skipped()
+        return False
+
+    def run_if_active():
+        if is_stopping():
+            if on_skipped is not None:
+                on_skipped()
+            return None
+        return callback()
+
+    ui_post(run_if_active)
+    return True
+
+
 def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200, interval_ms=30, log_error=None):
     processed = 0
     while processed < max_batch:

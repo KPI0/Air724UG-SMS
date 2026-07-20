@@ -78,6 +78,9 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: ("log", message),
             "app_mutex": "mutex",
             "release_mutex_handle": lambda mutex: ("release", mutex),
+            "UPDATE_THREAD_REGISTRY": FakeThreadRegistry(
+                ("update-1", "update-2")
+            ),
             "SERIAL_COMMAND_THREAD_REGISTRY": FakeThreadRegistry(
                 ("serial-command-1", "serial-command-2")
             ),
@@ -121,6 +124,8 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             forwarded["worker_threads"]()[-4:],
             ("serial-command-1", "serial-command-2", "sms-send-1", "sms-send-2"),
         )
+        self.assertIn("update-1", forwarded["worker_threads"]())
+        self.assertIn("update-2", forwarded["worker_threads"]())
         forwarded["set_exiting"](True)
         forwarded["set_serial_running"](False)
         self.assertTrue(namespace["is_exiting"])
@@ -285,6 +290,8 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             forwarded["worker_threads"]()[-4:],
             ("serial-command-1", "serial-command-2", "sms-send-1", "sms-send-2"),
         )
+        self.assertIn("update-1", forwarded["worker_threads"]())
+        self.assertIn("update-2", forwarded["worker_threads"]())
         self.assertEqual(forwarded["app_mutex"], "mutex")
         self.assertEqual(forwarded["file_log_queue"], "queue")
         forwarded["set_exiting"](True)
@@ -302,9 +309,11 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             cleanup_app_runtime=lambda **kwargs: calls.append(kwargs) or "exited",
         )
 
+        namespace["UPDATE_THREAD_REGISTRY"].threads += ("late-update",)
         namespace["SERIAL_COMMAND_THREAD_REGISTRY"].threads += ("late-command",)
         namespace["SMS_SEND_THREAD_REGISTRY"].threads += ("late-sms",)
         snapshot = calls[0]["worker_threads"]()
+        self.assertIn("late-update", snapshot)
         self.assertIn("late-command", snapshot)
         self.assertIn("late-sms", snapshot)
 

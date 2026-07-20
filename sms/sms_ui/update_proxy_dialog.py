@@ -51,8 +51,8 @@ def open_update_proxy_dialog(
         on_test(
             api_var.get(),
             proxy_var.get(),
-            lambda text: _show_test_result(btn_test, text),
-            lambda text: _show_test_error(btn_test, text),
+            lambda text: _show_test_result(win, btn_test, text),
+            lambda text: _show_test_error(win, btn_test, text),
         )
 
     def reset_default():
@@ -77,18 +77,38 @@ def open_update_proxy_dialog(
     win.bind("<Escape>", lambda _e: win.destroy())
 
 
+def _widget_exists(widget):
+    try:
+        return bool(widget.winfo_exists())
+    except Exception:
+        return False
+
+
 def _restore_test_button(btn_test):
+    if not _widget_exists(btn_test):
+        return False
     try:
         btn_test.config(state="normal", text="测试连接")
+        return True
     except Exception:
-        pass
+        return False
 
 
-def _show_test_result(btn_test, text):
-    _restore_test_button(btn_test)
-    messagebox.showinfo("测试结果", text)
+def _show_test_result(win, btn_test, text):
+    if not _widget_exists(win) or not _restore_test_button(btn_test):
+        return False
+    try:
+        messagebox.showinfo("测试结果", text, parent=win)
+        return True
+    except Exception:
+        return False
 
 
-def _show_test_error(btn_test, text):
-    _restore_test_button(btn_test)
-    messagebox.showerror("测试失败", text)
+def _show_test_error(win, btn_test, text):
+    if not _widget_exists(win) or not _restore_test_button(btn_test):
+        return False
+    try:
+        messagebox.showerror("测试失败", text, parent=win)
+        return True
+    except Exception:
+        return False

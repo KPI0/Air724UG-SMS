@@ -70,6 +70,33 @@ def launch_detached_process(command, env=None, cwd=None):
     return subprocess.Popen(command, **kwargs)
 
 
+def cancel_launched_process(process, timeout=2.0):
+    if process is None:
+        return False
+    poll = getattr(process, "poll", None)
+    if callable(poll) and poll() is not None:
+        return True
+
+    terminate = getattr(process, "terminate", None)
+    if not callable(terminate):
+        return False
+    terminate()
+
+    wait = getattr(process, "wait", None)
+    if not callable(wait):
+        return True
+    try:
+        wait(timeout=max(0.0, float(timeout)))
+        return True
+    except subprocess.TimeoutExpired:
+        kill = getattr(process, "kill", None)
+        if not callable(kill):
+            return False
+        kill()
+        wait(timeout=max(0.0, float(timeout)))
+        return True
+
+
 def encode_restart_args(args):
     payload = json.dumps(list(args), ensure_ascii=False).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii")
@@ -155,6 +182,7 @@ def restart_software_runtime(
     exit_process,
     prepare_launch=prepare_restart_helper_launch,
     launch_process=launch_detached_process,
+    cancel_launch=cancel_launched_process,
     clean_env=get_clean_restart_env,
     file_log_thread=None,
     file_log_stop_event=None,
@@ -168,6 +196,8 @@ def restart_software_runtime(
     if not confirm_restart():
         return RestartRuntimeResult("cancelled")
 
+    helper_process = None
+    restart_committed = False
     try:
         helper_cmd, workdir = prepare_launch(
             argv,
@@ -175,7 +205,7 @@ def restart_software_runtime(
             restart_helper_flag,
             current_pid,
         )
-        launch_process(
+        helper_process = launch_process(
             helper_cmd,
             env=clean_env(),
             cwd=workdir,
@@ -189,68 +219,84 @@ def restart_software_runtime(
             system_ui(message, "normal")
         return RestartRuntimeResult("launch_failed", e)
 
-    set_exiting(True)
-    system_ui("🔄 正在重启软件...", "normal")
-    stop_tray_icon(wait_after=0.45)
-    set_serial_running(False)
-    safe_set_events(*tuple(stop_events or ()))
+    try:
+        set_exiting(True)
+        system_ui("🔄 正在重启软件...", "normal")
+        stop_tray_icon(wait_after=0.45)
+        set_serial_running(False)
+        safe_set_events(*tuple(stop_events or ()))
 
-    try:
-        stop_cloud_control(update_status=False)
-    except Exception:
-        pass
-    safe_close_serial()
-
-    try:
-        threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
-    except Exception as exc:
-        log_error(f"Snapshot restart worker threads failed: {exc!r}")
-        threads_to_wait = ()
-    try:
-        workers_stopped = wait_worker_threads(threads_to_wait, log_error=log_error)
-    except Exception as exc:
         try:
-            log_error(f"Wait for producer worker threads during restart raised: {exc!r}")
+            stop_cloud_control(update_status=False)
         except Exception:
             pass
-        return RestartRuntimeResult("worker_wait_failed", exc)
-    if workers_stopped is False:
+        safe_close_serial()
+
         try:
-            log_error(
-                "Producer worker threads are still running; file logger stop, final flush, mutex release, and restart exit were aborted"
-            )
+            threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
+        except Exception as exc:
+            try:
+                log_error(f"Snapshot restart worker threads failed: {exc!r}")
+            except Exception:
+                pass
+            return RestartRuntimeResult("worker_wait_failed", exc)
+        try:
+            workers_stopped = wait_worker_threads(threads_to_wait, log_error=log_error)
+        except Exception as exc:
+            try:
+                log_error(f"Wait for producer worker threads during restart raised: {exc!r}")
+            except Exception:
+                pass
+            return RestartRuntimeResult("worker_wait_failed", exc)
+        if workers_stopped is False:
+            try:
+                log_error(
+                    "Producer worker threads are still running; file logger stop, final flush, mutex release, and restart exit were aborted"
+                )
+            except Exception:
+                pass
+            return RestartRuntimeResult("worker_wait_failed")
+        if file_log_stop_event is not None:
+            safe_set_events(file_log_stop_event)
+
+        try:
+            file_log_stopped = wait_file_log_worker(file_log_thread, log_error=log_error)
+        except Exception as exc:
+            try:
+                log_error(f"Wait for file log worker during restart raised: {exc!r}")
+            except Exception:
+                pass
+            return RestartRuntimeResult("file_log_wait_failed", exc)
+        if file_log_stopped is False:
+            try:
+                log_error(
+                    "File log worker is still running; final flush, mutex release, and restart exit were aborted"
+                )
+            except Exception:
+                pass
+            return RestartRuntimeResult("file_log_wait_failed")
+
+        try:
+            if app_mutex:
+                release_mutex(app_mutex)
         except Exception:
             pass
-        return RestartRuntimeResult("worker_wait_failed")
-    if file_log_stop_event is not None:
-        safe_set_events(file_log_stop_event)
 
-    try:
-        file_log_stopped = wait_file_log_worker(file_log_thread, log_error=log_error)
-    except Exception as exc:
-        try:
-            log_error(f"Wait for file log worker during restart raised: {exc!r}")
-        except Exception:
-            pass
-        return RestartRuntimeResult("file_log_wait_failed", exc)
-    if file_log_stopped is False:
-        try:
-            log_error(
-                "File log worker is still running; final flush, mutex release, and restart exit were aborted"
-            )
-        except Exception:
-            pass
-        return RestartRuntimeResult("file_log_wait_failed")
-
-    try:
-        if app_mutex:
-            release_mutex(app_mutex)
-    except Exception:
-        pass
-
-    flush_log_queue(file_log_queue)
-    exit_process(0)
-    return RestartRuntimeResult("exited")
+        flush_log_queue(file_log_queue)
+        restart_committed = True
+        exit_process(0)
+        return RestartRuntimeResult("exited")
+    finally:
+        if helper_process is not None and not restart_committed:
+            try:
+                cancelled = cancel_launch(helper_process)
+                if cancelled is False:
+                    log_error("Cancel pending restart helper returned False")
+            except Exception as exc:
+                try:
+                    log_error(f"Cancel pending restart helper failed: {exc!r}")
+                except Exception:
+                    pass
 
 
 def show_early_error(title: str, message: str):

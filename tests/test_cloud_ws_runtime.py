@@ -156,6 +156,30 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertIn(("ack", "auth_failed"), calls)
         self.assertTrue(any(item[0] == "log" and item[1][0] == "bad" for item in calls))
 
+    def test_wait_cloud_login_ack_runtime_keeps_waiting_device_connected(self):
+        stop_event = FakeStopEvent()
+        ws = FakeWebSocket([
+            '{"type":"device_login_ack","auth_status":"waiting","message":"waiting"}'
+        ])
+        calls = []
+
+        result = asyncio.run(wait_cloud_login_ack_runtime(
+            ws,
+            stop_event=stop_event,
+            set_authorized=lambda value: calls.append(("authorized", value)),
+            set_auth_status_from_ack=lambda data: calls.append(("ack", data["auth_status"])),
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            safe_preview=lambda value: value,
+            timeout=1.0,
+            monotonic=lambda: 0.0,
+        ))
+
+        self.assertTrue(result)
+        self.assertFalse(ws.closed)
+        self.assertIn(("authorized", False), calls)
+        self.assertIn(("ack", "waiting"), calls)
+        self.assertTrue(any(item[0] == "log" and item[1][0] == "waiting" for item in calls))
+
     def test_wait_cloud_login_ack_runtime_ignores_non_ack_and_invalid_json(self):
         stop_event = FakeStopEvent()
         ws = FakeWebSocket([

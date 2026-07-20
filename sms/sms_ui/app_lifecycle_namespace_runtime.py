@@ -12,9 +12,10 @@ from sms_ui.settings_runtime import (
 )
 
 
-def _registered_serial_worker_threads(namespace):
+def _registered_worker_threads(namespace):
     threads = []
     for registry_name in (
+        "UPDATE_THREAD_REGISTRY",
         "SERIAL_COMMAND_THREAD_REGISTRY",
         "SMS_SEND_THREAD_REGISTRY",
     ):
@@ -39,7 +40,7 @@ def _shutdown_worker_threads(namespace):
         namespace.get("serial_thread"),
         namespace.get("TTS_THREAD"),
         namespace.get("cloud_ws_thread"),
-    ) + _registered_serial_worker_threads(namespace)
+    ) + _registered_worker_threads(namespace)
 
 
 def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runtime=set_autostart_runtime):

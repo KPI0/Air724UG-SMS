@@ -117,6 +117,13 @@ async def wait_cloud_login_ack_runtime(
             log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return True
 
+        if status == "waiting":
+            log(
+                str(data.get("message") or "设备正在等待网页端绑定"),
+                show_main=True,
+            )
+            return True
+
         log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
         return False
 

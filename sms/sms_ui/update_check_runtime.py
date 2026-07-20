@@ -1,7 +1,8 @@
 import threading
 
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import start_registered_daemon_thread
 from sms_core.updates import check_latest_release, normalize_config_bases
+from sms_ui.thread_runtime import post_ui_if_running_runtime
 
 
 def read_update_config_runtime(config):
@@ -60,27 +61,67 @@ def check_update_and_prompt_runtime(
     check_latest=check_latest_release,
     thread_factory=threading.Thread,
     log_error=None,
+    is_stopping=lambda: False,
+    thread_registry=None,
+    task_state=None,
 ):
+    def release_task():
+        if task_state is not None:
+            task_state.release()
+
+    def post_completion(callback):
+        def run_and_release():
+            try:
+                return callback()
+            finally:
+                release_task()
+
+        return post_ui_if_running_runtime(
+            ui_post,
+            run_and_release,
+            is_stopping,
+            on_skipped=release_task,
+        )
+
     def worker():
+        if is_stopping():
+            release_task()
+            return None
+        callback_handed_off = False
         try:
             proxy_base, api_proxy_base = get_update_config()
             plan = check_latest(owner, repo, current_version, proxy_base, api_proxy_base)
-            ui_post(
-                lambda: handle_update_check_plan(
-                    plan,
-                    current_version,
-                    show_info=show_info,
-                    show_warning=show_warning,
-                    ask_open_download=ask_open_download,
-                    open_url=open_url,
-                )
+            callback = lambda: handle_update_check_plan(
+                plan,
+                current_version,
+                show_info=show_info,
+                show_warning=show_warning,
+                ask_open_download=ask_open_download,
+                open_url=open_url,
             )
         except Exception as exc:
-            ui_post(lambda exc=exc: show_error("检测更新失败", str(exc)))
+            callback = lambda exc=exc: show_error("检测更新失败", str(exc))
+        try:
+            callback_handed_off = post_completion(callback)
+        finally:
+            if not callback_handed_off:
+                release_task()
 
-    return start_daemon_thread(
-        "update_check",
-        worker,
-        log_error=log_error,
-        thread_factory=thread_factory,
-    )
+    if is_stopping():
+        return None
+    if task_state is not None and not task_state.try_acquire():
+        return None
+    if is_stopping():
+        release_task()
+        return None
+    try:
+        return start_registered_daemon_thread(
+            "update_check",
+            worker,
+            thread_registry=thread_registry,
+            log_error=log_error,
+            thread_factory=thread_factory,
+        )
+    except Exception:
+        release_task()
+        raise
