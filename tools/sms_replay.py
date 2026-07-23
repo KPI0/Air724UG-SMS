@@ -59,9 +59,18 @@ def _split_ucs2_segments(message: str, max_bytes: int = 134):
     return segments
 
 
-def _incoming_ucs2_pdu(sender: str, message: str, timestamp: str, *, reference=0x2A, total=1, index=1):
+def _incoming_ucs2_pdu(
+    sender: str,
+    message: str,
+    timestamp: str,
+    *,
+    reference=0x2A,
+    total=1,
+    index=1,
+    number_type=None,
+):
     sender_text = str(sender or "")
-    number_type = "91" if sender_text.startswith("+") else "81"
+    number_type = number_type or ("91" if sender_text.startswith("+") else "81")
     sender_digits = sender_text.lstrip("+")
     first_octet = "40" if total > 1 else "00"
     payload = str(message or "").encode("utf-16-be")
@@ -142,6 +151,7 @@ def replay_lines(lines):
         show_call_popup=lambda *args: None,
         set_local_number=lambda *args: None,
     )
+    repeat_state = {}
 
     for index, line in enumerate(lines):
         handle_serial_runtime_line(
@@ -152,17 +162,17 @@ def replay_lines(lines):
             False,
             config,
             callbacks,
-            {},
+            repeat_state,
         )
     handle_serial_runtime_line(
         state,
         "",
-        10.0 + len(lines) * 0.01 + 0.5,
+        10.0 + len(lines) * 0.01 + 5.5,
         "SIM",
         False,
         config,
         callbacks,
-        {},
+        repeat_state,
     )
     return calls
 
