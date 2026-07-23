@@ -47,17 +47,22 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
             return True, resp.getcode(), body
     except urllib.error.HTTPError as exc:
         try:
-            body = exc.read(4096).decode("utf-8", "replace")
+            exc.close()
         except Exception:
-            body = ""
-        return False, exc.code, body
+            pass
+        return False, exc.code, ""
     except Exception as exc:
         return False, None, redact_sensitive_text(str(exc))
 
 
 def api_ok(channel: str, http_ok: bool, code, body: str):
-    if not http_ok or code is None or not (200 <= int(code) < 300):
-        return False, redact_sensitive_text(f"HTTP {code or '-'} {body}".strip())
+    try:
+        status_code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        status_code = None
+    status_text = str(status_code) if status_code is not None else "-"
+    if not http_ok or status_code is None or not (200 <= status_code < 300):
+        return False, f"HTTP {status_text} 请求失败"
 
     text = (body or "").strip()
     if not text:
@@ -71,17 +76,17 @@ def api_ok(channel: str, http_ok: bool, code, body: str):
     if channel in ("dingtalk", "wecom"):
         errcode = data.get("errcode", 0)
         if str(errcode) not in ("0", ""):
-            return False, redact_sensitive_text(data.get("errmsg") or text)
+            return False, f"HTTP {status_text} 渠道返回业务错误"
     elif channel == "feishu":
         errcode = data.get("code", data.get("StatusCode", 0))
         if str(errcode) not in ("0", ""):
-            return False, redact_sensitive_text(data.get("msg") or data.get("StatusMessage") or text)
+            return False, f"HTTP {status_text} 渠道返回业务错误"
     elif channel in ("pushdeer", "serverchan"):
         errcode = data.get("code", 0)
         if str(errcode) not in ("0", ""):
-            return False, redact_sensitive_text(data.get("message") or data.get("msg") or text)
+            return False, f"HTTP {status_text} 渠道返回业务错误"
 
-    return True, f"HTTP {code}"
+    return True, f"HTTP {status_text}"
 
 
 def required(settings, key, label):

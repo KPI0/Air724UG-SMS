@@ -139,8 +139,17 @@ def third_push_worker_app_runtime(
     app_version,
     system_ui,
     show_result,
+    shutdown_event=None,
     worker_runtime=third_push_worker_runtime,
 ):
+    result_shutdown_event = stop_event if shutdown_event is None else shutdown_event
+
+    def is_shutdown():
+        try:
+            return bool(result_shutdown_event.is_set())
+        except AttributeError:
+            return False
+
     return worker_runtime(
         stop_event=stop_event,
         push_queue=push_queue,
@@ -159,7 +168,7 @@ def third_push_worker_app_runtime(
             get_log_prefix=get_log_prefix,
             variables=variables,
         ),
-        should_emit_results=lambda: not stop_event.is_set(),
+        should_emit_results=lambda: not is_shutdown(),
     )
 
 

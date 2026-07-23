@@ -1,14 +1,15 @@
+import copy
 from dataclasses import replace
 from datetime import datetime
 import hashlib
 import re
 import time
 
-from sms_core.sms_collected_event import pending_from_collected
+from sms_core.sms_collected_event import CollectedPendingCandidates, pending_from_collected
 
 
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
-    r"^\s*\+?\d+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
+    r"^\s*\S+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
 )
 DEFAULT_LONG_SMS_TTL = 180.0
 DEFAULT_COMPLETED_SMS_TTL = 30.0
@@ -50,6 +51,7 @@ class LongSmsAssembler:
             self.incomplete_timeout = DEFAULT_INCOMPLETE_SMS_TTL
         self._pending = {}
         self._completed = {}
+        self._deferred = {}
         self.multipart_timestamp_tolerance = float(multipart_timestamp_tolerance)
         self.multipart_part_timestamp_step = float(multipart_part_timestamp_step)
         self.session_window = max(1.0, float(session_window or DEFAULT_LONG_SMS_SESSION_WINDOW))
@@ -60,6 +62,7 @@ class LongSmsAssembler:
     def reset(self):
         self._pending.clear()
         self._completed.clear()
+        self._deferred.clear()
 
     def add_collected(self, collected, correction_cache=None, now=None, log=None):
         pending = pending_from_collected(
@@ -68,14 +71,188 @@ class LongSmsAssembler:
             correction_cache=correction_cache,
             now=now,
         )
+        if isinstance(pending, CollectedPendingCandidates):
+            pending_snapshot = copy.deepcopy(self._pending)
+            completed_snapshot = copy.deepcopy(self._completed)
+            strict_timestamp = self._candidate_batch_needs_strict_timestamp(pending.segments)
+            results = self._add_candidate_segments(
+                pending.segments,
+                now=now,
+                log=log,
+                strict_timestamp=strict_timestamp,
+            )
+            if results and strict_timestamp:
+                self._cancel_deferred_for_segments(pending.segments)
+                return _pack_pending_results(results)
+            result = results[-1] if results else None
+            if result is not None and (
+                not pending.require_fallback_match
+                or _candidate_matches_fallback(result, pending.fallback)
+            ):
+                return _pack_pending_results(results)
+            state_changed = (
+                self._pending != pending_snapshot
+                or self._completed != completed_snapshot
+            )
+            self._pending = pending_snapshot
+            self._completed = completed_snapshot
+            if strict_timestamp and result is None:
+                trial_results = self._add_candidate_segments(
+                    pending.segments,
+                    now=now,
+                    log=None,
+                    strict_timestamp=False,
+                )
+                trial_completed = {
+                    key: copy.deepcopy(entry)
+                    for key, entry in self._completed.items()
+                    if key not in completed_snapshot or completed_snapshot.get(key) != entry
+                }
+                self._pending = pending_snapshot
+                self._completed = completed_snapshot
+                trial_result = trial_results[-1] if trial_results else None
+                if trial_result is not None and (
+                    not pending.require_fallback_match
+                    or _candidate_matches_fallback(trial_result, pending.fallback)
+                ):
+                    self._defer_candidate_results(
+                        pending.segments,
+                        trial_results,
+                        trial_completed,
+                        now=now,
+                        log=log,
+                    )
+                    return None
+            if result is None and not state_changed:
+                return None
+            return pending.fallback
         if isinstance(pending, list):
-            result = None
-            for item in pending:
-                current = self.add_message(item, now=now, log=log)
-                if current is not None:
-                    result = current
-            return result
+            results = self._add_candidate_segments(
+                pending,
+                now=now,
+                log=log,
+                strict_timestamp=self._candidate_batch_needs_strict_timestamp(pending),
+            )
+            if results:
+                self._cancel_deferred_for_segments(pending)
+            return _pack_pending_results(results)
         return self.add_message(pending, now=now, log=log)
+
+    def drain_ready(self, now=None, log=None):
+        current = time.monotonic() if now is None else now
+        ready = []
+        for key, entry in list(self._deferred.items()):
+            if current < float(entry.get("deadline", current)):
+                continue
+            self._deferred.pop(key, None)
+            for completed_key, completed_entry in dict(entry.get("completed_entries") or {}).items():
+                target_key = self._unique_state_key(completed_key)
+                restored = copy.deepcopy(completed_entry)
+                restored["last_update"] = current
+                restored["seen"] = current
+                self._completed[target_key] = restored
+            ready.extend(list(entry.get("results") or []))
+            _emit_log(log, "[SMS] CONCAT AMBIGUOUS RELEASE")
+        if ready:
+            self._enforce_completed_limit(log=log)
+        return _pack_pending_results(ready)
+
+    def _add_candidate_segments(self, segments, *, now=None, log=None, strict_timestamp=False):
+        results = []
+        for item in list(segments or []):
+            current = self.add_message(
+                item,
+                now=now,
+                log=log,
+                strict_timestamp=strict_timestamp,
+            )
+            if current is not None:
+                results.append(current)
+        return results
+
+    def _candidate_batch_needs_strict_timestamp(self, segments):
+        profile = self._candidate_batch_profile(segments)
+        return bool(
+            profile
+            and profile["total"] == 2
+            and len(profile["timestamps"]) > 1
+        )
+
+    def _candidate_batch_profile(self, segments):
+        base = None
+        timestamps = set()
+        signatures = []
+        for pending in list(segments or []):
+            concat_info = self._concat_info_from_pending(pending)
+            sender = self._sender_from_pending(pending)
+            reference = getattr(concat_info, "reference", None) if concat_info is not None else None
+            total = int(getattr(concat_info, "total", 0) or 0) if concat_info is not None else 0
+            index = int(getattr(concat_info, "index", 0) or 0) if concat_info is not None else 0
+            reference_bits = int(getattr(concat_info, "reference_bits", None) or 8) if concat_info is not None else 8
+            if not sender or reference is None or total <= 1 or index < 1 or index > total:
+                return None
+            candidate_base = (sender, reference_bits, int(reference), total)
+            if base is None:
+                base = candidate_base
+            elif candidate_base != base:
+                return None
+            timestamp = self._timestamp_from_pending(pending)
+            if timestamp:
+                timestamps.add(timestamp)
+            signatures.append((index, timestamp, self._part_body_from_pending(pending)))
+        if base is None:
+            return None
+        return {
+            "base": base,
+            "total": base[3],
+            "timestamps": timestamps,
+            "signatures": tuple(sorted(signatures)),
+        }
+
+    def _defer_candidate_results(
+        self,
+        segments,
+        results,
+        completed_entries,
+        *,
+        now=None,
+        log=None,
+    ):
+        profile = self._candidate_batch_profile(segments)
+        if not profile or not results:
+            return
+        current = time.monotonic() if now is None else now
+        key = (profile["base"], profile["signatures"])
+        if key in self._deferred:
+            return
+        self._deferred[key] = {
+            "base": profile["base"],
+            "deadline": current + self.completed_duplicate_grace,
+            "results": tuple(results),
+            "completed_entries": copy.deepcopy(completed_entries),
+        }
+        _emit_log(log, "[SMS] CONCAT AMBIGUOUS DEFER")
+
+    def _cancel_deferred_for_segments(self, segments):
+        profile = self._candidate_batch_profile(segments)
+        if not profile:
+            return
+        base = profile["base"]
+        self._deferred = {
+            key: entry
+            for key, entry in self._deferred.items()
+            if entry.get("base") != base
+        }
+
+    def _unique_state_key(self, key):
+        if key not in self._pending and key not in self._completed:
+            return key
+        sequence = 1
+        candidate = tuple(key) + (sequence,)
+        while candidate in self._pending or candidate in self._completed:
+            sequence += 1
+            candidate = tuple(key) + (sequence,)
+        return candidate
 
     def cleanup(self, now=None, log=None):
         current = time.monotonic() if now is None else now
@@ -98,7 +275,7 @@ class LongSmsAssembler:
         }
         self._enforce_completed_limit(log=log)
 
-    def add_message(self, pending, now=None, log=None):
+    def add_message(self, pending, now=None, log=None, *, strict_timestamp=False):
         if pending is None:
             return None
 
@@ -121,6 +298,7 @@ class LongSmsAssembler:
             return pending
         reference = int(concat_info.reference)
         timestamp = self._timestamp_from_pending(pending)
+        callback_timestamp = self._callback_timestamp_from_pending(pending)
         reference_bits = int(getattr(concat_info, "reference_bits", None) or 8)
         body = self._part_body_from_pending(pending)
         key = self._resolve_pending_key(
@@ -132,6 +310,8 @@ class LongSmsAssembler:
             index,
             body,
             timestamp,
+            callback_timestamp,
+            strict_timestamp,
         )
         if key is None:
             key = self._new_pending_key(sender, reference_bits, reference, total, current)
@@ -150,6 +330,9 @@ class LongSmsAssembler:
             total,
             index,
             body,
+            timestamp,
+            callback_timestamp,
+            strict_timestamp,
             current,
         ):
             self._log_concat(log, sender, reference, index, total, "duplicate complete", trace_id)
@@ -162,10 +345,12 @@ class LongSmsAssembler:
                 "reference": reference,
                 "reference_bits": reference_bits,
                 "timestamp": timestamp,
+                "callback_timestamp": callback_timestamp,
                 "total": total,
                 "parts": {},
                 "parts_seen": set(),
                 "part_timestamps": {},
+                "part_callback_timestamps": {},
                 "heads": {},
                 "display_headers": {},
                 "trace_id": trace_id,
@@ -197,6 +382,7 @@ class LongSmsAssembler:
         entry["parts_seen"].add(index)
         entry["parts"][index] = body
         entry.setdefault("part_timestamps", {})[index] = timestamp
+        entry.setdefault("part_callback_timestamps", {})[index] = callback_timestamp
         entry["heads"][index] = getattr(pending, "callback_head", "")
         display_lines = list(getattr(pending, "display_lines", []) or [])
         entry["display_headers"][index] = display_lines[0] if display_lines else ""
@@ -238,6 +424,7 @@ class LongSmsAssembler:
             "seen": current,
             "parts": dict(entry["parts"]),
             "part_timestamps": dict(entry.get("part_timestamps") or {}),
+            "part_callback_timestamps": dict(entry.get("part_callback_timestamps") or {}),
             "total": total,
             "trace_id": entry.get("trace_id") or trace_id,
         }
@@ -253,10 +440,10 @@ class LongSmsAssembler:
             int(total),
             self._session_bucket(current),
         )
-        if base not in self._pending:
+        if base not in self._pending and base not in self._completed:
             return base
         sequence = 1
-        while base + (sequence,) in self._pending:
+        while base + (sequence,) in self._pending or base + (sequence,) in self._completed:
             sequence += 1
         return base + (sequence,)
 
@@ -270,6 +457,8 @@ class LongSmsAssembler:
         index,
         body,
         timestamp,
+        callback_timestamp,
+        strict_timestamp,
     ):
         base = (sender, int(reference_bits), int(reference), int(total))
         open_candidates = []
@@ -283,25 +472,125 @@ class LongSmsAssembler:
             parts = entry.get("parts") or {}
             if index in (entry.get("parts_seen") or set()):
                 if str(parts.get(index, "")) == str(body or ""):
-                    duplicate_candidates.append((key, entry))
-                    continue
-                existing_timestamp = (entry.get("part_timestamps") or {}).get(index) or entry.get("timestamp", "")
-                if not timestamp or not existing_timestamp or _timestamp_matches(
-                    existing_timestamp,
-                    timestamp,
-                    self.multipart_timestamp_tolerance,
-                ):
-                    duplicate_candidates.append((key, entry))
+                    affinity = self._pending_candidate_affinity(
+                        entry,
+                        index,
+                        timestamp,
+                        callback_timestamp,
+                        strict_callback_timestamp=bool(strict_timestamp or int(total) == 2),
+                        strict_pdu_timestamp=bool(strict_timestamp),
+                    )
+                    if affinity is not None:
+                        duplicate_candidates.append((key, entry, affinity))
                 continue
-            open_candidates.append((key, entry))
-        candidates = open_candidates or duplicate_candidates
-        if not candidates:
+            affinity = self._pending_candidate_affinity(
+                entry,
+                index,
+                timestamp,
+                callback_timestamp,
+                strict_callback_timestamp=bool(strict_timestamp or int(total) == 2),
+                strict_pdu_timestamp=bool(strict_timestamp),
+            )
+            if affinity is not None:
+                open_candidates.append((key, entry, affinity))
+        if open_candidates:
+            open_candidates.sort(key=lambda item: item[2])
+            best_affinity = open_candidates[0][2]
+            if sum(1 for _key, _entry, affinity in open_candidates if affinity == best_affinity) != 1:
+                return None
+            return open_candidates[0][0]
+        if not duplicate_candidates:
             return None
-        candidates.sort(
-            key=lambda item: item[1].get("last_update", item[1].get("seen", 0.0)),
-            reverse=True,
+        duplicate_candidates.sort(
+            key=lambda item: (
+                item[2],
+                -float(item[1].get("last_update", item[1].get("seen", 0.0)) or 0.0),
+            ),
         )
-        return candidates[0][0]
+        return duplicate_candidates[0][0]
+
+    def _pending_candidate_affinity(
+        self,
+        entry,
+        index,
+        timestamp,
+        callback_timestamp,
+        *,
+        strict_callback_timestamp=False,
+        strict_pdu_timestamp=False,
+    ):
+        callback_values = dict(entry.get("part_callback_timestamps") or {})
+        if not callback_values and entry.get("callback_timestamp"):
+            callback_values[0] = entry.get("callback_timestamp")
+        pdu_values = dict(entry.get("part_timestamps") or {})
+        if not pdu_values and entry.get("timestamp"):
+            pdu_values[0] = entry.get("timestamp")
+
+        callback_comparable = bool(callback_timestamp and any(callback_values.values()))
+        pdu_comparable = bool(timestamp and any(pdu_values.values()))
+        callback_affinity = self._timestamp_affinity(
+            callback_timestamp,
+            index,
+            callback_values,
+            exact_only=strict_callback_timestamp,
+        )
+        pdu_affinity = self._timestamp_affinity(
+            timestamp,
+            index,
+            pdu_values,
+            exact_only=strict_pdu_timestamp,
+        )
+
+        if callback_comparable and callback_affinity is None:
+            return None
+        if (
+            pdu_comparable
+            and pdu_affinity is None
+            and (strict_pdu_timestamp or not callback_comparable)
+        ):
+            return None
+
+        missing = (2, float("inf"), float("inf"))
+        return (
+            0 if callback_affinity is not None else 1,
+            *(callback_affinity or missing),
+            0 if pdu_affinity is not None else 1,
+            *(pdu_affinity or missing),
+        )
+
+    def _timestamp_affinity(self, timestamp, index, values_by_index, *, exact_only=False):
+        incoming_text = str(timestamp or "").strip()
+        if not incoming_text:
+            return None
+
+        incoming_dt = _parse_sms_timestamp(incoming_text)
+        matches = []
+        for existing_index, existing in dict(values_by_index or {}).items():
+            existing_text = str(existing or "").strip()
+            if not existing_text:
+                continue
+            if incoming_text == existing_text:
+                matches.append((0, 0.0, 0.0))
+                continue
+            existing_dt = _parse_sms_timestamp(existing_text)
+            if incoming_dt is None or existing_dt is None:
+                continue
+            signed_delta = (incoming_dt - existing_dt).total_seconds()
+            raw_delta = abs(signed_delta)
+            if raw_delta == 0:
+                matches.append((0, 0.0, 0.0))
+                continue
+            if exact_only:
+                continue
+            try:
+                expected_delta = (int(index) - int(existing_index)) * self.multipart_part_timestamp_step
+            except Exception:
+                expected_delta = 0.0
+            adjusted_delta = abs(signed_delta - expected_delta)
+            distance = min(raw_delta, adjusted_delta)
+            if distance <= self.multipart_timestamp_tolerance:
+                matches.append((1, distance, raw_delta))
+        return min(matches) if matches else None
 
     def _key_bucket(self, key):
         try:
@@ -345,6 +634,10 @@ class LongSmsAssembler:
         match = SMS_CALLBACK_TIMESTAMP_RE.match(str(getattr(pending, "callback_head", "") or ""))
         return match.group("timestamp") if match else ""
 
+    def _callback_timestamp_from_pending(self, pending):
+        match = SMS_CALLBACK_TIMESTAMP_RE.match(str(getattr(pending, "callback_head", "") or ""))
+        return match.group("timestamp") if match else ""
+
     def _is_completed_duplicate(
         self,
         sender,
@@ -353,6 +646,9 @@ class LongSmsAssembler:
         total,
         index,
         body,
+        timestamp,
+        callback_timestamp,
+        strict_timestamp,
         current,
     ):
         for key, completed in self._completed.items():
@@ -369,6 +665,33 @@ class LongSmsAssembler:
                 continue
             parts = completed.get("parts") or {}
             if str(parts.get(index, "")) != str(body or ""):
+                continue
+            callback_values = dict(completed.get("part_callback_timestamps") or {})
+            pdu_values = dict(completed.get("part_timestamps") or {})
+            timestamp_checks = []
+            if callback_timestamp and any(callback_values.values()):
+                timestamp_checks.append(
+                    self._timestamp_affinity(
+                        callback_timestamp,
+                        index,
+                        callback_values,
+                        exact_only=True,
+                    ) is not None
+                )
+            if timestamp and any(pdu_values.values()):
+                timestamp_checks.append(
+                    self._timestamp_affinity(
+                        timestamp,
+                        index,
+                        pdu_values,
+                        exact_only=True,
+                    ) is not None
+                )
+            if strict_timestamp and timestamp and any(pdu_values.values()):
+                if not timestamp_checks[-1]:
+                    continue
+                return True
+            if timestamp_checks and not all(timestamp_checks):
                 continue
             return True
         return False
@@ -433,6 +756,7 @@ class LongSmsAssembler:
             "seen": current,
             "parts": dict(parts),
             "part_timestamps": dict(entry.get("part_timestamps") or {}),
+            "part_callback_timestamps": dict(entry.get("part_callback_timestamps") or {}),
             "total": total,
             "trace_id": trace_id,
             "incomplete": True,
@@ -585,6 +909,55 @@ def _emit_log(log, message):
         pass
 
 
+def _pack_pending_results(results):
+    items = list(results or [])
+    if not items:
+        return None
+    if len(items) == 1:
+        return items[0]
+    return items
+
+
+def _candidate_matches_fallback(candidate, fallback):
+    candidate_body = _normalized_body(getattr(candidate, "full_msg", ""))
+    fallback_body = _normalized_body(getattr(fallback, "full_msg", ""))
+    if "\ufffd" in fallback_body:
+        return _corrupted_fallback_matches_candidate(candidate_body, fallback_body)
+    return (
+        candidate_body == fallback_body
+        or _body_without_line_breaks(candidate_body) == _body_without_line_breaks(fallback_body)
+    )
+
+
+def _corrupted_fallback_matches_candidate(candidate_body, fallback_body):
+    fragments = []
+    for fragment in str(fallback_body or "").split("\ufffd"):
+        cleaned = _body_without_line_breaks(fragment)
+        if len(cleaned) >= 4:
+            fragments.append(cleaned)
+    if len(fragments) < 2:
+        return False
+
+    candidate_text = _body_without_line_breaks(candidate_body)
+    cursor = 0
+    matched = 0
+    for fragment in fragments:
+        index = candidate_text.find(fragment, cursor)
+        if index < 0:
+            return False
+        cursor = index + len(fragment)
+        matched += 1
+    return matched >= 2
+
+
+def _normalized_body(value):
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _body_without_line_breaks(value):
+    return _normalized_body(value).replace("\n", "")
+
+
 def _normalize_sender_for_key(sender: str) -> str:
     text = str(sender or "").strip()
     if text.startswith("+86") and len(text) > 3:
@@ -592,18 +965,6 @@ def _normalize_sender_for_key(sender: str) -> str:
     if text.startswith("86") and len(text) > 2:
         return text[2:]
     return text
-
-
-def _timestamp_matches(expected: str, candidate: str, tolerance: float) -> bool:
-    expected_text = str(expected or "").strip()
-    candidate_text = str(candidate or "").strip()
-    if expected_text == candidate_text:
-        return True
-    expected_dt = _parse_sms_timestamp(expected_text)
-    candidate_dt = _parse_sms_timestamp(candidate_text)
-    if expected_dt is None or candidate_dt is None:
-        return False
-    return abs((expected_dt - candidate_dt).total_seconds()) <= float(tolerance)
 
 
 def _parse_sms_timestamp(value: str):

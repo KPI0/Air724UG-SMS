@@ -2,6 +2,9 @@ from datetime import datetime, timedelta
 import os
 import queue
 
+from sms_ui.sms_popup import open_sms_popup
+from sms_core.threading_runtime import task_done_safely
+
 
 def insert_main_text_runtime(text_widget, msg, tag="normal", *, max_lines=3000, end_marker=None):
     if text_widget is None:
@@ -76,27 +79,72 @@ def flush_pending_ui_logs_runtime(pending_logs, insert_text):
     flushed = 0
     while True:
         try:
-            message, tag = pending_logs.get_nowait()
+            item = pending_logs.get_nowait()
         except queue.Empty:
             break
         except Exception:
             break
         try:
+            message, tag = item
             insert_text(message, tag)
         except Exception:
             pass
+        finally:
+            task_done_safely(pending_logs)
         flushed += 1
     return flushed
 
 
-def show_sms_popup_runtime(message, *, popup_enabled, show_info, show_window):
+def show_sms_popup_runtime(
+    message,
+    *,
+    popup_enabled,
+    parent,
+    current_popup,
+    set_popup,
+    center_on_screen,
+    show_window,
+    open_popup=open_sms_popup,
+):
     if not popup_enabled:
         return "disabled"
+
+    def popup_exists(window):
+        try:
+            return window is not None and bool(window.winfo_exists())
+        except Exception:
+            return False
+
+    if popup_exists(current_popup):
+        try:
+            update_message = getattr(current_popup, "sms_popup_update")
+            update_message(message)
+            return "updated"
+        except Exception:
+            try:
+                current_popup.destroy()
+            except Exception:
+                pass
+            set_popup(None)
+
+    popup_holder = {}
+
+    def close_popup():
+        popup = popup_holder.get("window")
+        try:
+            if popup_exists(popup):
+                popup.destroy()
+        finally:
+            set_popup(None)
+            show_window()
+
     try:
-        show_info("短信提醒", message)
-        show_window()
+        popup = open_popup(parent, message, center_on_screen, close_popup)
+        popup_holder["window"] = popup
+        set_popup(popup)
         return "shown"
     except Exception:
+        set_popup(None)
         return "error"
 
 

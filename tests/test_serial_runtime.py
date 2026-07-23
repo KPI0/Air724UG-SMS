@@ -728,6 +728,26 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, [("connecting", "COM5"), ("close",)])
 
+    def test_run_serial_thread_loop_closes_serial_when_error_handler_raises(self):
+        calls = []
+
+        with self.assertRaisesRegex(RuntimeError, "handler failed"):
+            run_serial_thread_loop(
+                should_continue=lambda: True,
+                get_target_port=lambda: "COM5",
+                resolve_target_port=lambda: "COM5",
+                set_connecting_status=lambda port: calls.append(("connecting", port)),
+                open_and_initialize_serial=lambda port: (_ for _ in ()).throw(RuntimeError("down")),
+                on_connected_port=lambda port: calls.append(("connected", port)),
+                read_serial_line=lambda: b"",
+                handle_line=lambda line: calls.append(("line", line)),
+                handle_error=lambda error, port: (_ for _ in ()).throw(RuntimeError("handler failed")),
+                wait_before_retry=lambda: calls.append(("wait",)),
+                safe_close_serial=lambda: calls.append(("close",)),
+            )
+
+        self.assertEqual(calls, [("connecting", "COM5"), ("close",)])
+
     def test_run_serial_runtime_thread_syncs_call_state_after_line(self):
         calls = []
         app_state = [(7.0, "10086")]

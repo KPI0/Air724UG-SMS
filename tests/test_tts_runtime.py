@@ -14,6 +14,7 @@ from sms_core.tts_runtime import (
     generate_tts_file,
     instance_tts_file_path,
     normalize_voice_text,
+    tts_worker_loop,
     tts_file_family,
 )
 
@@ -76,9 +77,75 @@ class TtsRuntimeTests(unittest.TestCase):
         request_queue.put(("older", False, False))
 
         self.assertEqual(clear_tts_queue(request_queue), 2)
+        self.assertEqual(request_queue.unfinished_tasks, 0)
         enqueue_tts_request(request_queue, "new", force=True, play_after=True)
 
         self.assertEqual(request_queue.get_nowait(), ("new", True, True))
+        request_queue.task_done()
+
+    def test_tts_worker_skips_malformed_request_and_balances_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert.wav")
+            with open(target, "wb") as file:
+                file.write(b"wav")
+
+            request_queue = queue.Queue()
+            request_queue.put(("malformed",))
+            request_queue.put(("hello", False, False))
+            errors = []
+
+            class StopWhenDrained:
+                def is_set(self):
+                    return request_queue.empty() and request_queue.unfinished_tasks == 0
+
+            tts_worker_loop(
+                StopWhenDrained(),
+                request_queue,
+                threading.Lock(),
+                lambda: target,
+                lambda _path: None,
+                tmp,
+                "default",
+                lambda **_kwargs: None,
+                errors.append,
+                engine_factory=lambda: FakeEngine(),
+                poll_timeout=0,
+            )
+
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(request_queue.unfinished_tasks, 0)
+
+    def test_tts_worker_survives_play_callback_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "alert.wav")
+            with open(target, "wb") as file:
+                file.write(b"wav")
+
+            request_queue = queue.Queue()
+            request_queue.put(("hello", False, True))
+            errors = []
+
+            class StopWhenDrained:
+                def is_set(self):
+                    return request_queue.empty() and request_queue.unfinished_tasks == 0
+
+            tts_worker_loop(
+                StopWhenDrained(),
+                request_queue,
+                threading.Lock(),
+                lambda: target,
+                lambda _path: None,
+                tmp,
+                "default",
+                lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("play failed")),
+                errors.append,
+                engine_factory=lambda: FakeEngine(),
+                poll_timeout=0,
+            )
+
+            self.assertEqual(len(errors), 1)
+            self.assertIn("play failed", str(errors[0]))
+            self.assertEqual(request_queue.unfinished_tasks, 0)
 
     def test_cleanup_tts_alt_files_keeps_current_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -219,6 +286,28 @@ class TtsRuntimeTests(unittest.TestCase):
             ),
             "stopped",
         )
+
+    def test_ensure_tts_worker_runtime_clears_published_thread_when_start_fails(self):
+        state = {"thread": None}
+        errors = []
+
+        class BrokenThread(FakeThread):
+            def start(self):
+                raise RuntimeError("start failed")
+
+        result = ensure_tts_worker_runtime(
+            get_thread=lambda: state["thread"],
+            set_thread=lambda thread: state.__setitem__("thread", thread),
+            stop_event=FakeEvent(False),
+            worker_target=lambda: None,
+            thread_factory=lambda **_kwargs: BrokenThread(),
+            log_error=errors.append,
+        )
+
+        self.assertEqual(result, "error")
+        self.assertIsNone(state["thread"])
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(str(errors[0]), "start failed")
 
     def test_generate_alert_voice_runtime_enqueues_normalized_request(self):
         request_queue = queue.Queue()

@@ -237,7 +237,7 @@ def open_serial_debug_window_dialog(
     btn_pause.config(command=pause_controller.toggle)
     pause_controller.refresh()
 
-    finder = SerialDebugFinder(win, serial_text)
+    finder = SerialDebugFinder(win, serial_text, center_window)
     win.bind("<Control-f>", lambda _e: (finder.open(), "break"))
     win.bind("<Control-F>", lambda _e: (finder.open(), "break"))
 

@@ -183,7 +183,17 @@ def cloud_window_connection_state(is_connected, get_loop, get_ws):
 def register_current_cloud_connection(get_loop, get_ws, send_register, run_coroutine_threadsafe):
     loop = get_loop()
     ws = get_ws()
-    return run_coroutine_threadsafe(send_register(ws), loop)
+    register_coro = send_register(ws)
+    try:
+        return run_coroutine_threadsafe(register_coro, loop)
+    except Exception:
+        close = getattr(register_coro, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+        raise
 
 
 def open_cloud_control_app_runtime(

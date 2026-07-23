@@ -37,6 +37,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
             "start_cloud_control",
             "stop_cloud_control",
             "restart_cloud_control",
+            "refresh_cloud_control_settings_from_config",
             "open_cloud_control_window",
         ):
             self.assertIn(name, namespace)
@@ -50,11 +51,13 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
                 patch.object(bindings, "save_cloud_control_setting_namespace_runtime", return_value="saved") as save_setting, \
                 patch.object(bindings, "cloud_log_namespace_runtime", return_value="logged") as cloud_log, \
                 patch.object(bindings, "send_cloud_serial_log_namespace_runtime", return_value="serial_log") as serial_log, \
+                patch.object(bindings, "refresh_cloud_control_settings_namespace_runtime", return_value=True) as refresh_settings, \
                 patch.object(bindings, "start_cloud_control_namespace_runtime", return_value=True) as start_control:
             self.assertEqual(namespace["_cloud_runtime_imei"](), "861")
             self.assertEqual(namespace["save_cloud_control_setting"](enabled=True, url="ws://host"), "saved")
             self.assertEqual(namespace["_cloud_log"]("hello", show_main=True), "logged")
             self.assertEqual(namespace["_cloud_send_serial_log"]("line"), "serial_log")
+            self.assertTrue(namespace["refresh_cloud_control_settings_from_config"]())
             self.assertTrue(namespace["start_cloud_control"](show_errors=True))
 
         runtime_imei.assert_called_once_with(namespace)
@@ -63,6 +66,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
         self.assertEqual(save_setting.call_args.kwargs["url"], "ws://host")
         cloud_log.assert_called_once_with(namespace, "hello", show_main=True)
         serial_log.assert_called_once_with(namespace, "line")
+        refresh_settings.assert_called_once_with(namespace)
         start_control.assert_called_once_with(namespace, show_errors=True)
 
     def test_schedule_and_close_bindings_forward_connection_context(self):

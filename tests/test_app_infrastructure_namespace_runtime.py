@@ -60,6 +60,8 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
             "app_mutex": None,
             "POPUP_ENABLED": True,
             "messagebox": FakeMessageBox(calls),
+            "sms_popup_win": None,
+            "center_on_screen": lambda win: calls.append(("center", win)),
             "show_window": lambda: calls.append(("show_window",)),
             "tk_alive": lambda: True,
             "clear_text_area_for_new_day": lambda: calls.append(("clear_day",)),
@@ -68,14 +70,21 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
 
     def test_safe_save_config_namespace_runtime_forwards_config_context(self):
         namespace = self.make_namespace()
+        defaults = {"ui": {"voice_enabled": "1"}}
 
         with patch.object(runtime, "safe_save_config_runtime", return_value=True) as save_runtime:
-            self.assertTrue(runtime.safe_save_config_namespace_runtime(namespace))
+            self.assertTrue(
+                runtime.safe_save_config_namespace_runtime(
+                    namespace,
+                    defaults_by_section=defaults,
+                )
+            )
 
         kwargs = save_runtime.call_args.kwargs
         self.assertEqual(kwargs["config"], "config")
         self.assertEqual(kwargs["config_file"], "config.ini")
         self.assertEqual(kwargs["config_lock"], "lock")
+        self.assertIs(kwargs["defaults_by_section"], defaults)
         kwargs["log_error"]("bad")
         self.assertIn(("log", "bad"), namespace["calls"])
 
@@ -161,9 +170,13 @@ class AppInfrastructureNamespaceRuntimeTests(unittest.TestCase):
         self.assertIn(("run", "ui_post"), namespace["calls"])
         kwargs = popup_runtime.call_args.kwargs
         self.assertTrue(kwargs["popup_enabled"])
-        kwargs["show_info"]("title", "message")
+        self.assertIs(kwargs["parent"], namespace["root"])
+        self.assertIsNone(kwargs["current_popup"])
+        kwargs["set_popup"]("popup")
+        kwargs["center_on_screen"]("popup")
         kwargs["show_window"]()
-        self.assertIn(("info", ("title", "message")), namespace["calls"])
+        self.assertEqual(namespace["sms_popup_win"], "popup")
+        self.assertIn(("center", "popup"), namespace["calls"])
         self.assertIn(("show_window",), namespace["calls"])
 
     def test_schedule_next_midnight_clear_namespace_runtime_forwards_datetime(self):

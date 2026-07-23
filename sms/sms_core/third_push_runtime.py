@@ -142,10 +142,16 @@ def third_push_worker_runtime(
     should_emit_results=None,
 ):
     should_emit_results = should_emit_results or (lambda: True)
-    while not stop_event.is_set():
+    while True:
+        stop_requested = bool(stop_event.is_set())
         try:
-            item = push_queue.get(timeout=poll_timeout)
+            if stop_requested:
+                item = push_queue.get_nowait()
+            else:
+                item = push_queue.get(timeout=poll_timeout)
         except queue.Empty:
+            if stop_requested or stop_event.is_set():
+                break
             continue
 
         try:

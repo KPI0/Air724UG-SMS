@@ -186,7 +186,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         result = pipeline.add_collected(
             CollectedSmsCallback(
                 "10086 26/06/28,11:15:50+32 " + body[:24] + "\ufffd",
-                ["pollution"],
+                [body[25:]],
             ),
             now=12.0,
         )
@@ -307,6 +307,394 @@ class SmsReceivePipelineTests(unittest.TestCase):
         self.assertRegex(result.message_trace_id, r"^[0-9a-f]{12}$")
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 
+    def test_far_pdu_timestamps_do_not_turn_serial_wrap_into_sms_newline(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        body = (
+            "【充值成功提醒】尊敬的客户：您已充值0.01元，充值后可用通用余额为347.35元。"
+            "短信回复数字‘1025’可查看余额及费用详情。更多查询及缴费方式：\n"
+            "1、拨打查费专线1000111或微信关注“湖南电信”服务号。\n"
+            "2、登录中国电信APP( a.189.cn/Jd8GxQ )\n"
+            "3、点击查询链接： http://t.hn.189.cn/AJBbQrOE ，如对费用有疑问，可进入在线人工客服咨询。\n"
+            "温馨提醒：缴费复机后如仍不能上网可重启终端。【中国电信】"
+        )
+        parts = [body[index:index + 67] for index in range(0, len(body), 67)]
+        self.assertEqual(len(parts), 4)
+        timestamp_hexes = (
+            "62702251611323",
+            "62702251614323",
+            "62702251618223",
+            "62702251610223",
+        )
+        for index, (part, timestamp_hex) in enumerate(zip(parts, timestamp_hexes), start=1):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,156", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                part,
+                reference=0xEE,
+                total=4,
+                index=index,
+                timestamp_hex=timestamp_hex,
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        first_line, *real_continuations = body.split("\n")
+        forced_break = first_line.index("充值后") + len("充值")
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                "10001 26/07/22,15:16:19+32 " + first_line[:forced_break],
+                [first_line[forced_break:]] + real_continuations,
+            ),
+            now=20.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, body)
+        self.assertIn("充值后", result.full_msg)
+        self.assertNotIn("充值\n后", result.full_msg)
+        self.assertEqual(result.full_msg.count("\n"), 4)
+        self.assertEqual(result.concat_reference, 0xEE)
+        self.assertEqual(pipeline.long_sms_assembler._pending, {})
+
+    def test_partial_far_pdu_cache_falls_back_without_serial_wrap_newline(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        body = (
+            "【充值成功提醒】尊敬的客户：您已充值0.01元，充值后可用通用余额为347.35元。"
+            "短信回复数字‘1025’可查看余额及费用详情。更多查询及缴费方式：\n"
+            "1、拨打查费专线1000111或微信关注“湖南电信”服务号。\n"
+            "2、登录中国电信APP。\n"
+            "3、点击查询链接。\n"
+            "温馨提醒：缴费复机后请重启终端。【中国电信】"
+        )
+        parts = [body[index:index + 67] for index in range(0, len(body), 67)]
+        self.assertGreaterEqual(len(parts), 3)
+        for index in (1, 3):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,156", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                parts[index - 1],
+                reference=0xEE,
+                total=len(parts),
+                index=index,
+                timestamp_hex="62702251611323" if index == 1 else "62702251618223",
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        first_line, *real_continuations = body.split("\n")
+        forced_break = first_line.index("充值后") + len("充值")
+
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                "10001 26/07/22,15:16:19+32 " + first_line[:forced_break],
+                [first_line[forced_break:]] + real_continuations,
+            ),
+            now=20.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, body)
+        self.assertNotIn("充值\n后", result.full_msg)
+        self.assertEqual(result.full_msg.count("\n"), 4)
+        self.assertEqual(pipeline.long_sms_assembler._pending, {})
+
+    def test_partial_pdu_fallback_removes_wrap_inside_second_segment(self):
+        cache = SmsPduCorrectionCache()
+        sender = "10001"
+        timestamp = "26/06/28,11:15:50+32"
+        part1 = "FIRST-SEGMENT-LONG-ANCHOR-CONTENT-"
+        part2 = "SECOND-SEGMENT-CONTINUES-WITH-MORE-CONTENT-"
+        part3 = "THIRD-SEGMENT-FINAL-CONTENT"
+        body = part1 + part2 + part3
+        for index, part in ((1, part1), (2, part2)):
+            cache.observe_line(
+                f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80",
+                10.0 + index,
+            )
+            cache.observe_line(
+                _incoming_ucs2_pdu(
+                    sender,
+                    part,
+                    reference=0x73,
+                    total=3,
+                    index=index,
+                ),
+                10.1 + index,
+            )
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        split_at = len(part1) + 12
+
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                f"{sender} {timestamp} " + body[:split_at],
+                [body[split_at:]],
+            ),
+            now=14.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, body)
+        self.assertNotIn(body[:split_at] + "\n", result.full_msg)
+        self.assertEqual(pipeline.long_sms_assembler._pending, {})
+
+    def test_exact_match_reference_reuse_rejects_stale_cached_part(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        sender = "10001"
+        old_timestamp_hex = "62608211510523"
+        new_timestamp = "26/06/28,11:15:51+32"
+        new_timestamp_hex = "62608211511523"
+        reference = 0x74
+        new_part1 = "CURRENT-MESSAGE-LONG-FIRST-SEGMENT-"
+        old_part2 = "OLD-SUFFIX-AMOUNT-100"
+        new_part2 = "NEW-SUFFIX-AMOUNT-200"
+        new_body = new_part1 + new_part2
+
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 10.0)
+        cache.observe_line(
+            _incoming_ucs2_pdu(
+                sender,
+                old_part2,
+                reference=reference,
+                total=2,
+                index=2,
+                timestamp_hex=old_timestamp_hex,
+            ),
+            10.1,
+        )
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2)
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=2 true OK +CMGR: 0,,80", 11.0)
+        cache.observe_line(
+            _incoming_ucs2_pdu(
+                sender,
+                new_part1,
+                reference=reference,
+                total=2,
+                index=1,
+                timestamp_hex=new_timestamp_hex,
+            ),
+            11.1,
+        )
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 11.2)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                f"{sender} {new_timestamp} " + new_body,
+                [],
+            ),
+            now=12.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, new_body)
+        self.assertNotIn(old_part2, result.full_msg)
+        self.assertEqual(pipeline.long_sms_assembler._pending, {})
+
+    def test_same_timestamp_reference_reuse_validates_callback_evidence(self):
+        sender = "10001"
+        pdu_timestamp = "26/06/28,11:15:50+32"
+        reference = 0x79
+        new_part1 = "CURRENT-FIRST-SEGMENT-LONG-CONTENT-"
+        old_part2 = "OLD-SECOND-AMOUNT-100"
+        new_part2 = "NEW-SECOND-AMOUNT-200"
+        corrupted = new_part1 + "NEW-\ufffd-SECOND-AMOUNT-200"
+        scenarios = (
+            ("full_head_exact", pdu_timestamp, new_part1 + new_part2, []),
+            ("raw_after_part1_exact", pdu_timestamp, new_part1, [new_part2]),
+            ("short_head_exact", pdu_timestamp, new_part1[:20], [new_part1[20:] + new_part2]),
+            ("corrupt_exact", pdu_timestamp, corrupted, []),
+            ("raw_after_part1_near", "26/06/28,11:15:51+32", new_part1, [new_part2]),
+            ("short_head_near", "26/06/28,11:15:51+32", new_part1[:20], [new_part1[20:] + new_part2]),
+            ("raw_after_part1_far", "26/06/28,11:16:10+32", new_part1, [new_part2]),
+        )
+
+        for name, callback_timestamp, callback_body, raw_lines in scenarios:
+            with self.subTest(name=name):
+                cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+                for index, body in ((2, old_part2), (1, new_part1)):
+                    cache.observe_line(
+                        f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80",
+                        10.0 + index,
+                    )
+                    cache.observe_line(
+                        _incoming_ucs2_pdu(
+                            sender,
+                            body,
+                            reference=reference,
+                            total=2,
+                            index=index,
+                        ),
+                        10.1 + index,
+                    )
+                    cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+                pipeline = SmsReceivePipeline(
+                    parse_sms_callback_head,
+                    cache,
+                    LongSmsAssembler(parse_sms_callback_head),
+                )
+
+                result = pipeline.add_collected(
+                    CollectedSmsCallback(
+                        f"{sender} {callback_timestamp} {callback_body}",
+                        raw_lines,
+                    ),
+                    now=14.0,
+                )
+
+                self.assertIsNotNone(result)
+                self.assertNotIn(old_part2, result.full_msg)
+                self.assertIn("AMOUNT-200", result.full_msg)
+
+    def test_far_pdu_fallback_does_not_replace_new_similar_template(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        prefix = "RECHARGE-NOTICE-CUSTOMER-PREFIX-"
+        old_body = prefix + "AMOUNT-100.00-OLD-MESSAGE-END"
+        new_body = prefix + "AMOUNT-200.00-NEW-MESSAGE-END"
+        old_parts = [old_body[:40], old_body[40:]]
+        for index, part in enumerate(old_parts, start=1):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                part,
+                reference=0x55,
+                total=2,
+                index=index,
+                timestamp_hex="62702251611323",
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        forced_break = len(prefix) - 2
+
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                "10001 26/07/22,15:16:19+32 " + new_body[:forced_break],
+                [new_body[forced_break:]],
+            ),
+            now=14.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, new_body)
+        self.assertNotEqual(result.full_msg, old_body)
+        self.assertEqual(pipeline.long_sms_assembler._pending, {})
+
+    def test_far_pdu_duplicate_callback_stays_suppressed(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        body = "LONG-TEMPLATE-PREFIX-CONTENT-PART-ONE-AND-PART-TWO-END"
+        parts = [body[:30], body[30:]]
+        for index, part in enumerate(parts, start=1):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                part,
+                reference=0x44,
+                total=2,
+                index=index,
+                timestamp_hex="62702251611323",
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        callback = CollectedSmsCallback(
+            "10001 26/07/22,15:16:19+32 " + body[:22],
+            [body[22:]],
+        )
+
+        first = pipeline.add_collected(callback, now=14.0)
+        duplicate = pipeline.add_collected(callback, now=15.0)
+
+        self.assertEqual(first.full_msg, body)
+        self.assertIsNone(duplicate)
+
+    def test_corrupted_far_callback_does_not_trust_stale_similar_pdu(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        prefix = "RECHARGE-NOTICE-CUSTOMER-PREFIX-"
+        old_body = prefix + "AMOUNT-100.00-OLD-MESSAGE-END"
+        new_body = prefix + "AMOUNT-200.00-NEW-MESSAGE-END"
+        old_parts = [old_body[:40], old_body[40:]]
+        for index, part in enumerate(old_parts, start=1):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                part,
+                reference=0x56,
+                total=2,
+                index=index,
+                timestamp_hex="62702251611323",
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        corrupt_at = len(prefix) - 2
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                "10001 26/07/22,15:16:19+32 " + new_body[:corrupt_at] + "\ufffd",
+                [new_body[corrupt_at + 1:]],
+            ),
+            now=14.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertNotEqual(result.full_msg, old_body)
+        self.assertIn("200.00", result.full_msg)
+
+    def test_corrupted_far_callback_uses_matching_pdu_fragments(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        body = "CURRENT-LONG-PREFIX-BEFORE-CORRUPTION-AFTER-CORRUPTION-CURRENT-END"
+        parts = [body[:38], body[38:]]
+        for index, part in enumerate(parts, start=1):
+            cache.observe_line(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80", 10.0 + index)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                part,
+                reference=0x57,
+                total=2,
+                index=index,
+                timestamp_hex="62702251611323",
+            ), 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            cache,
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        corrupt_at = body.index("CORRUPTION")
+        result = pipeline.add_collected(
+            CollectedSmsCallback(
+                "10001 26/07/22,15:16:19+32 " + body[:corrupt_at] + "\ufffd",
+                [body[corrupt_at + 1:]],
+            ),
+            now=14.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.full_msg, body)
+
     def test_merged_lua_callback_with_newlines_wins_over_matching_first_pdu_part(self):
         cache = SmsPduCorrectionCache()
         body = (
@@ -360,7 +748,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         self.assertEqual(result.concat_total, 4)
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 
-    def test_merged_lua_callback_uses_pdu_segments_when_concat_metadata_matches(self):
+    def test_merged_lua_callback_uses_pdu_segments_when_callback_evidence_matches(self):
         cache = SmsPduCorrectionCache()
         body = "PART1-body-PART2-body-PART3-body-PART4-body"
         parts = [body[:10], body[10:20], body[20:30], body[30:]]
@@ -384,7 +772,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         result = pipeline.add_collected(
             CollectedSmsCallback(
                 "10001 26/06/28,21:30:33+32 " + parts[0],
-                ["unrelated continuation"],
+                [body[len(parts[0]):]],
             ),
             now=20.0,
         )
@@ -454,7 +842,7 @@ class SmsReceivePipelineTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(result.full_msg, "".join(parts))
+        self.assertEqual(result.full_msg, body)
         self.assertIn("4）更多流量回复9", result.full_msg)
         self.assertEqual(pipeline.long_sms_assembler._pending, {})
 

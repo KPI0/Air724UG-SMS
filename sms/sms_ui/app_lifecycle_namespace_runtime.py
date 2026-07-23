@@ -31,15 +31,16 @@ def _registered_worker_threads(namespace):
                     log_error(f"Snapshot {registry_name} failed: {exc!r}")
                 except Exception:
                     pass
+            raise RuntimeError(f"Snapshot {registry_name} failed") from exc
     return tuple(threads)
 
 
 def _shutdown_worker_threads(namespace):
     return (
-        namespace.get("third_push_thread"),
         namespace.get("serial_thread"),
         namespace.get("TTS_THREAD"),
         namespace.get("cloud_ws_thread"),
+        namespace.get("tray_thread"),
     ) + _registered_worker_threads(namespace)
 
 
@@ -63,7 +64,6 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         set_serial_running=lambda value: namespace.__setitem__("serial_running", bool(value)),
         shutdown_events=(namespace["TK_SHUTDOWN"],),
         worker_stop_events=(
-            namespace["third_push_stop"],
             namespace["serial_stop_event"],
             namespace["serial_wakeup_event"],
         ),
@@ -77,6 +77,9 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
         worker_threads=lambda: _shutdown_worker_threads(namespace),
+        deferred_worker_stop_events=(namespace["third_push_stop"],),
+        deferred_worker_threads=lambda: (namespace.get("third_push_thread"),),
+        deferred_worker_queues=(namespace["THIRD_PUSH_Q"],),
         destroy_root=namespace["root"].destroy,
         log_error=namespace.get("log_file_only"),
     )
@@ -212,7 +215,6 @@ def restart_software_namespace_runtime(
         safe_set_events=namespace["safe_set_events"],
         stop_events=(
             namespace["TK_SHUTDOWN"],
-            namespace["third_push_stop"],
             namespace["serial_stop_event"],
             namespace["serial_wakeup_event"],
             namespace["TTS_STOP"],
@@ -226,5 +228,8 @@ def restart_software_namespace_runtime(
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
         worker_threads=lambda: _shutdown_worker_threads(namespace),
+        deferred_stop_events=(namespace["third_push_stop"],),
+        deferred_worker_threads=lambda: (namespace.get("third_push_thread"),),
+        deferred_worker_queues=(namespace["THIRD_PUSH_Q"],),
         exit_process=os_module._exit,
     )

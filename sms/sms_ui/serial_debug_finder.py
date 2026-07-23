@@ -3,9 +3,10 @@ from tkinter import ttk
 
 
 class SerialDebugFinder:
-    def __init__(self, parent, text_widget):
+    def __init__(self, parent, text_widget, center_window):
         self.parent = parent
         self.text = text_widget
+        self.center_window = center_window
         self.win = None
         self.var = tk.StringVar(value="")
         self.last_index = "1.0"
@@ -106,8 +107,16 @@ class SerialDebugFinder:
             return
 
         self.win = tk.Toplevel(self.parent)
+        self.win.withdraw()
+        alpha_hidden = False
+        try:
+            self.win.attributes("-alpha", 0.0)
+            alpha_hidden = True
+        except Exception:
+            pass
         self.win.title("查找 (Ctrl+F)")
         self.win.resizable(False, False)
+        self.win.transient(self.parent)
 
         frame = ttk.Frame(self.win, padding=10)
         frame.pack(fill="both", expand=True)
@@ -125,12 +134,24 @@ class SerialDebugFinder:
         if self.trace_id is None:
             self.trace_id = self.var.trace_add("write", on_change)
 
-        entry.focus_set()
         entry.bind("<Return>", self.find_next)
         entry.bind("<Shift-Return>", self.find_prev)
         entry.bind("<Escape>", self.close)
         self.win.bind("<Escape>", self.close)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.win.update_idletasks()
+        self.center_window(self.win, self.parent)
+        self.win.deiconify()
+        if alpha_hidden:
+            # Windows may apply its default placement when a Toplevel is mapped
+            # for the first time.  Keep that first map invisible, then center
+            # again using the mapped size before revealing the dialog.
+            self.win.update_idletasks()
+            self.center_window(self.win, self.parent)
+            self.win.attributes("-alpha", 1.0)
+        self.win.lift()
+        entry.focus_set()
 
     def close(self, _event=None):
         self.clear()

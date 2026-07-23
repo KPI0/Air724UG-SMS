@@ -26,6 +26,16 @@ def _close_unawaited_coro(coro):
         close()
 
 
+def _task_done_safely(log_queue):
+    task_done = getattr(log_queue, "task_done", None)
+    if task_done is None:
+        return
+    try:
+        task_done()
+    except Exception:
+        pass
+
+
 def put_drop_oldest(log_queue, payload):
     try:
         log_queue.put_nowait(payload)
@@ -33,6 +43,7 @@ def put_drop_oldest(log_queue, payload):
     except queue.Full:
         try:
             log_queue.get_nowait()
+            _task_done_safely(log_queue)
         except queue.Empty:
             pass
         try:
@@ -45,9 +56,11 @@ def put_drop_oldest(log_queue, payload):
 def clear_cloud_serial_log_queue(log_queue, *, log_error=None):
     try:
         while True:
-            log_queue.get_nowait()
-    except queue.Empty:
-        pass
+            try:
+                log_queue.get_nowait()
+            except queue.Empty:
+                break
+            _task_done_safely(log_queue)
     except Exception as exc:
         _safe_log(log_error, f"Clear cloud serial log queue failed: {exc!r}")
 
@@ -88,8 +101,11 @@ async def drain_cloud_serial_log_queue(
             except queue.Empty:
                 return
 
-            await ws.send(serialize_payload(payload))
-            sent += 1
+            try:
+                await ws.send(serialize_payload(payload))
+                sent += 1
+            finally:
+                _task_done_safely(log_queue)
     except Exception as exc:
         _safe_log(log_error, f"Drain cloud serial log queue failed: {exc!r}")
         clear_cloud_serial_log_queue(log_queue, log_error=log_error)
@@ -104,6 +120,7 @@ async def drain_cloud_serial_log_queue(
                 state.drain_scheduled = False
 
         if should_continue:
+            coro = None
             try:
                 coro = drain_cloud_serial_log_queue(
                     ws,
@@ -119,7 +136,8 @@ async def drain_cloud_serial_log_queue(
                 create_task(coro)
             except Exception as exc:
                 _safe_log(log_error, f"Schedule next cloud serial log drain failed: {exc!r}")
-                _close_unawaited_coro(coro)
+                if coro is not None:
+                    _close_unawaited_coro(coro)
                 with state.lock:
                     state.drain_scheduled = False
 

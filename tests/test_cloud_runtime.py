@@ -35,6 +35,7 @@ class CloudRuntimeTests(unittest.TestCase):
         def __init__(self, set_value=False):
             self.value = set_value
             self.cleared = False
+            self.set_called = False
 
         def is_set(self):
             return self.value
@@ -42,6 +43,10 @@ class CloudRuntimeTests(unittest.TestCase):
         def clear(self):
             self.value = False
             self.cleared = True
+
+        def set(self):
+            self.value = True
+            self.set_called = True
 
     class FakeThread:
         def __init__(self, target=None, args=(), daemon=False, alive=False):
@@ -284,6 +289,43 @@ class CloudRuntimeTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(calls, [])
 
+    def test_start_cloud_control_runtime_rolls_back_state_when_thread_start_fails(self):
+        calls = []
+        state = {"thread": None}
+        stop_event = self.FakeEvent(set_value=True)
+
+        class BrokenThread(self.FakeThread):
+            def start(self):
+                raise RuntimeError("start failed")
+
+        ok = start_cloud_control_runtime(
+            websockets_available=True,
+            url="ws://host",
+            device_secret="secret",
+            reconnect_interval=7,
+            show_errors=False,
+            validate_start=validate_cloud_start,
+            set_cloud_status=lambda text, color: calls.append(("status", text, color)),
+            log_missing_dependency=lambda: calls.append(("missing",)),
+            show_warning=lambda title, message: calls.append(("warning", title, message)),
+            runtime_imei=lambda: "imei",
+            request_device_imei=lambda: calls.append(("imei",)),
+            lock=self.FakeLock(),
+            get_thread=lambda: state["thread"],
+            set_thread=lambda thread: state.__setitem__("thread", thread),
+            stop_event=stop_event,
+            thread_factory=BrokenThread,
+            thread_target=lambda *_: calls.append(("target",)),
+            log_error=lambda message: calls.append(("log", message)),
+        )
+
+        self.assertFalse(ok)
+        self.assertIsNone(state["thread"])
+        self.assertTrue(stop_event.value)
+        self.assertTrue(stop_event.set_called)
+        self.assertIn(("status", "🌐 启动失败", "#cc0000"), calls)
+        self.assertTrue(any(call[0] == "log" and "start failed" in call[1] for call in calls))
+
     def test_stop_cloud_control_runtime_resets_state_and_schedules_unregister(self):
         calls = []
 
@@ -351,6 +393,46 @@ class CloudRuntimeTests(unittest.TestCase):
         self.assertIn(("ws", None), calls)
         self.assertNotIn(("status", "unused", "unused"), calls)
         self.assertFalse(any(call[0] == "coro" for call in calls))
+
+    def test_stop_cloud_control_runtime_closes_coro_when_submit_fails(self):
+        created = []
+
+        class FakeLoop:
+            def is_running(self):
+                return True
+
+        class FakeStopEvent:
+            def set(self):
+                pass
+
+        async def unregister(ws):
+            return ws
+
+        def schedule_unregister_then_close(ws):
+            coro = unregister(ws)
+            created.append(coro)
+            return coro
+
+        def reject_coro(_coro, _loop):
+            raise RuntimeError("loop rejected")
+
+        stop_cloud_control_runtime(
+            update_status=False,
+            enabled=True,
+            stop_event=FakeStopEvent(),
+            set_connected=lambda _value: None,
+            set_authorized=lambda _value: None,
+            reset_serial_log_state=lambda: None,
+            get_loop=lambda: FakeLoop(),
+            get_ws=lambda: "ws",
+            schedule_unregister_then_close=schedule_unregister_then_close,
+            set_ws=lambda _value: None,
+            set_cloud_status=lambda _text, _color: None,
+            run_coroutine_threadsafe=reject_coro,
+        )
+
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(created[0].cr_frame)
 
     def test_restart_cloud_control_runtime_stops_and_restarts(self):
         calls = []

@@ -1,4 +1,5 @@
 import unittest
+import queue
 
 from sms_core.app_launch import (
     build_restart_helper_command,
@@ -144,6 +145,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertEqual(wait_calls[0][1], "file_thread")
         self.assertIn("log_error", wait_calls[0][2])
         self.assertIn(("flush", "queue"), calls)
+        self.assertLess(calls.index(("flush", "queue")), calls.index(("release", "mutex")))
         self.assertEqual(calls[-1], ("exit", 0))
         self.assertFalse(any(item[0] == "cancel" for item in calls))
 
@@ -160,6 +162,62 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertLess(calls.index(("close_serial",)), calls.index(("snapshot",)))
         waits = [item for item in calls if item[0] == "wait_workers"]
         self.assertEqual(waits[0][1], ("late-worker",))
+
+    def test_restart_waits_for_workers_registered_while_producers_stop(self):
+        calls = []
+        producer = object()
+        late_worker = object()
+        snapshots = iter(((producer,), (producer, late_worker)))
+
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                worker_threads=lambda: next(snapshots),
+            )
+        )
+
+        self.assertEqual(result.status, "exited")
+        waits = [item[1] for item in calls if item[0] == "wait_workers"]
+        self.assertEqual(waits, [(producer,), (late_worker,)])
+        self.assertLess(
+            calls.index(next(item for item in calls if item[:2] == ("wait_workers", (late_worker,)))),
+            calls.index(("flush", "queue")),
+        )
+
+    def test_restart_drains_deferred_queue_after_upstream_workers_stop(self):
+        calls = []
+        work_queue = queue.Queue()
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                stop_events=("tk", "serial"),
+                deferred_stop_events=("third",),
+                deferred_worker_threads=("third-worker",),
+                deferred_worker_queues=(work_queue,),
+            )
+        )
+
+        self.assertEqual(result.status, "exited")
+        waits = [item for item in calls if item[0] == "wait_workers"]
+        self.assertEqual([item[1] for item in waits], [("producer",), ("third-worker",)])
+        self.assertLess(calls.index(("events", ("third",))), calls.index(("events", ("file_stop",))))
+
+    def test_restart_aborts_when_deferred_queue_is_not_drained(self):
+        calls = []
+        work_queue = queue.Queue()
+        work_queue.put("pending")
+        result = restart_software_runtime(
+            **self._runtime_kwargs(
+                calls,
+                deferred_stop_events=("third",),
+                deferred_worker_threads=("third-worker",),
+                deferred_worker_queues=(work_queue,),
+            )
+        )
+
+        self.assertEqual(result.status, "worker_wait_failed")
+        self.assertIn(("cancel", "helper-process"), calls)
+        self.assertFalse(any(item[0] in ("wait_file", "flush", "release", "exit") for item in calls))
 
     def test_restart_aborts_and_cancels_helper_when_worker_snapshot_raises(self):
         calls = []
@@ -268,6 +326,21 @@ class AppLaunchRestartTests(unittest.TestCase):
 
         self.assertIn(("cancel", "helper-process"), calls)
         self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_does_not_release_mutex_when_final_flush_raises(self):
+        calls = []
+
+        with self.assertRaisesRegex(RuntimeError, "flush failed"):
+            restart_software_runtime(
+                **self._runtime_kwargs(
+                    calls,
+                    flush_log_queue=lambda _queue: (_ for _ in ()).throw(RuntimeError("flush failed")),
+                )
+            )
+
+        self.assertFalse(any(item[0] == "release" for item in calls))
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+        self.assertIn(("cancel", "helper-process"), calls)
 
 
 if __name__ == "__main__":

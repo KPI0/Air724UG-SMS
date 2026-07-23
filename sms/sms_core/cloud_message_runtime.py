@@ -189,6 +189,7 @@ def send_cloud_sms_event_runtime(
         return "empty"
     if not authorized:
         return "unauthorized"
+    send_coro = None
     try:
         loop = get_loop()
         ws = get_ws()
@@ -208,9 +209,16 @@ def send_cloud_sms_event_runtime(
             payload = build_payload(callback_head, body, timestamp(), identity_payload())
         if payload is None:
             return "empty_payload"
-        run_coroutine_threadsafe(send_payload(ws, payload), loop)
+        send_coro = send_payload(ws, payload)
+        run_coroutine_threadsafe(send_coro, loop)
         return "scheduled"
     except Exception:
+        close = getattr(send_coro, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
         return "error"
 
 

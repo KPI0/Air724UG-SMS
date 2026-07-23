@@ -11,6 +11,7 @@ from sms_core.windows_runtime import acquire_named_mutex_lock, release_named_mut
 
 CONFIG_SNAPSHOT_ATTR = "_sms_last_disk_snapshot"
 CONFIG_MUTEX_PREFIX = "Air724UG_SMS_Config_Write_V1"
+_MISSING_CONFIG_SNAPSHOT = object()
 
 
 class ConfigInitializationError(RuntimeError):
@@ -121,10 +122,112 @@ def merge_config_changes(disk_snapshot, baseline_snapshot, current_snapshot):
     return merged
 
 
+def merge_config_defaults(config_snapshot, defaults_by_section):
+    """Fill a snapshot from the schema without replacing newer stored values."""
+    merged = {
+        section: dict(values)
+        for section, values in dict(config_snapshot or {}).items()
+    }
+    for section, values in dict(defaults_by_section or {}).items():
+        section = str(section)
+        target = merged.setdefault(section, {})
+        for option, value in dict(values or {}).items():
+            target.setdefault(str(option), str(value))
+
+    return merged
+
+
 def load_config_snapshot(config_file, *, encoding="utf-8-sig"):
     disk_config = configparser.ConfigParser(interpolation=None)
-    disk_config.read(config_file, encoding=encoding)
+    loaded_files = disk_config.read(config_file, encoding=encoding)
+    if not loaded_files:
+        raise FileNotFoundError(config_file)
     return snapshot_config_runtime(disk_config)
+
+
+def _restore_remembered_config_snapshot(config, snapshot):
+    if snapshot is _MISSING_CONFIG_SNAPSHOT:
+        try:
+            delattr(config, CONFIG_SNAPSHOT_ATTR)
+        except AttributeError:
+            pass
+        return
+    setattr(
+        config,
+        CONFIG_SNAPSHOT_ATTR,
+        None
+        if snapshot is None
+        else {
+            section: dict(values)
+            for section, values in dict(snapshot).items()
+        },
+    )
+
+
+def reload_config_runtime(
+    *,
+    config,
+    config_file,
+    config_lock,
+    prepare_config=None,
+    commit_config=None,
+    read_values=None,
+    load_snapshot=load_config_snapshot,
+):
+    """Reload a shared ConfigParser without exposing a partial or failed parse."""
+    with config_lock:
+        previous_snapshot = snapshot_config_runtime(config)
+        previous_baseline = getattr(
+            config,
+            CONFIG_SNAPSHOT_ATTR,
+            _MISSING_CONFIG_SNAPSHOT,
+        )
+        disk_snapshot = load_snapshot(config_file)
+        if previous_baseline is None or previous_baseline is _MISSING_CONFIG_SNAPSHOT:
+            merged_snapshot = disk_snapshot
+        else:
+            merged_snapshot = merge_config_changes(
+                disk_snapshot,
+                previous_baseline,
+                previous_snapshot,
+            )
+
+        staged_config = configparser.ConfigParser(interpolation=None)
+        restore_config_runtime(staged_config, merged_snapshot)
+
+        try:
+            if prepare_config is not None:
+                prepare_config(staged_config)
+            staged_snapshot = snapshot_config_runtime(staged_config)
+            restore_config_runtime(config, staged_snapshot)
+            remember_config_snapshot(config, disk_snapshot)
+
+            if commit_config is not None and commit_config() is False:
+                raise RuntimeError("配置刷新提交失败")
+
+            if read_values is not None:
+                return read_values(config)
+            return True
+        except Exception:
+            restore_config_runtime(config, previous_snapshot)
+            _restore_remembered_config_snapshot(config, previous_baseline)
+            raise
+
+
+def ensure_config_defaults(config, defaults_by_section):
+    """Add every missing default section/option without changing existing values."""
+    changed = False
+    for section, values in dict(defaults_by_section or {}).items():
+        section = str(section)
+        if not config.has_section(section):
+            config.add_section(section)
+            changed = True
+        for option, value in dict(values or {}).items():
+            option = str(option)
+            if not config.has_option(section, option):
+                config.set(section, option, str(value))
+                changed = True
+    return changed
 
 
 def initialize_config_runtime(
@@ -146,7 +249,7 @@ def initialize_config_runtime(
         for section, values in defaults_by_section.items():
             config[section] = dict(values)
 
-    def save_startup_defaults(action):
+    def save_startup_config(action):
         try:
             result = save_config()
         except Exception as exc:
@@ -162,7 +265,7 @@ def initialize_config_runtime(
 
     if not path_exists(config_file):
         load_defaults()
-        save_startup_defaults("创建")
+        save_startup_config("创建")
         created = True
 
     try:
@@ -172,12 +275,26 @@ def initialize_config_runtime(
         try:
             if path_exists(config_file):
                 backup_file(config_file, backup_path)
-                _safe_log(log_error, f"Config file invalid; moved to {backup_path!r}: {exc!r}")
+                _safe_log(
+                    log_error,
+                    f"Config file invalid; moved to {backup_path!r} ({type(exc).__name__})",
+                )
         except Exception as backup_exc:
             _safe_log(log_error, f"Config file invalid and backup failed; recreating defaults: {backup_exc!r}")
         load_defaults()
-        save_startup_defaults("修复")
+        save_startup_config("修复")
         created = True
+
+    if not created:
+        loaded_snapshot = snapshot_config_runtime(config)
+        remember_config_snapshot(config, loaded_snapshot)
+        if ensure_config_defaults(config, defaults_by_section):
+            try:
+                save_startup_config("补齐")
+            except ConfigInitializationError:
+                restore_config_runtime(config, loaded_snapshot)
+                remember_config_snapshot(config, loaded_snapshot)
+                raise
     remember_config_snapshot(config)
     return created
 
@@ -378,6 +495,7 @@ def safe_save_config_runtime(
     release_process_lock=release_named_mutex_lock,
     load_snapshot=load_config_snapshot,
     lock_timeout_ms=10000,
+    defaults_by_section=None,
 ):
     tmp_file = f"{config_file}.{getpid()}.{get_thread_id()}.tmp"
     process_lock = None
@@ -392,7 +510,13 @@ def safe_save_config_runtime(
 
             current_snapshot = snapshot_config_runtime(config)
             baseline_snapshot = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
-            if baseline_snapshot is not None and path_exists(config_file):
+            if defaults_by_section is not None and path_exists(config_file):
+                disk_snapshot = load_snapshot(config_file)
+                output_snapshot = merge_config_defaults(
+                    disk_snapshot,
+                    defaults_by_section,
+                )
+            elif baseline_snapshot is not None and path_exists(config_file):
                 disk_snapshot = load_snapshot(config_file)
                 output_snapshot = merge_config_changes(
                     disk_snapshot,

@@ -17,11 +17,11 @@ from sms_core.sms_pdu import ConcatSmsInfo, decode_received_pdu
 CMGR_LOG_RE = re.compile(r"\[I\]-\[lib_sms rsp\]\s+\+CMGR\b")
 HEX_LINE_RE = re.compile(r"^[0-9A-Fa-f]+$")
 SMS_CALLBACK_HEAD_RE = re.compile(
-    r"^(?P<prefix>\s*\+?\d+\s+\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*)(?P<body>.*)$",
+    r"^(?P<prefix>\s*\S+\s+\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*)(?P<body>.*)$",
     re.DOTALL,
 )
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
-    r"^\s*\+?\d+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
+    r"^\s*\S+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
 )
 DEFAULT_PDU_MAX_SEGMENT_ENTRIES = 4096
 DEFAULT_PDU_MAX_COMPLETE_ENTRIES = 1024
@@ -33,6 +33,7 @@ class CachedSmsPduSegment:
     body: str
     concat_info: ConcatSmsInfo
     timestamp: str = ""
+    match_kind: str = ""
 
 
 def decode_incoming_sms_pdu(pdu_hex: str):
@@ -91,25 +92,30 @@ class SmsPduCorrectionCache:
         lookup_key = self._cache_key(sender, timestamp)
         candidates = self._lookup_candidates(sender, timestamp, now)
 
-        corrected = ""
-        consumed_index = None
+        exact_index = next(
+            (
+                index
+                for index, item in enumerate(candidates)
+                if _cached_message_body(item) == str(body or "")
+            ),
+            None,
+        )
+        if exact_index is not None:
+            self._consume_complete_candidate(lookup_key, candidates, exact_index)
+            return text
+
+        correction_matches = []
         for index, item in enumerate(candidates):
             candidate = _cached_message_body(item)
             if _should_correct_body(body, candidate):
-                corrected = candidate
-                self._last_corrected_message = None
-                consumed_index = index
-                break
+                correction_matches.append((index, candidate))
 
-        if consumed_index is None:
+        corrected_bodies = {candidate for _index, candidate in correction_matches}
+        if len(corrected_bodies) != 1:
             return text
-        else:
-            remaining = list(candidates)
-            remaining.pop(consumed_index)
-            if remaining:
-                self._complete_by_key[lookup_key] = remaining
-            else:
-                self._complete_by_key.pop(lookup_key, None)
+
+        consumed_index, corrected = correction_matches[0]
+        self._consume_complete_candidate(lookup_key, candidates, consumed_index)
 
         match = SMS_CALLBACK_HEAD_RE.match(text)
         if match:
@@ -129,6 +135,7 @@ class SmsPduCorrectionCache:
         exact_match = self._match_concat_part(
             self._lookup_segments(sender, timestamp, now),
             body,
+            match_kind="exact",
         )
         if exact_match is not None:
             return exact_match
@@ -137,6 +144,7 @@ class SmsPduCorrectionCache:
             self._lookup_near_segments(sender, timestamp, now),
             body,
             require_unique=True,
+            match_kind="near",
         )
         if near_match is not None:
             return near_match
@@ -145,6 +153,7 @@ class SmsPduCorrectionCache:
             self._lookup_all_segments(sender, timestamp, now),
             body,
             require_unique=True,
+            match_kind="sender_fallback",
         )
 
     def concat_info_for_callback(self, callback_text: str, parse_callback_head, now: float):
@@ -235,6 +244,14 @@ class SmsPduCorrectionCache:
         self._expire(now)
         return list(self._complete_by_key.get(self._cache_key(sender, timestamp)) or [])
 
+    def _consume_complete_candidate(self, lookup_key, candidates, consumed_index):
+        remaining = list(candidates or [])
+        remaining.pop(consumed_index)
+        if remaining:
+            self._complete_by_key[lookup_key] = remaining
+        else:
+            self._complete_by_key.pop(lookup_key, None)
+
     def _lookup_segments(self, sender: str, timestamp: str, now: float):
         self._expire(now)
         return list(self._segments_by_key.get(self._cache_key(sender, timestamp)) or [])
@@ -256,11 +273,12 @@ class SmsPduCorrectionCache:
         return matches
 
     def _lookup_all_segments(self, sender: str, timestamp: str, now: float):
-        if sender and timestamp:
-            return []
         self._expire(now)
+        normalized_sender = _normalize_sender_for_match(sender)
         matches = []
-        for items in self._segments_by_key.values():
+        for (candidate_sender, _candidate_timestamp), items in self._segments_by_key.items():
+            if normalized_sender and candidate_sender != normalized_sender:
+                continue
             matches.extend(items)
         return matches
 
@@ -359,15 +377,17 @@ class SmsPduCorrectionCache:
                 ),
             )
 
-    def _match_concat_part(self, candidates, body, require_unique=False):
+    def _match_concat_part(self, candidates, body, require_unique=False, match_kind=""):
         matches = []
         for sender, timestamp, candidate, concat_info, _seen in candidates:
             if candidate == body or _matches_corrupted_or_truncated_body(body, candidate):
-                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
+                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp, match_kind))
             elif body and len(body) >= 16 and candidate.startswith(body):
-                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
+                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp, match_kind))
+            elif _matches_merged_callback_prefix(body, candidate, concat_info):
+                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp, match_kind))
             elif "\ufffd" in str(body or "") and candidate and str(body or "").startswith(candidate):
-                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp))
+                matches.append(CachedSmsPduSegment(sender, candidate, concat_info, timestamp, match_kind))
         matches = _dedupe_concat_part_matches(matches)
         if not matches:
             return None
@@ -442,6 +462,18 @@ def _matches_corrupted_or_truncated_body(body: str, corrected: str) -> bool:
 
     clean_body = body_text.replace("\ufffd", "")
     return len(clean_body) >= 16 and corrected_text.startswith(clean_body)
+
+
+def _matches_merged_callback_prefix(body: str, candidate: str, concat_info) -> bool:
+    body_text = str(body or "")
+    candidate_text = str(candidate or "")
+    candidate_index = int(getattr(concat_info, "index", 0) or 0)
+    return (
+        candidate_index == 1
+        and len(candidate_text) >= 16
+        and len(body_text) > len(candidate_text)
+        and body_text.startswith(candidate_text)
+    )
 
 
 def _should_correct_body(body: str, candidate: str) -> bool:

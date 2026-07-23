@@ -1,5 +1,6 @@
 import unittest
 import importlib.util
+import queue
 from pathlib import Path
 
 
@@ -10,6 +11,8 @@ SPEC.loader.exec_module(threading_runtime)
 start_daemon_thread = threading_runtime.start_daemon_thread
 start_registered_daemon_thread = threading_runtime.start_registered_daemon_thread
 wait_for_worker_threads = threading_runtime.wait_for_worker_threads
+queues_are_drained = threading_runtime.queues_are_drained
+task_done_safely = threading_runtime.task_done_safely
 WorkerThreadRegistry = threading_runtime.WorkerThreadRegistry
 SingleFlightTaskState = threading_runtime.SingleFlightTaskState
 
@@ -27,6 +30,15 @@ class FakeThread:
 
 
 class ThreadingRuntimeTests(unittest.TestCase):
+    def test_task_done_safely_balances_queue_and_ignores_missing_method(self):
+        work_queue = queue.Queue()
+        work_queue.put("item")
+        self.assertEqual(work_queue.get_nowait(), "item")
+        self.assertTrue(task_done_safely(work_queue))
+        self.assertEqual(work_queue.unfinished_tasks, 0)
+
+        self.assertFalse(task_done_safely(object()))
+
     def test_worker_thread_registry_snapshots_and_removes_threads(self):
         registry = WorkerThreadRegistry()
         first = object()
@@ -93,6 +105,19 @@ class ThreadingRuntimeTests(unittest.TestCase):
             )
         )
         self.assertEqual(calls, [("join", None)])
+
+    def test_queues_are_drained_checks_unfinished_tasks_and_items(self):
+        work_queue = queue.Queue()
+        self.assertTrue(queues_are_drained((work_queue,)))
+
+        work_queue.put("pending")
+        logs = []
+        self.assertFalse(queues_are_drained((work_queue,), log_error=logs.append))
+        self.assertTrue(any("未完成" in message for message in logs))
+
+        self.assertEqual(work_queue.get_nowait(), "pending")
+        work_queue.task_done()
+        self.assertTrue(queues_are_drained((work_queue,)))
 
     def test_start_daemon_thread_logs_target_exception(self):
         logs = []

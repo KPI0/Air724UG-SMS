@@ -108,6 +108,14 @@ def start_cloud_control_runtime(
     if not runtime_imei():
         request_device_imei()
 
+    published_thread = None
+
+    def publish_thread(thread):
+        nonlocal published_thread
+        published_thread = thread
+        set_thread(thread)
+
+    start_error = None
     with lock:
         thread = get_thread()
         action = start_thread_action(
@@ -121,14 +129,39 @@ def start_cloud_control_runtime(
             return True
 
         stop_event.clear()
-        start_daemon_thread(
-            "cloud_control",
-            thread_target,
-            args=(validation.url, reconnect_interval),
-            log_error=log_error,
-            before_start=set_thread,
-            thread_factory=thread_factory,
-        )
+        try:
+            start_daemon_thread(
+                "cloud_control",
+                thread_target,
+                args=(validation.url, reconnect_interval),
+                log_error=log_error,
+                before_start=publish_thread,
+                thread_factory=thread_factory,
+            )
+        except Exception as exc:
+            start_error = exc
+            if published_thread is not None:
+                try:
+                    if get_thread() is published_thread:
+                        set_thread(None)
+                except Exception:
+                    pass
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+
+    if start_error is not None:
+        try:
+            set_cloud_status("🌐 启动失败", "#cc0000")
+        except Exception:
+            pass
+        if log_error is not None:
+            try:
+                log_error(f"云端控制线程启动失败：{start_error}")
+            except Exception:
+                pass
+        return False
 
     return True
 
@@ -154,13 +187,20 @@ def stop_cloud_control_runtime(
     set_authorized(False)
     reset_serial_log_state()
 
+    close_coro = None
     try:
         loop = get_loop()
         ws = get_ws()
         if loop is not None and loop.is_running() and ws is not None:
-            run_coroutine_threadsafe(schedule_unregister_then_close(ws), loop)
+            close_coro = schedule_unregister_then_close(ws)
+            run_coroutine_threadsafe(close_coro, loop)
+            close_coro = None
     except Exception:
-        pass
+        if close_coro is not None:
+            try:
+                close_coro.close()
+            except Exception:
+                pass
 
     set_ws(None)
 

@@ -1,6 +1,8 @@
 import asyncio
 import threading
 
+from sms_core.config_runtime import reload_config_runtime
+from sms_core.cloud_runtime import read_cloud_control_settings
 from sms_ui.cloud_control_app_runtime import (
     cloud_control_settings_from_values,
     open_cloud_control_values_app_runtime,
@@ -9,6 +11,31 @@ from sms_ui.cloud_control_app_runtime import (
     start_cloud_control_app_runtime,
     stop_cloud_control_app_runtime,
 )
+
+
+def refresh_cloud_control_settings_namespace_runtime(
+    namespace,
+    *,
+    reload_config=reload_config_runtime,
+):
+    try:
+        settings = reload_config(
+            config=namespace["config"],
+            config_file=namespace["CONFIG_FILE"],
+            config_lock=namespace["CONFIG_LOCK"],
+            read_values=read_cloud_control_settings,
+        )
+    except Exception as exc:
+        log_error = namespace.get("log_file_only")
+        if log_error is not None:
+            try:
+                log_error(f"Reload cloud-control config failed ({type(exc).__name__})")
+            except Exception:
+                pass
+        return False
+
+    namespace["apply_cloud_control_settings"](settings)
+    return True
 
 
 def start_cloud_control_namespace_runtime(

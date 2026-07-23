@@ -43,6 +43,9 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         self.assertTrue(put_drop_oldest(log_queue, {"id": "new"}))
 
         self.assertEqual(log_queue.get_nowait(), {"id": "new"})
+        self.assertEqual(log_queue.unfinished_tasks, 1)
+        log_queue.task_done()
+        self.assertEqual(log_queue.unfinished_tasks, 0)
 
     def test_send_cloud_serial_log_runtime_skips_unavailable_states(self):
         base = {
@@ -95,6 +98,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         reset_cloud_serial_log_state(log_queue, state)
 
         self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
         self.assertFalse(state.drain_scheduled)
 
     def test_clear_cloud_serial_log_queue_empties_pending_items(self):
@@ -105,6 +109,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         clear_cloud_serial_log_queue(log_queue)
 
         self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
 
     def test_drain_cloud_serial_log_queue_sends_batch_and_reschedules(self):
         log_queue = queue.Queue()
@@ -131,6 +136,9 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
 
         self.assertEqual(ws.sent, ['{"id": 1}', '{"id": 2}'])
         self.assertEqual(log_queue.get_nowait(), {"id": 3})
+        self.assertEqual(log_queue.unfinished_tasks, 1)
+        log_queue.task_done()
+        self.assertEqual(log_queue.unfinished_tasks, 0)
         self.assertTrue(state.drain_scheduled)
         self.assertEqual(len(scheduled), 1)
 
@@ -181,8 +189,33 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         ))
 
         self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
         self.assertFalse(state.drain_scheduled)
         self.assertEqual(ws.sent, [])
+
+    def test_drain_cloud_serial_log_queue_balances_tasks_when_send_fails(self):
+        log_queue = queue.Queue()
+        log_queue.put_nowait({"id": 1})
+        log_queue.put_nowait({"id": 2})
+        state = CloudSerialLogDrainState()
+        state.drain_scheduled = True
+
+        class FailingWs:
+            async def send(self, _payload):
+                raise RuntimeError("send failed")
+
+        asyncio.run(drain_cloud_serial_log_queue(
+            FailingWs(),
+            log_queue=log_queue,
+            batch_size=2,
+            state=state,
+            is_current_connection=lambda _current_ws: True,
+            is_connected=lambda: True,
+        ))
+
+        self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
+        self.assertFalse(state.drain_scheduled)
 
     def test_schedule_cloud_serial_log_drain_sets_and_reuses_flag(self):
         state = CloudSerialLogDrainState()

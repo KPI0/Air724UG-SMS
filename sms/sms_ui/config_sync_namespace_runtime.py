@@ -1,14 +1,9 @@
-import configparser
 import time
 
 from sms_core.config_runtime import (
-    CONFIG_SNAPSHOT_ATTR,
     load_config_snapshot,
-    merge_config_changes,
     read_startup_config_values,
-    remember_config_snapshot,
-    restore_config_runtime,
-    snapshot_config_runtime,
+    reload_config_runtime,
 )
 from sms_ui.config_sync_runtime import (
     ConfigReloadFailureLogState,
@@ -76,27 +71,17 @@ def reload_shared_ui_config_namespace_runtime(
     read_values=read_startup_config_values,
 ):
     try:
-        with namespace["CONFIG_LOCK"]:
-            disk_snapshot = load_snapshot(namespace["CONFIG_FILE"])
-            current_snapshot = snapshot_config_runtime(namespace["config"])
-            baseline_snapshot = getattr(namespace["config"], CONFIG_SNAPSHOT_ATTR, None)
-            if baseline_snapshot is None:
-                merged_snapshot = disk_snapshot
-            else:
-                merged_snapshot = merge_config_changes(
-                    disk_snapshot,
-                    baseline_snapshot,
-                    current_snapshot,
-                )
-            merged_config = configparser.ConfigParser(interpolation=None)
-            restore_config_runtime(merged_config, merged_snapshot)
-            values = read_values(
+        values = reload_config_runtime(
+            config=namespace["config"],
+            config_file=namespace["CONFIG_FILE"],
+            config_lock=namespace["CONFIG_LOCK"],
+            load_snapshot=load_snapshot,
+            read_values=lambda merged_config: read_values(
                 merged_config,
                 default_voice_text=namespace["DEFAULT_VOICE_TEXT"],
                 log_error=namespace.get("log_file_only"),
-            )
-            restore_config_runtime(namespace["config"], merged_snapshot)
-            remember_config_snapshot(namespace["config"], disk_snapshot)
+            ),
+        )
     except Exception as exc:
         state = namespace.setdefault(
             "_CONFIG_SYNC_RELOAD_FAILURE_STATE",

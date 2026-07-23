@@ -11,9 +11,18 @@ def _swap_number_digits(number):
     return "".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2))
 
 
-def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1, timestamp_hex="62608211510523"):
+def _incoming_ucs2_pdu(
+    sender,
+    message,
+    *,
+    reference=0x2A,
+    total=1,
+    index=1,
+    timestamp_hex="62608211510523",
+    number_type=None,
+):
     sender_text = str(sender or "")
-    number_type = "91" if sender_text.startswith("+") else "81"
+    number_type = number_type or ("91" if sender_text.startswith("+") else "81")
     sender_digits = sender_text.lstrip("+")
     first_octet = "40" if total > 1 else "00"
     payload = str(message or "").encode("utf-16-be")
@@ -73,6 +82,35 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
             12.0,
         ), "10086 中国电信温馨提醒:尊享来电�")
 
+    def test_exact_callback_consumes_matching_cache_entry_without_rewriting_text(self):
+        cache = SmsPduCorrectionCache()
+        key = ("10086", "26/06/28,11:15:50+32")
+        body = "ACCOUNT-NOTICE-LONG-COMMON-PREFIX-OLD-AMOUNT-100-END"
+        callback = f"10086 {key[1]} {body}"
+        cache._complete_by_key[key] = [(body, 10.0)]
+
+        self.assertEqual(
+            cache.correct_single_pdu_callback_text(callback, parse_callback_head, 11.0),
+            callback,
+        )
+        self.assertNotIn(key, cache._complete_by_key)
+
+    def test_ambiguous_prefix_candidates_preserve_callback_text(self):
+        cache = SmsPduCorrectionCache()
+        key = ("10086", "26/06/28,11:15:50+32")
+        prefix = "ACCOUNT-NOTICE-LONG-COMMON-PREFIX-"
+        callback = f"10086 {key[1]} {prefix}"
+        cache._complete_by_key[key] = [
+            (prefix + "OLD-AMOUNT-100-END", 10.0),
+            (prefix + "NEW-AMOUNT-200-END", 10.1),
+        ]
+
+        self.assertEqual(
+            cache.correct_single_pdu_callback_text(callback, parse_callback_head, 11.0),
+            callback,
+        )
+        self.assertEqual(len(cache._complete_by_key[key]), 2)
+
     def test_correct_callback_text_rejects_stale_same_sender_mismatch(self):
         cache = SmsPduCorrectionCache()
         cache._complete_by_key[("10086", "")] = [("上一条短信完整正文", 10.0)]
@@ -115,6 +153,28 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         self.assertEqual(
             corrected,
             "+8613123123123 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电识别",
+        )
+
+    def test_correct_callback_text_matches_non_numeric_sender_and_surrogate_pair(self):
+        cache = SmsPduCorrectionCache()
+        sender = "3A968BD3FABBFC8C52"
+        body = "品牌活动温馨提醒：请点击👉观看直播"
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 10.0)
+        cache.observe_line(
+            _incoming_ucs2_pdu(sender, body, number_type="D0"),
+            10.1,
+        )
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2)
+
+        corrected = cache.correct_single_pdu_callback_text(
+            sender + " 26/06/28,11:15:50+32 品牌活动温馨提醒：请点击������观看直播",
+            parse_sms_callback_head,
+            10.3,
+        )
+
+        self.assertEqual(
+            corrected,
+            sender + " 26/06/28,11:15:50+32 " + body,
         )
 
     def test_correct_callback_text_selects_matching_candidate_for_same_timestamp(self):
@@ -273,6 +333,31 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
 
         self.assertIsNone(info)
 
+    def test_concat_part_matches_merged_callback_beyond_first_segment(self):
+        cache = SmsPduCorrectionCache()
+        part1 = "FIRST-PDU-SEGMENT-LONG-ANCHOR-"
+        part2 = "SECOND-PDU-SEGMENT-CONTENT"
+        for index, part in enumerate((part1, part2), start=1):
+            cache.observe_line(
+                f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,80",
+                10.0 + index,
+            )
+            cache.observe_line(
+                _incoming_ucs2_pdu("10086", part, total=2, index=index),
+                10.1 + index,
+            )
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+
+        matched = cache.concat_part_for_callback(
+            "10086 26/06/28,11:15:50+32 " + part1 + part2,
+            parse_sms_callback_head,
+            13.0,
+        )
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.body, part1)
+        self.assertEqual(matched.concat_info.index, 1)
+
     def test_concat_part_falls_back_to_unique_pdu_sender(self):
         cache = SmsPduCorrectionCache()
         cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 10.0)
@@ -337,6 +422,54 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         self.assertEqual(part.body, "AA")
         self.assertEqual(part.timestamp, "26/06/28,11:15:51+32")
         self.assertEqual((part.concat_info.reference, part.concat_info.total, part.concat_info.index), (0x2A, 2, 2))
+
+    def test_concat_part_matches_unique_far_timestamp_for_same_sender(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 10.0)
+        cache.observe_line(_incoming_ucs2_pdu(
+            "10001",
+            "【充值成功提醒】尊敬的客户：您已充值0.01元，充值后可用余额",
+            reference=0xEE,
+            total=4,
+            index=1,
+            timestamp_hex="62702251611323",
+        ), 10.1)
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2)
+
+        part = cache.concat_part_for_callback(
+            "10001 26/07/22,15:16:19+32 【充值成功提醒】尊敬的客户：您已充值0.01元，充值",
+            parse_callback_head,
+            10.3,
+        )
+
+        self.assertIsNotNone(part)
+        self.assertEqual(part.sender, "10001")
+        self.assertIn("充值后", part.body)
+        self.assertEqual(part.match_kind, "sender_fallback")
+        self.assertEqual((part.concat_info.reference, part.concat_info.total, part.concat_info.index), (0xEE, 4, 1))
+
+    def test_concat_part_far_timestamp_fallback_requires_unique_sender_match(self):
+        cache = SmsPduCorrectionCache(multipart_timestamp_tolerance=5.0)
+        prefix = "同一发送方重复正文前缀足够长"
+        for offset, reference in enumerate((0x31, 0x32)):
+            cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 10.0 + offset)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10001",
+                prefix + str(reference),
+                reference=reference,
+                total=2,
+                index=1,
+                timestamp_hex="62702251611323",
+            ), 10.1 + offset)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + offset)
+
+        part = cache.concat_part_for_callback(
+            "10001 26/07/22,15:16:19+32 " + prefix,
+            parse_callback_head,
+            12.1,
+        )
+
+        self.assertIsNone(part)
 
     def test_concat_part_fallback_requires_unique_match(self):
         cache = SmsPduCorrectionCache()

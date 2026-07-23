@@ -1,7 +1,11 @@
 ﻿import configparser
+import os
+import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
+from sms_core.config_runtime import remember_config_snapshot, snapshot_config_runtime
 from sms_core.third_push_config import ThirdPushSettings
 import sms_ui.third_push_namespace_runtime as runtime
 
@@ -13,6 +17,7 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
             "calls": calls,
             "config": configparser.ConfigParser(),
             "CONFIG_FILE": "missing.ini",
+            "CONFIG_LOCK": threading.RLock(),
             "safe_save_config": lambda: calls.append(("save_config",)),
             "THIRD_PUSH_ENABLED": True,
             "THIRD_PUSH_SMS_ENABLED": False,
@@ -79,13 +84,78 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
         namespace = self.make_namespace()
         settings = ThirdPushSettings(False, True, True, ["bark"], {"bark_url": "url"})
 
+        def reload_config(**kwargs):
+            staged = configparser.ConfigParser(interpolation=None)
+            kwargs["prepare_config"](staged)
+            return kwargs["read_values"](staged)
+
         with patch.object(runtime, "ensure_third_push_config_values", return_value=False), \
                 patch.object(runtime, "read_third_push_settings", return_value=settings):
-            runtime.refresh_third_push_settings_namespace_runtime(namespace)
+            result = runtime.refresh_third_push_settings_namespace_runtime(
+                namespace,
+                reload_config=reload_config,
+            )
 
+        self.assertTrue(result)
         self.assertFalse(namespace["THIRD_PUSH_ENABLED"])
         self.assertEqual(namespace["THIRD_PUSH_TYPES"], ["bark"])
         self.assertEqual(namespace["THIRD_PUSH_SETTINGS"], {"bark_url": "url"})
+
+    def test_refresh_invalid_file_preserves_config_and_runtime_without_saving(self):
+        namespace = self.make_namespace()
+        namespace["config"]["third_push"] = {
+            "enabled": "1",
+            "sms_enabled": "0",
+            "call_enabled": "1",
+            "notify_type": '["dingtalk"]',
+            "dingtalk_webhook": "kept",
+        }
+        remember_config_snapshot(namespace["config"])
+        before = snapshot_config_runtime(namespace["config"])
+        saves = []
+        logs = []
+        namespace["safe_save_config"] = lambda: saves.append("save")
+        namespace["log_file_only"] = logs.append
+
+        with tempfile.TemporaryDirectory() as tmp:
+            namespace["CONFIG_FILE"] = os.path.join(tmp, "config.ini")
+            with open(namespace["CONFIG_FILE"], "w", encoding="utf-8") as file_obj:
+                file_obj.write("[third_push\nenabled = 0\nsecret = do-not-log\n")
+
+            result = runtime.refresh_third_push_settings_namespace_runtime(namespace)
+
+        self.assertFalse(result)
+        self.assertEqual(snapshot_config_runtime(namespace["config"]), before)
+        self.assertTrue(namespace["THIRD_PUSH_ENABLED"])
+        self.assertEqual(namespace["THIRD_PUSH_TYPES"], ["dingtalk"])
+        self.assertEqual(saves, [])
+        self.assertEqual(logs, ["Reload third-push config failed (MissingSectionHeaderError)"])
+        self.assertNotIn("do-not-log", logs[0])
+
+    def test_refresh_rolls_back_when_missing_defaults_cannot_be_saved(self):
+        namespace = self.make_namespace()
+        namespace["config"]["third_push"] = {
+            "enabled": "1",
+            "sms_enabled": "0",
+            "call_enabled": "1",
+            "notify_type": '["dingtalk"]',
+            "dingtalk_webhook": "kept",
+        }
+        remember_config_snapshot(namespace["config"])
+        before = snapshot_config_runtime(namespace["config"])
+        namespace["safe_save_config"] = lambda: False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            namespace["CONFIG_FILE"] = os.path.join(tmp, "config.ini")
+            with open(namespace["CONFIG_FILE"], "w", encoding="utf-8") as file_obj:
+                file_obj.write("[ui]\npopup_enabled = 1\n")
+
+            result = runtime.refresh_third_push_settings_namespace_runtime(namespace)
+
+        self.assertFalse(result)
+        self.assertEqual(snapshot_config_runtime(namespace["config"]), before)
+        self.assertTrue(namespace["THIRD_PUSH_ENABLED"])
+        self.assertEqual(namespace["THIRD_PUSH_TYPES"], ["dingtalk"])
 
     def test_save_forwards_current_state_and_applies_result(self):
         namespace = self.make_namespace()

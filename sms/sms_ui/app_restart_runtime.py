@@ -31,6 +31,9 @@ def restart_software_app_runtime(
     file_log_thread=None,
     file_log_stop_event=None,
     worker_threads=(),
+    deferred_stop_events=(),
+    deferred_worker_threads=(),
+    deferred_worker_queues=(),
 ):
     return restart_runtime(
         is_exiting=is_exiting,
@@ -60,5 +63,8 @@ def restart_software_app_runtime(
         file_log_thread=file_log_thread,
         file_log_stop_event=file_log_stop_event,
         worker_threads=worker_threads,
+        deferred_stop_events=deferred_stop_events,
+        deferred_worker_threads=deferred_worker_threads,
+        deferred_worker_queues=deferred_worker_queues,
         exit_process=exit_process,
     )

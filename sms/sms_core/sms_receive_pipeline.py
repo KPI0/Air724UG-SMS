@@ -18,6 +18,10 @@ class SmsReceivePipeline:
             self.correction_cache.observe_line(line, now, log=log)
         except TypeError:
             self.correction_cache.observe_line(line, now)
+        drain_ready = getattr(self.long_sms_assembler, "drain_ready", None)
+        if callable(drain_ready):
+            return drain_ready(now=now, log=log)
+        return None
 
     def add_collected(self, collected, now=None, log=None):
         return self.long_sms_assembler.add_collected(

@@ -2,11 +2,15 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from sms_core.serial_debug import build_own_number_commands, build_sn_command
-from sms_ui.serial_debug_dialog_helpers import ensure_debug_enabled, finish_debug_dialog
+from sms_ui.serial_debug_dialog_helpers import (
+    create_debug_dialog,
+    ensure_debug_enabled,
+    finish_debug_dialog,
+)
 
 
 def open_modify_number_dialog(parent, enabled_var, send_commands, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("修改本机号码")
     win.resizable(False, False)
     win.transient(parent)
@@ -41,7 +45,7 @@ def open_modify_number_dialog(parent, enabled_var, send_commands, center_window)
 
 
 def open_modify_sn_dialog(parent, enabled_var, quick_send, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("修改设备SN码")
     win.resizable(False, False)
     win.transient(parent)

@@ -2,7 +2,11 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from sms_core.sms_pdu import measure_text_sms_pdus
-from sms_ui.serial_debug_dialog_helpers import ensure_debug_enabled
+from sms_ui.serial_debug_dialog_helpers import (
+    create_debug_dialog,
+    ensure_debug_enabled,
+    show_centered_debug_dialog,
+)
 
 
 def format_sms_pdu_counter(message):
@@ -17,7 +21,7 @@ def format_sms_pdu_counter(message):
 
 
 def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("发送短信")
     win.resizable(False, False)
     win.transient(parent)
@@ -89,15 +93,13 @@ def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
     ttk.Button(buttons, text="发送指令", command=submit).pack(side="left", padx=(0, 8))
     ttk.Button(buttons, text="取消", command=win.destroy).pack(side="left")
 
-    win.update_idletasks()
-    center_window(win, parent)
-    ent_phone.focus_set()
+    show_centered_debug_dialog(win, center_window, parent, ent_phone)
     win.bind("<Control-Return>", lambda _e: submit())
     win.bind("<Escape>", lambda _e: win.destroy())
 
 
 def open_dial_dialog(parent, enabled_var, dial, hangup, close_active_call, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("拨打电话")
     win.resizable(False, False)
     win.transient(parent)
@@ -154,9 +156,7 @@ def open_dial_dialog(parent, enabled_var, dial, hangup, close_active_call, cente
     ttk.Button(buttons, text="挂断", command=submit_hangup).pack(side="left", padx=(0, 8))
     ttk.Button(buttons, text="取消", command=close_dialog).pack(side="left")
 
-    win.update_idletasks()
-    center_window(win, parent)
-    ent_phone.focus_set()
+    show_centered_debug_dialog(win, center_window, parent, ent_phone)
     win.bind("<Return>", lambda _e: submit_dial())
     win.bind("<Escape>", lambda _e: close_dialog())
     win.protocol("WM_DELETE_WINDOW", close_dialog)

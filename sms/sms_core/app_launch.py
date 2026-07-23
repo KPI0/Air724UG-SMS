@@ -7,13 +7,26 @@ import time
 from dataclasses import dataclass
 
 from sms_core.file_log_runtime import wait_for_file_log_worker
-from sms_core.threading_runtime import wait_for_worker_threads
+from sms_core.threading_runtime import queues_are_drained, wait_for_worker_threads
 
 
 @dataclass(frozen=True)
 class RestartRuntimeResult:
     status: str
     error: object = None
+
+
+def _threads_added_after_snapshot(previous_threads, current_threads):
+    previous_ids = {
+        id(thread)
+        for thread in tuple(previous_threads or ())
+        if thread is not None
+    }
+    return tuple(
+        thread
+        for thread in tuple(current_threads or ())
+        if thread is not None and id(thread) not in previous_ids
+    )
 
 
 def get_launch_target_and_args(frozen=None, executable=None, argv0=None):
@@ -187,6 +200,9 @@ def restart_software_runtime(
     file_log_thread=None,
     file_log_stop_event=None,
     worker_threads=(),
+    deferred_stop_events=(),
+    deferred_worker_threads=(),
+    deferred_worker_queues=(),
     wait_worker_threads=wait_for_worker_threads,
     wait_file_log_worker=wait_for_file_log_worker,
 ):
@@ -256,6 +272,79 @@ def restart_software_runtime(
             except Exception:
                 pass
             return RestartRuntimeResult("worker_wait_failed")
+        if callable(worker_threads):
+            try:
+                final_threads_to_wait = worker_threads()
+            except Exception as exc:
+                try:
+                    log_error(f"Snapshot final restart worker threads failed: {exc!r}")
+                except Exception:
+                    pass
+                return RestartRuntimeResult("worker_wait_failed", exc)
+            late_threads = _threads_added_after_snapshot(
+                threads_to_wait,
+                final_threads_to_wait,
+            )
+            if late_threads:
+                try:
+                    late_workers_stopped = wait_worker_threads(
+                        late_threads,
+                        log_error=log_error,
+                    )
+                except Exception as exc:
+                    try:
+                        log_error(f"Wait for late producer worker threads during restart raised: {exc!r}")
+                    except Exception:
+                        pass
+                    return RestartRuntimeResult("worker_wait_failed", exc)
+                if late_workers_stopped is False:
+                    try:
+                        log_error("Late producer worker threads are still running; restart cleanup was aborted")
+                    except Exception:
+                        pass
+                    return RestartRuntimeResult("worker_wait_failed")
+        deferred_events = tuple(deferred_stop_events or ())
+        has_deferred_workers = bool(
+            deferred_events
+            or deferred_worker_queues
+            or callable(deferred_worker_threads)
+            or deferred_worker_threads
+        )
+        if has_deferred_workers:
+            safe_set_events(*deferred_events)
+            try:
+                deferred_threads_to_wait = (
+                    deferred_worker_threads() if callable(deferred_worker_threads) else deferred_worker_threads
+                )
+            except Exception as exc:
+                try:
+                    log_error(f"Snapshot deferred restart worker threads failed: {exc!r}")
+                except Exception:
+                    pass
+                return RestartRuntimeResult("worker_wait_failed", exc)
+            try:
+                deferred_workers_stopped = wait_worker_threads(
+                    deferred_threads_to_wait,
+                    log_error=log_error,
+                )
+            except Exception as exc:
+                try:
+                    log_error(f"Wait for deferred worker threads during restart raised: {exc!r}")
+                except Exception:
+                    pass
+                return RestartRuntimeResult("worker_wait_failed", exc)
+            if deferred_workers_stopped is False:
+                try:
+                    log_error("Deferred worker threads are still running; restart cleanup was aborted")
+                except Exception:
+                    pass
+                return RestartRuntimeResult("worker_wait_failed")
+            if not queues_are_drained(deferred_worker_queues, log_error=log_error):
+                try:
+                    log_error("Deferred worker queues were not fully drained; restart cleanup was aborted")
+                except Exception:
+                    pass
+                return RestartRuntimeResult("worker_wait_failed")
         if file_log_stop_event is not None:
             safe_set_events(file_log_stop_event)
 
@@ -276,13 +365,12 @@ def restart_software_runtime(
                 pass
             return RestartRuntimeResult("file_log_wait_failed")
 
+        flush_log_queue(file_log_queue)
         try:
             if app_mutex:
                 release_mutex(app_mutex)
         except Exception:
             pass
-
-        flush_log_queue(file_log_queue)
         restart_committed = True
         exit_process(0)
         return RestartRuntimeResult("exited")

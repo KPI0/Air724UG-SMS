@@ -77,6 +77,32 @@ class CloudImeiRuntimeTests(unittest.TestCase):
         self.assertFalse(notify_cloud_identity_changed_runtime(**{**base, "is_connected": lambda: False}))
         self.assertFalse(notify_cloud_identity_changed_runtime(**{**base, "runtime_imei": lambda: ""}))
 
+    def test_notify_cloud_identity_changed_runtime_closes_coro_when_submit_fails(self):
+        created = []
+
+        async def send_register(_ws):
+            return None
+
+        def build_register(ws):
+            coro = send_register(ws)
+            created.append(coro)
+            return coro
+
+        result = notify_cloud_identity_changed_runtime(
+            get_loop=lambda: FakeLoop(),
+            get_ws=lambda: object(),
+            is_connected=lambda: True,
+            runtime_imei=lambda: "123456789012345",
+            send_register=build_register,
+            run_coroutine_threadsafe=lambda _coro, _loop: (_ for _ in ()).throw(
+                RuntimeError("loop rejected")
+            ),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(created[0].cr_frame)
+
     def test_set_cloud_device_imei_runtime_rejects_invalid_length(self):
         calls = []
 

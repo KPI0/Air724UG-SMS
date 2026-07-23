@@ -1,6 +1,8 @@
 import queue
 import threading
 
+from sms_core.threading_runtime import task_done_safely
+
 
 def _safe_log(log_error, message):
     if log_error is None:
@@ -40,14 +42,17 @@ def tk_alive_runtime(root, shutdown_event, *, current_thread=threading.current_t
 def ui_post_runtime(task_queue, callback, args=(), kwargs=None, *, on_full=None, log_error=None):
     try:
         task_queue.put_nowait((callback, tuple(args), dict(kwargs or {})))
+        return True
     except queue.Full:
         if on_full is not None:
             try:
                 on_full()
             except Exception as exc:
                 _safe_log(log_error, f"UI task queue full handler failed: {exc!r}")
+        return False
     except Exception as exc:
         _safe_log(log_error, f"UI task enqueue failed: {exc!r}")
+        return False
 
 
 def post_ui_if_running_runtime(ui_post, callback, is_stopping, *, on_skipped=None):
@@ -64,7 +69,11 @@ def post_ui_if_running_runtime(ui_post, callback, is_stopping, *, on_skipped=Non
             return None
         return callback()
 
-    ui_post(run_if_active)
+    queued = ui_post(run_if_active)
+    if queued is False:
+        if on_skipped is not None:
+            on_skipped()
+        return False
     return True
 
 
@@ -72,13 +81,16 @@ def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200,
     processed = 0
     while processed < max_batch:
         try:
-            callback, args, kwargs = task_queue.get_nowait()
+            task = task_queue.get_nowait()
         except queue.Empty:
             break
         try:
+            callback, args, kwargs = task
             callback(*args, **kwargs)
         except Exception as exc:
             _safe_log(log_error, f"UI task failed: {exc!r}")
+        finally:
+            task_done_safely(task_queue)
         processed += 1
 
     if tk_alive():

@@ -62,6 +62,15 @@ py -m unittest discover -s tests -q
 
 GitHub Actions 会在打包 EXE 之前自动执行同样的测试；测试失败时不会继续发布，避免生成明显异常的 Release。
 
+## 🔖 发布版本号
+
+桌面客户端版本号只在 `sms/sms_app/version.py` 中维护。发布稳定版前先更新其中的
+`APP_VERSION`，然后创建完全一致的 `vX.Y.Z` Tag。例如 `APP_VERSION = "3.8.1"`
+只能使用 `v3.8.1` 发布。
+
+GitHub Actions 会在安装依赖和打包前执行 `tools/check_release_version.py`。Tag 格式
+不正确、包含预发布后缀，或与客户端版本不一致时，发布任务会立即失败。
+
 ## 🏗 打包为 EXE
 
 先安装完整依赖：

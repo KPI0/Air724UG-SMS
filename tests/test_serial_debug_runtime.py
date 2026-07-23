@@ -143,6 +143,7 @@ class SerialDebugRuntimeTests(unittest.TestCase):
 
         self.assertTrue(appended)
         self.assertFalse(any(call[0] == "see" for call in text.calls))
+        self.assertEqual(serial_queue.unfinished_tasks, 0)
 
     def test_append_lines_scrolls_when_user_is_at_bottom(self):
         serial_queue = queue.Queue()
@@ -161,6 +162,7 @@ class SerialDebugRuntimeTests(unittest.TestCase):
 
         self.assertTrue(appended)
         self.assertIn(("see", "end"), text.calls)
+        self.assertEqual(serial_queue.unfinished_tasks, 0)
 
 
 if __name__ == "__main__":

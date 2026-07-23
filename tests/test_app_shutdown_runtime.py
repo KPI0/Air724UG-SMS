@@ -51,6 +51,9 @@ class AppShutdownRuntimeTests(unittest.TestCase):
             file_log_thread="file_thread",
             file_log_stop_event="file_stop",
             worker_threads=("producer",),
+            deferred_worker_stop_events=("third",),
+            deferred_worker_threads=("third-thread",),
+            deferred_worker_queues=("third-queue",),
             log_error="logger",
             cleanup_runtime=cleanup_runtime,
         )
@@ -65,6 +68,9 @@ class AppShutdownRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["file_log_thread"], "file_thread")
         self.assertEqual(kwargs["file_log_stop_event"], "file_stop")
         self.assertEqual(kwargs["worker_threads"], ("producer",))
+        self.assertEqual(kwargs["deferred_worker_stop_events"], ("third",))
+        self.assertEqual(kwargs["deferred_worker_threads"], ("third-thread",))
+        self.assertEqual(kwargs["deferred_worker_queues"], ("third-queue",))
         self.assertEqual(kwargs["log_error"], "logger")
         self.assertEqual(messagebox.ask_calls[0][2], root)
         self.assertEqual(root.destroy_calls, 1)

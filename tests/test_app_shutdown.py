@@ -43,6 +43,7 @@ class AppShutdownTests(unittest.TestCase):
             {"a.log": ["a1", "a2"], "b.log": ["b1"]},
         )
         self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
 
     def test_flush_log_queue_writes_pending_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -52,6 +53,7 @@ class AppShutdownTests(unittest.TestCase):
             log_queue.put((path, "line2\n"))
 
             self.assertEqual(flush_log_queue(log_queue), 2)
+            self.assertEqual(log_queue.unfinished_tasks, 0)
 
             with open(path, encoding="utf-8") as file:
                 self.assertEqual(file.read(), "line1\nline2\n")
@@ -176,6 +178,113 @@ class AppShutdownTests(unittest.TestCase):
         self.assertEqual(result, "exited")
         self.assertLess(calls.index(("close",)), calls.index(("snapshot",)))
         self.assertEqual(calls[calls.index(("snapshot",)) + 1], ("wait", ("late-worker",)))
+
+    def test_cleanup_waits_for_workers_registered_while_producers_stop(self):
+        calls = []
+        producer = object()
+        late_worker = object()
+        snapshots = iter(((producer,), (producer, late_worker)))
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue="queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            worker_threads=lambda: next(snapshots),
+            wait_worker_threads=lambda threads: calls.append(("wait", threads)) or True,
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)) or True,
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+        )
+
+        self.assertEqual(result, "exited")
+        self.assertEqual(
+            [item[1] for item in calls if item[0] == "wait"],
+            [(producer,), (late_worker,)],
+        )
+        self.assertLess(calls.index(("wait", (late_worker,))), calls.index(("flush", "queue")))
+
+    def test_cleanup_drains_deferred_queue_after_upstream_workers_stop(self):
+        calls = []
+        work_queue = queue.Queue()
+        shutdown_event = FakeEvent()
+
+        def safe_set_events(*events):
+            calls.append(("events", events))
+
+        def wait_workers(threads):
+            calls.append(("wait", threads))
+            return True
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: calls.append(("exiting", value)),
+            set_serial_running=lambda value: calls.append(("serial", value)),
+            shutdown_events=(shutdown_event,),
+            worker_stop_events=("serial-stop",),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: calls.append(("cloud", kwargs)),
+            safe_close_serial=lambda: calls.append(("close",)),
+            stop_tray_icon=lambda **kwargs: calls.append(("tray", kwargs)),
+            file_log_queue="log-queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            safe_set_events=safe_set_events,
+            flush_log_queue=lambda log_queue: calls.append(("flush", log_queue)),
+            file_log_stop_event="file-stop",
+            worker_threads=("producer",),
+            deferred_worker_stop_events=("third-stop",),
+            deferred_worker_threads=("third-thread",),
+            deferred_worker_queues=(work_queue,),
+            wait_worker_threads=wait_workers,
+            wait_file_log_worker=lambda thread: calls.append(("wait_file", thread)) or True,
+        )
+
+        self.assertEqual(result, "exited")
+        upstream_wait = calls.index(("wait", ("producer",)))
+        deferred_stop = calls.index(("events", ("third-stop",)))
+        deferred_wait = calls.index(("wait", ("third-thread",)))
+        file_stop = calls.index(("events", ("file-stop",)))
+        self.assertLess(upstream_wait, deferred_stop)
+        self.assertLess(deferred_stop, deferred_wait)
+        self.assertLess(deferred_wait, file_stop)
+
+    def test_cleanup_aborts_when_deferred_queue_is_not_drained(self):
+        calls = []
+        work_queue = queue.Queue()
+        work_queue.put("pending")
+
+        result = cleanup_and_exit_runtime(
+            is_exiting=False,
+            confirm_exit=lambda: True,
+            set_exiting=lambda value: None,
+            set_serial_running=lambda value: None,
+            shutdown_events=(),
+            worker_stop_events=(),
+            tts_stop_event=None,
+            stop_cloud_control=lambda **kwargs: None,
+            safe_close_serial=lambda: None,
+            stop_tray_icon=lambda **kwargs: None,
+            file_log_queue="log-queue",
+            destroy_root=lambda: calls.append(("destroy",)),
+            deferred_worker_stop_events=("third-stop",),
+            deferred_worker_threads=(),
+            deferred_worker_queues=(work_queue,),
+            wait_worker_threads=lambda threads: True,
+            file_log_stop_event="file-stop",
+            flush_log_queue=lambda queue: calls.append(("flush", queue)),
+        )
+
+        self.assertEqual(result, "worker_wait_failed")
+        self.assertNotIn(("flush", "log-queue"), calls)
+        self.assertNotIn(("destroy",), calls)
 
     def test_cleanup_aborts_when_worker_snapshot_raises(self):
         calls = []

@@ -19,12 +19,13 @@ def _safe_log(namespace, message):
         pass
 
 
-def safe_save_config_namespace_runtime(namespace):
+def safe_save_config_namespace_runtime(namespace, *, defaults_by_section=None):
     return safe_save_config_runtime(
         config=namespace["config"],
         config_file=namespace["CONFIG_FILE"],
         config_lock=namespace["CONFIG_LOCK"],
         log_error=lambda message: namespace["log_file_only"](message),
+        defaults_by_section=defaults_by_section,
     )
 
 
@@ -95,7 +96,10 @@ def show_sms_popup_namespace_runtime(namespace, message):
         return show_sms_popup_runtime(
             message,
             popup_enabled=namespace["POPUP_ENABLED"],
-            show_info=namespace["messagebox"].showinfo,
+            parent=namespace["root"],
+            current_popup=namespace.get("sms_popup_win"),
+            set_popup=lambda win: namespace.__setitem__("sms_popup_win", win),
+            center_on_screen=namespace["center_on_screen"],
             show_window=namespace["show_window"],
         )
 

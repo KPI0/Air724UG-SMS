@@ -52,12 +52,18 @@ def hide_window_namespace_runtime(namespace):
 
 
 def create_tray_namespace_runtime(namespace):
+    def cleanup_on_ui_thread():
+        return namespace["run_on_ui_thread"](
+            namespace["cleanup_and_exit"],
+            namespace["ui_post"],
+        )
+
     return create_tray_icon_runtime(
         icon_path=namespace["resource_path"]("icon.ico"),
         title=namespace.get("APP_DISPLAY_TITLE", namespace["APP_WINDOW_TITLE"]),
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],
-        cleanup_and_exit=namespace["cleanup_and_exit"],
+        cleanup_and_exit=cleanup_on_ui_thread,
         set_tray_icon=lambda icon: namespace.__setitem__("tray_icon", icon),
         log_error=namespace.get("log_file_only"),
     )

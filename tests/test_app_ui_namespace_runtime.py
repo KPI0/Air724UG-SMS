@@ -158,6 +158,8 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["log_error"]("create log"), ("log", "create log"))
         kwargs["set_tray_icon"]("stored")
         self.assertEqual(namespace["tray_icon"], "stored")
+        kwargs["cleanup_and_exit"]()
+        self.assertEqual(namespace["calls"][-2:], [("run", "ui_post"), ("exit",)])
 
     def test_window_namespace_runtimes_log_root_failures(self):
         logs = []

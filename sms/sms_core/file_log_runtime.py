@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import start_daemon_thread, task_done_safely
 
 
 def drain_available_log_lines(log_queue, first_item):
@@ -12,9 +12,13 @@ def drain_available_log_lines(log_queue, first_item):
     batches = {path: [line]}
     while True:
         try:
-            next_path, next_line = log_queue.get_nowait()
+            next_item = log_queue.get_nowait()
         except queue.Empty:
             break
+        # Mark the item complete before unpacking it so malformed entries do
+        # not leave Queue.unfinished_tasks permanently elevated.
+        task_done_safely(log_queue)
+        next_path, next_line = next_item
         batches.setdefault(next_path, []).append(next_line)
     return batches
 
@@ -92,16 +96,22 @@ def run_file_log_worker(
             continue
 
         try:
-            batches = drain_batches(log_queue, first_item)
-            _write_batches_with_error_reporting(write_batches, batches, on_error)
-        except Exception as exc:
-            # A malformed queue item (e.g. not a (path, line) tuple) must not
-            # kill the only thread that flushes logs to disk. Report and skip.
-            if on_error is not None:
-                try:
-                    on_error(f"file_log_worker skipped a bad log item: {exc!r}")
-                except Exception:
-                    pass
+            try:
+                batches = drain_batches(log_queue, first_item)
+                _write_batches_with_error_reporting(write_batches, batches, on_error)
+            except Exception as exc:
+                # A malformed queue item (e.g. not a (path, line) tuple) must
+                # not kill the only thread that flushes logs to disk. Report
+                # and skip.
+                if on_error is not None:
+                    try:
+                        on_error(f"file_log_worker skipped a bad log item: {exc!r}")
+                    except Exception:
+                        pass
+        finally:
+            # ``first_item`` was removed by the blocking get above.  The
+            # draining helper balances every additional item it removes.
+            task_done_safely(log_queue)
 
 
 def start_file_log_worker(

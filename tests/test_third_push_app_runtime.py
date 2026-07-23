@@ -211,6 +211,24 @@ class ThirdPushAppRuntimeTests(unittest.TestCase):
         self.assertEqual(worker_kwargs["push_queue"], "queue")
         self.assertTrue(callable(worker_kwargs["send_channel_func"]))
         self.assertTrue(callable(worker_kwargs["format_message_func"]))
+        self.assertTrue(worker_kwargs["should_emit_results"]())
+
+        class ShutdownEvent:
+            @staticmethod
+            def is_set():
+                return True
+
+        third_push_worker_app_runtime(
+            stop_event="stop",
+            shutdown_event=ShutdownEvent(),
+            push_queue="queue",
+            get_log_prefix=lambda: "COM5",
+            app_version="3.6.6",
+            system_ui=lambda *args: None,
+            show_result=lambda *args: None,
+            worker_runtime=lambda **kwargs: calls.append(("shutdown-worker", kwargs)) or "worked",
+        )
+        self.assertFalse(calls[-1][1]["should_emit_results"]())
 
         show_result = show_third_push_test_result_app_runtime(
             root="root",

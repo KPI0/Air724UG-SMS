@@ -6,7 +6,12 @@ from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expire
 from sms_core.call_events import CallState, handle_call_line, ring_timeout_expired
 from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_line_effects import apply_serial_line_effects, push_serial_debug_insights
-from sms_core.serial_sms import SmsPendingCollector, flush_pending_sms, handle_sms_collector_line
+from sms_core.serial_sms import (
+    SmsPendingCollector,
+    flush_pending_sms,
+    handle_sms_collector_line,
+    process_pending_sms_items,
+)
 from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
 from sms_core.sms_receive_pipeline import SmsReceivePipeline
 
@@ -189,7 +194,24 @@ def handle_serial_runtime_line(
         )
 
     sms_diagnostic_log = build_sms_diagnostic_log(config, callbacks)
-    state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
+    ready_sms = state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
+    if ready_sms is not None:
+        process_pending_sms_items(
+            ready_sms,
+            config.keywords,
+            config.log_unmatched_sms,
+            config.log_dir,
+            config.log_prefix,
+            ignore_repeat_state,
+            config.error_repeat_limit,
+            callbacks.enqueue_third_push,
+            callbacks.send_cloud_sms_event,
+            callbacks.port_ui,
+            callbacks.play_alert,
+            callbacks.show_sms_popup,
+            callbacks.file_log,
+            callbacks.system_ui,
+        )
     try:
         callbacks.observe_sms_send_line(line)
     except Exception:
@@ -266,37 +288,38 @@ def run_serial_thread_loop(
     empty_target_min_delay=0.05,
     is_stopping=lambda: False,
 ):
-    while should_continue():
-        target_port = get_target_port()
-        try:
-            resolve_started = monotonic()
-            target_port = resolve_target_port()
-            if not target_port:
-                try:
-                    resolve_elapsed = monotonic() - resolve_started
-                except Exception:
-                    resolve_elapsed = 0.0
-                if resolve_elapsed < float(empty_target_min_delay):
-                    wait_before_retry()
-                continue
+    try:
+        while should_continue():
+            target_port = get_target_port()
+            try:
+                resolve_started = monotonic()
+                target_port = resolve_target_port()
+                if not target_port:
+                    try:
+                        resolve_elapsed = monotonic() - resolve_started
+                    except Exception:
+                        resolve_elapsed = 0.0
+                    if resolve_elapsed < float(empty_target_min_delay):
+                        wait_before_retry()
+                    continue
 
-            set_connecting_status(target_port)
-            open_and_initialize_serial(target_port)
-            on_connected_port(target_port)
-            line_decoder = SerialLineDecoder()
+                set_connecting_status(target_port)
+                open_and_initialize_serial(target_port)
+                on_connected_port(target_port)
+                line_decoder = SerialLineDecoder()
 
-            while should_continue():
-                for line in line_decoder.feed(read_serial_line()):
-                    handle_line(line)
+                while should_continue():
+                    for line in line_decoder.feed(read_serial_line()):
+                        handle_line(line)
 
-        except Exception as e:
-            if is_stopping():
-                break
-            if handle_error(e, target_port):
-                continue
-            wait_before_retry()
-
-    safe_close_serial()
+            except Exception as e:
+                if is_stopping():
+                    break
+                if handle_error(e, target_port):
+                    continue
+                wait_before_retry()
+    finally:
+        safe_close_serial()
 
 
 def run_serial_runtime_thread(

@@ -138,6 +138,7 @@ class UiLogRuntimeTests(unittest.TestCase):
         self.assertEqual(flushed, 2)
         self.assertTrue(pending.empty())
         self.assertEqual(calls, [("one", "normal"), ("two", "warn")])
+        self.assertEqual(pending.unfinished_tasks, 0)
 
     def test_flush_pending_ui_logs_runtime_continues_after_insert_error(self):
         pending = queue.Queue()
@@ -154,25 +155,107 @@ class UiLogRuntimeTests(unittest.TestCase):
 
         self.assertEqual(flushed, 2)
         self.assertEqual(calls, [("one", "normal"), ("two", "normal")])
+        self.assertEqual(pending.unfinished_tasks, 0)
 
     def test_show_sms_popup_runtime_shows_when_enabled(self):
         calls = []
 
+        class Popup:
+            def winfo_exists(self):
+                return True
+
+        popup = Popup()
+
+        def open_popup(parent, message, center_on_screen, on_close):
+            calls.append(("open", parent, message, center_on_screen, on_close))
+            return popup
+
         result = show_sms_popup_runtime(
             "hello",
             popup_enabled=True,
-            show_info=lambda *args: calls.append(("info", args)),
+            parent="root",
+            current_popup=None,
+            set_popup=lambda value: calls.append(("set", value)),
+            center_on_screen="center",
             show_window=lambda: calls.append(("show",)),
+            open_popup=open_popup,
         )
 
         self.assertEqual(result, "shown")
-        self.assertEqual(calls, [("info", ("短信提醒", "hello")), ("show",)])
+        self.assertEqual(calls[0][0:4], ("open", "root", "hello", "center"))
+        self.assertEqual(calls[1], ("set", popup))
+        self.assertNotIn(("show",), calls)
+
+    def test_show_sms_popup_runtime_updates_existing_singleton(self):
+        calls = []
+
+        class Popup:
+            def winfo_exists(self):
+                return True
+
+            def sms_popup_update(self, message):
+                calls.append(("update", message))
+
+        popup = Popup()
+        result = show_sms_popup_runtime(
+            "new message",
+            popup_enabled=True,
+            parent="root",
+            current_popup=popup,
+            set_popup=lambda value: calls.append(("set", value)),
+            center_on_screen="center",
+            show_window=lambda: calls.append(("show",)),
+            open_popup=lambda *_args: self.fail("must reuse existing popup"),
+        )
+
+        self.assertEqual(result, "updated")
+        self.assertEqual(calls, [("update", "new message")])
+
+    def test_show_sms_popup_runtime_close_callback_clears_singleton(self):
+        calls = []
+
+        class Popup:
+            exists = True
+
+            def winfo_exists(self):
+                return self.exists
+
+            def destroy(self):
+                self.exists = False
+                calls.append(("destroy",))
+
+        popup = Popup()
+
+        def open_popup(_parent, _message, _center, on_close):
+            calls.append(("close_callback", on_close))
+            return popup
+
+        self.assertEqual(
+            show_sms_popup_runtime(
+                "hello",
+                popup_enabled=True,
+                parent="root",
+                current_popup=None,
+                set_popup=lambda value: calls.append(("set", value)),
+                center_on_screen="center",
+                show_window=lambda: calls.append(("show",)),
+                open_popup=open_popup,
+            ),
+            "shown",
+        )
+        calls[0][1]()
+
+        self.assertIn(("destroy",), calls)
+        self.assertEqual(calls[-2:], [("set", None), ("show",)])
 
     def test_show_sms_popup_runtime_skips_when_disabled(self):
         result = show_sms_popup_runtime(
             "hello",
             popup_enabled=False,
-            show_info=lambda *_args: None,
+            parent="root",
+            current_popup=None,
+            set_popup=lambda _value: None,
+            center_on_screen="center",
             show_window=lambda: None,
         )
 

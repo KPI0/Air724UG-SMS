@@ -131,7 +131,9 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
         forwarded = calls[0][2]
         self.assertEqual(forwarded["connect"]("url"), ("connect", ("url",), {}))
         self.assertEqual(forwarded["monotonic"](), 10.0)
-        self.assertTrue(forwarded["cloud_control_enabled"])
+        self.assertTrue(forwarded["cloud_control_enabled"]())
+        namespace["CLOUD_CONTROL_ENABLED"] = False
+        self.assertFalse(forwarded["cloud_control_enabled"]())
 
     def test_cloud_thread_main_namespace_runtime_forwards_thread_state(self):
         namespace = self.base_namespace()

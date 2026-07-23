@@ -55,6 +55,13 @@ def base_cloud_backoff(reconnect_interval):
         return 1.0
 
 
+def current_cloud_control_enabled(value):
+    try:
+        return bool(value()) if callable(value) else bool(value)
+    except Exception:
+        return False
+
+
 async def wait_for_cloud_imei(
     *,
     stop_event,
@@ -220,7 +227,10 @@ async def cloud_ws_main_runtime(
 
     set_connection_state(None, connected=False, authorized=False)
     reset_serial_log_state()
-    set_cloud_status(cloud_stopped_status(cloud_control_enabled), "#666666")
+    set_cloud_status(
+        cloud_stopped_status(current_cloud_control_enabled(cloud_control_enabled)),
+        "#666666",
+    )
     log("连接已停止")
 
 

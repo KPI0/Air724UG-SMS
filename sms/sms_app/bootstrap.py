@@ -74,6 +74,7 @@ from sms_core.cloud_runtime import (
     read_cloud_control_settings,
 )
 from sms_app.cloud_namespace_bindings import install_cloud_namespace_bindings
+from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
     build_register_payload as _cloud_build_register_payload,
@@ -188,7 +189,7 @@ def _initialize_paths_and_constants():
     SERIAL_DEBUG_WINDOW_TITLE = "串口调试"
     APP_INSTANCE_NUMBER = 1
     RECONNECT_INTERVAL = 2
-    APP_VERSION = "3.8.1"
+    APP_VERSION = CLIENT_VERSION
     GITHUB_OWNER = "KPI0"
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
@@ -211,17 +212,18 @@ def _initialize_config():
     config = configparser.ConfigParser(interpolation=None)
     CONFIG_LOCK = threading.RLock()
     install_app_infrastructure_namespace_bindings(globals())
+    defaults_by_section = {
+        "serial": DEFAULT_SERIAL_CONFIG,
+        "ui": DEFAULT_UI_CONFIG,
+        "update": DEFAULT_UPDATE_CONFIG,
+        "cloud_control": DEFAULT_CLOUD_CONTROL_CONFIG,
+        "third_push": THIRD_PUSH_DEFAULTS,
+    }
     initialize_config_runtime(
         config=config,
         config_file=CONFIG_FILE,
-        defaults_by_section={
-            "serial": DEFAULT_SERIAL_CONFIG,
-            "ui": DEFAULT_UI_CONFIG,
-            "update": DEFAULT_UPDATE_CONFIG,
-            "cloud_control": DEFAULT_CLOUD_CONTROL_CONFIG,
-            "third_push": THIRD_PUSH_DEFAULTS,
-        },
-        save_config=safe_save_config,
+        defaults_by_section=defaults_by_section,
+        save_config=lambda: safe_save_config(defaults_by_section=defaults_by_section),
     )
 
     startup_config = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
@@ -252,15 +254,6 @@ def apply_cloud_control_settings(settings: CloudControlSettings):
     CLOUD_DEVICE_SECRET = settings.device_secret
     CLOUD_WS_RECONNECT_INTERVAL = settings.reconnect_interval
     CLOUD_AUTO_UPLOAD = settings.auto_upload
-
-
-def refresh_cloud_control_settings_from_config():
-    """重新从 config.ini 读取云端控制配置，避免窗口复用时显示旧状态。"""
-    try:
-        config.read(CONFIG_FILE, encoding="utf-8-sig")
-    except Exception:
-        pass
-    apply_cloud_control_settings(read_cloud_control_settings(config))
 
 
 def _initialize_cloud_settings():
@@ -329,7 +322,7 @@ def _initialize_ui_state():
     global AUTO_CLEANUP_INTERVAL_HOURS, AUTO_LOG_CLEANUP_STATE, SERIAL_DEBUG_ENABLED
     global CONFIG_FILE_WATCH_STATE
     global serial_debug_queue, serial_debug_win, serial_debug_text, serial_debug_drop_count
-    global cloud_control_win, third_push_win
+    global cloud_control_win, third_push_win, sms_popup_win
 
     PENDING_UI_LOGS = queue.Queue(maxsize=20000)
     LOG_PREFIX = "system"
@@ -344,6 +337,7 @@ def _initialize_ui_state():
     serial_debug_drop_count = 0
     cloud_control_win = None
     third_push_win = None
+    sms_popup_win = None
 
 
 def _initialize_cloud_runtime_state():
@@ -442,7 +436,7 @@ def _run_startup_guards():
 
 
 def _create_root_window():
-    global root, popup_var, tray_icon, is_exiting, on_close
+    global root, popup_var, tray_icon, tray_thread, is_exiting, on_close
 
     root = tk.Tk()
     root.withdraw()
@@ -475,7 +469,7 @@ def _create_root_window():
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.bind("<Escape>", lambda _e: on_close())
-    start_daemon_thread("tray", create_tray, log_error=log_file_only)
+    tray_thread = start_daemon_thread("tray", create_tray, log_error=log_file_only)
 
 
 def _build_main_layout():

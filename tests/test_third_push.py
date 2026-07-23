@@ -1,7 +1,9 @@
 ﻿import configparser
+import io
 import json
 import queue
 import unittest
+import urllib.error
 
 from sms_core.third_push import (
     PushDispatchResult,
@@ -286,6 +288,36 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertIn("Ding", ui_messages[0][0])
         self.assertEqual(results, [(["Ding"], [])])
 
+    def test_third_push_worker_runtime_drains_items_after_stop_is_requested(self):
+        push_queue = queue.Queue()
+        push_queue.put_nowait({"message": "first", "show_result": True})
+        push_queue.put_nowait({"message": "second", "show_result": True})
+        handled = []
+
+        class AlreadyStopped:
+            @staticmethod
+            def is_set():
+                return True
+
+        def dispatch(item, _send, format_message_func=None):
+            handled.append(item["message"])
+            return PushDispatchResult(["Ding"], [], show_result=True)
+
+        third_push_worker_runtime(
+            stop_event=AlreadyStopped(),
+            push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda *_args: (_ for _ in ()).throw(RuntimeError("must be suppressed")),
+            show_result=lambda *_args: (_ for _ in ()).throw(RuntimeError("must be suppressed")),
+            dispatch_func=dispatch,
+            should_emit_results=lambda: False,
+            poll_timeout=0,
+        )
+
+        self.assertEqual(handled, ["first", "second"])
+        self.assertTrue(push_queue.empty())
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+
     def test_third_push_worker_runtime_continues_after_dispatch_error(self):
         push_queue = queue.Queue()
         push_queue.put_nowait({"message": "bad", "show_result": True})
@@ -459,6 +491,29 @@ class HttpRequestSchemeTests(unittest.TestCase):
     def test_allowed_schemes_constant(self):
         self.assertEqual(ALLOWED_PUSH_SCHEMES, ("http", "https"))
 
+    def test_http_error_response_body_is_discarded_at_request_boundary(self):
+        response_body = "验证码123456，手机号13123123123，raw-secret-value".encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                500,
+                "failed",
+                hdrs=None,
+                fp=io.BytesIO(response_body),
+            )
+
+        original = third_push_sender.urllib.request.urlopen
+        third_push_sender.urllib.request.urlopen = fake_urlopen
+        try:
+            ok, code, body = http_request("https://example.test/hook")
+        finally:
+            third_push_sender.urllib.request.urlopen = original
+
+        self.assertFalse(ok)
+        self.assertEqual(code, 500)
+        self.assertEqual(body, "")
+
 
 class ThirdPushErrorRedactionTests(unittest.TestCase):
     def test_redact_sensitive_text_masks_common_secret_fields(self):
@@ -474,13 +529,47 @@ class ThirdPushErrorRedactionTests(unittest.TestCase):
         self.assertIn("token=***", redacted)
         self.assertIn('"secret":"***"', redacted)
 
-    def test_api_ok_redacts_sensitive_failure_body(self):
-        ok, message = api_ok("custom_post", False, 500, "token=abc123&password=secret")
+    def test_api_ok_discards_entire_http_failure_body(self):
+        sensitive_body = "验证码123456，手机号13123123123，raw-secret-value"
+        ok, message = api_ok("custom_post", False, 500, sensitive_body)
 
         self.assertFalse(ok)
-        self.assertIn("HTTP 500", message)
-        self.assertNotIn("abc123", message)
-        self.assertNotIn("secret", message)
+        self.assertEqual(message, "HTTP 500 请求失败")
+        self.assertNotIn(sensitive_body, message)
+
+    def test_api_ok_discards_business_error_response_fields(self):
+        cases = (
+            ("dingtalk", {"errcode": 1, "errmsg": "回显验证码123456"}),
+            ("wecom", {"errcode": 1, "errmsg": "回显手机号13123123123"}),
+            ("feishu", {"code": 1, "msg": "raw-secret-value"}),
+            ("pushdeer", {"code": 1, "message": "回显短信正文"}),
+            ("serverchan", {"code": 1, "msg": "回显验证码654321"}),
+        )
+
+        for channel, response in cases:
+            with self.subTest(channel=channel):
+                body = json.dumps(response, ensure_ascii=False)
+                ok, message = api_ok(channel, True, 200, body)
+
+                self.assertFalse(ok)
+                self.assertEqual(message, "HTTP 200 渠道返回业务错误")
+                for value in response.values():
+                    self.assertNotIn(str(value), message)
+
+    def test_logged_push_failure_contains_only_fixed_error_category(self):
+        response_body = "验证码123456，手机号13123123123，raw-secret-value"
+        result = dispatch_push_item(
+            {
+                "message": "raw",
+                "channels": ["custom_post"],
+                "settings": {},
+            },
+            lambda *_args: api_ok("custom_post", False, 502, response_body),
+        )
+
+        log_message = push_result_status_message(result)
+        self.assertIn("HTTP 502 请求失败", log_message)
+        self.assertNotIn(response_body, log_message)
 
 
 if __name__ == "__main__":

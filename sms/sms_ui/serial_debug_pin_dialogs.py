@@ -7,11 +7,15 @@ from sms_core.serial_debug import (
     build_pin_unlock_command,
     build_puk_unlock_command,
 )
-from sms_ui.serial_debug_dialog_helpers import ensure_debug_enabled, finish_debug_dialog
+from sms_ui.serial_debug_dialog_helpers import (
+    create_debug_dialog,
+    ensure_debug_enabled,
+    finish_debug_dialog,
+)
 
 
 def open_input_pin_dialog(parent, enabled_var, quick_send, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("输入PIN码解锁")
     win.resizable(False, False)
     win.transient(parent)
@@ -46,7 +50,7 @@ def open_input_pin_dialog(parent, enabled_var, quick_send, center_window):
 
 
 def open_input_puk_dialog(parent, enabled_var, quick_send, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("输入PUK码解锁")
     win.resizable(False, False)
     win.transient(parent)
@@ -90,7 +94,7 @@ def open_pin_lock_dialog(parent, enabled_var, quick_send, center_window, enable:
     title = "开启PIN码锁" if enable else "关闭PIN码锁"
     tip = "💡 提示：开启后模组每次开机均需输入PIN码。" if enable else "💡 提示：关闭后模组开机将自动联网，不再拦截。"
 
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title(title)
     win.resizable(False, False)
     win.transient(parent)
@@ -121,7 +125,7 @@ def open_pin_lock_dialog(parent, enabled_var, quick_send, center_window, enable:
 
 
 def open_modify_pin_dialog(parent, enabled_var, quick_send, center_window):
-    win = tk.Toplevel(parent)
+    win = create_debug_dialog(parent)
     win.title("修改PIN码")
     win.resizable(False, False)
     win.transient(parent)

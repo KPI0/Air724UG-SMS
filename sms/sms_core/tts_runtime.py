@@ -3,7 +3,7 @@ import queue
 import re
 import uuid
 
-from sms_core.threading_runtime import start_daemon_thread
+from sms_core.threading_runtime import start_daemon_thread, task_done_safely
 
 
 def instance_tts_file_path(tts_dir, instance_number=1):
@@ -24,6 +24,13 @@ def ensure_tts_worker_runtime(
     thread_factory,
     log_error,
 ):
+    published_thread = None
+
+    def publish_thread(thread):
+        nonlocal published_thread
+        published_thread = thread
+        set_thread(thread)
+
     try:
         thread = get_thread()
         if thread is not None and thread.is_alive():
@@ -34,12 +41,21 @@ def ensure_tts_worker_runtime(
             "tts_worker",
             worker_target,
             log_error=log_error,
-            before_start=set_thread,
+            before_start=publish_thread,
             thread_factory=thread_factory,
         )
         return "started"
     except Exception as exc:
-        log_error(exc)
+        if published_thread is not None:
+            try:
+                if get_thread() is published_thread:
+                    set_thread(None)
+            except Exception:
+                pass
+        try:
+            log_error(exc)
+        except Exception:
+            pass
         return "error"
 
 
@@ -114,7 +130,7 @@ def clear_tts_queue(request_queue):
     while True:
         try:
             request_queue.get_nowait()
-            request_queue.task_done()
+            task_done_safely(request_queue)
             cleared += 1
         except queue.Empty:
             break
@@ -137,6 +153,22 @@ def _unpack_tts_task(task, default_text):
         text, force = task
         play_after = False
     return normalize_voice_text(text, default_text), bool(force), bool(play_after)
+
+
+def _safe_tts_error(error_callback, exc):
+    try:
+        error_callback(exc)
+    except Exception:
+        pass
+
+
+def _safe_play_after(play_after_callback, error_callback):
+    try:
+        play_after_callback(force=True)
+        return True
+    except Exception as exc:
+        _safe_tts_error(error_callback, exc)
+        return False
 
 
 def generate_tts_file(
@@ -217,49 +249,49 @@ def tts_worker_loop(
         except queue.Empty:
             continue
 
-        if stop_event.is_set():
-            try:
-                request_queue.task_done()
-            except Exception:
-                pass
-            break
-
-        text, force, play_after = _unpack_tts_task(task, default_text)
-        current_file = get_tts_file()
-
-        if (not force) and os.path.exists(current_file):
-            try:
-                request_queue.task_done()
-            except Exception:
-                pass
-            if play_after:
-                play_after_callback(force=True)
-            continue
-
         try:
-            new_file = generate_tts_file(
-                text,
-                current_file,
-                tts_dir,
-                tts_lock,
-                engine_factory,
-            )
-            if new_file != current_file:
-                set_tts_file(new_file)
-        except Exception as exc:
-            if not stop_event.is_set():
-                error_callback(exc)
-            if not stop_event.is_set() and play_after and fallback_beep is not None:
-                try:
-                    fallback_beep()
-                except Exception:
-                    pass
-                play_after = False
-        finally:
-            try:
-                request_queue.task_done()
-            except Exception:
-                pass
+            if stop_event.is_set():
+                break
 
-        if play_after and not stop_event.is_set():
-            play_after_callback(force=True)
+            try:
+                text, force, play_after = _unpack_tts_task(task, default_text)
+                current_file = get_tts_file()
+            except Exception as exc:
+                if not stop_event.is_set():
+                    _safe_tts_error(error_callback, exc)
+                continue
+
+            if (not force) and os.path.exists(current_file):
+                if play_after:
+                    _safe_play_after(play_after_callback, error_callback)
+                continue
+
+            try:
+                new_file = generate_tts_file(
+                    text,
+                    current_file,
+                    tts_dir,
+                    tts_lock,
+                    engine_factory,
+                )
+                if new_file != current_file:
+                    set_tts_file(new_file)
+            except Exception as exc:
+                if not stop_event.is_set():
+                    _safe_tts_error(error_callback, exc)
+                if not stop_event.is_set() and play_after and fallback_beep is not None:
+                    try:
+                        fallback_beep()
+                    except Exception:
+                        pass
+                    play_after = False
+
+            if play_after and not stop_event.is_set():
+                _safe_play_after(play_after_callback, error_callback)
+        except Exception as exc:
+            # A malformed request or callback failure must not terminate the
+            # only TTS worker; report it and continue with the next request.
+            if not stop_event.is_set():
+                _safe_tts_error(error_callback, exc)
+        finally:
+            task_done_safely(request_queue)

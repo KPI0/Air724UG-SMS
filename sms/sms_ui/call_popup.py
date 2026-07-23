@@ -12,6 +12,7 @@ def open_call_popup(
     on_close,
 ):
     win = tk.Toplevel(parent)
+    win.withdraw()
     win.title("来电提醒")
     win.minsize(300, 0)
     win.resizable(False, False)
@@ -92,5 +93,6 @@ def open_call_popup(
 
     win.protocol("WM_DELETE_WINDOW", on_close)
     center_window(win, parent)
+    win.deiconify()
     win.lift()
     return win

@@ -91,6 +91,13 @@ class CloudProtocolTests(unittest.TestCase):
         self.assertEqual(phone, "13123123123")
         self.assertEqual(message, "Message")
 
+    def test_parse_sms_callback_head_handles_non_numeric_sender_token(self):
+        text = '3A968BD3FABBFC8C52 26/07/22,17:33:02+32 Brand message'
+        sender, message = parse_sms_callback_head(text)
+
+        self.assertEqual(sender, "3A968BD3FABBFC8C52")
+        self.assertEqual(message, "Brand message")
+
     def test_parse_sms_callback_head_returns_original_on_no_match(self):
         """Should return empty phone and original text when format doesn't match."""
         text = 'Not a callback format'

@@ -47,6 +47,7 @@ class FileLogRuntimeTests(unittest.TestCase):
             "b.log": ["b1\n"],
         })
         self.assertTrue(log_queue.empty())
+        self.assertEqual(log_queue.unfinished_tasks, 0)
 
     def test_write_log_batches_writes_each_path_once(self):
         opened = []
@@ -82,6 +83,25 @@ class FileLogRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(writes, [{"a.log": ["a1\n"]}])
+        self.assertEqual(log_queue.unfinished_tasks, 0)
+
+    def test_worker_balances_all_items_when_a_later_item_is_malformed(self):
+        log_queue = queue.Queue()
+        log_queue.put_nowait(("a.log", "a1\n"))
+        log_queue.put_nowait("bad")
+        stop_event = FakeStopEvent(stop_after=1)
+        errors = []
+
+        run_file_log_worker(
+            log_queue=log_queue,
+            stop_event=stop_event,
+            poll_timeout=0,
+            write_batches=lambda _batches: None,
+            on_error=errors.append,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(log_queue.unfinished_tasks, 0)
 
     def test_start_file_log_worker_starts_daemon_thread(self):
         calls = []

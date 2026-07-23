@@ -1,5 +1,9 @@
 from sms_core.third_push_config import ensure_third_push_config_values, read_third_push_settings
-from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_core.config_runtime import (
+    reload_config_runtime,
+    restore_config_section,
+    snapshot_config_section,
+)
 from sms_ui.third_push_app_runtime import (
     enqueue_third_push_app_runtime,
     open_third_push_values_app_runtime,
@@ -31,17 +35,47 @@ def apply_third_push_settings_namespace_runtime(namespace, settings):
     namespace.__setitem__("THIRD_PUSH_SETTINGS", dict(settings.settings or {}))
 
 
-def refresh_third_push_settings_namespace_runtime(namespace):
+def _log_config_reload_failure(namespace, exc):
+    log_error = namespace.get("log_file_only")
+    if log_error is None:
+        return
     try:
-        namespace["config"].read(namespace["CONFIG_FILE"], encoding="utf-8-sig")
+        log_error(f"Reload third-push config failed ({type(exc).__name__})")
     except Exception:
         pass
 
-    ensure_third_push_config_namespace_runtime(namespace, save=True)
-    apply_third_push_settings_namespace_runtime(
-        namespace,
-        read_third_push_settings(namespace["config"]),
-    )
+
+def refresh_third_push_settings_namespace_runtime(
+    namespace,
+    *,
+    reload_config=reload_config_runtime,
+):
+    defaults_changed = False
+
+    def prepare_config(staged_config):
+        nonlocal defaults_changed
+        defaults_changed = ensure_third_push_config_values(staged_config)
+
+    def commit_config():
+        if not defaults_changed:
+            return True
+        return namespace["safe_save_config"]()
+
+    try:
+        settings = reload_config(
+            config=namespace["config"],
+            config_file=namespace["CONFIG_FILE"],
+            config_lock=namespace["CONFIG_LOCK"],
+            prepare_config=prepare_config,
+            commit_config=commit_config,
+            read_values=read_third_push_settings,
+        )
+    except Exception as exc:
+        _log_config_reload_failure(namespace, exc)
+        return False
+
+    apply_third_push_settings_namespace_runtime(namespace, settings)
+    return True
 
 
 def save_third_push_setting_namespace_runtime(
@@ -80,6 +114,7 @@ def third_push_worker_namespace_runtime(namespace):
         app_version=namespace["APP_VERSION"],
         system_ui=namespace["system_ui"],
         show_result=namespace["show_third_push_test_result"],
+        shutdown_event=namespace.get("TK_SHUTDOWN"),
     )
 
 

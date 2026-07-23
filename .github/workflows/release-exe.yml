@@ -36,8 +36,8 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}".Trim()
-          if ($tag -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
-            throw "Release tag must start with 'v' and contain only letters, numbers, dots, underscores, or hyphens. Got: '$tag'"
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Stable release tag must use vX.Y.Z format. Got: '$tag'"
           }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -49,6 +49,12 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements.txt
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path "sms").Path
+          python tools/check_release_version.py "$env:RELEASE_TAG"
 
       - name: Install dependencies
         shell: pwsh

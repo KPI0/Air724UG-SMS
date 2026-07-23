@@ -77,8 +77,9 @@ class UiLogNamespaceRuntimeTests(unittest.TestCase):
         namespace["UI_TASK_QUEUE"].put_nowait(("a", (), {}))
         namespace["UI_TASK_QUEUE"].put_nowait(("b", (), {}))
 
-        ui_post_namespace_runtime(namespace, lambda: None, 1, name="value")
+        result = ui_post_namespace_runtime(namespace, lambda: None, 1, name="value")
 
+        self.assertFalse(result)
         self.assertIn(("file_only", "⚠️ UI_TASK_QUEUE 已满：丢弃一次 UI 任务"), namespace["calls"])
 
     def test_log_file_only_namespace_runtime_writes_system_log(self):

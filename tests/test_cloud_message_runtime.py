@@ -353,6 +353,38 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "scheduled")
         self.assertEqual(calls[0][0][2]["metadata"], {"message_trace_id": "abc123def456"})
 
+    def test_send_cloud_sms_event_runtime_closes_coro_when_submit_fails(self):
+        created = []
+
+        async def send_payload(_ws, _payload):
+            return None
+
+        def build_send_coro(ws, payload):
+            coro = send_payload(ws, payload)
+            created.append(coro)
+            return coro
+
+        result = send_cloud_sms_event_runtime(
+            "head",
+            "body",
+            authorized=True,
+            get_loop=lambda: FakeLoop(True),
+            get_ws=lambda: object(),
+            is_connected=lambda: True,
+            runtime_imei=lambda: "imei",
+            build_payload=lambda *_args: {"type": "sms_event"},
+            send_payload=build_send_coro,
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "imei"},
+            run_coroutine_threadsafe=lambda _coro, _loop: (_ for _ in ()).throw(
+                RuntimeError("loop rejected")
+            ),
+        )
+
+        self.assertEqual(result, "error")
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(created[0].cr_frame)
+
     def test_cloud_status_payload_runtime_reports_serial_connection(self):
         payload = cloud_status_payload_runtime(
             serial_lock=DummyLock(),

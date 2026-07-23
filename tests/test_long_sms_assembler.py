@@ -53,7 +53,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
     def test_duplicate_part_is_ignored(self):
         assembler = LongSmsAssembler(parse_head)
         part1 = PendingSms("10086 26/06/28,12:00:00+32 AA", "AA", [], ConcatSmsInfo(0x2A, 2, 1))
-        duplicate_part1 = PendingSms("10086 26/06/28,12:00:00+32 XX", "XX", [], ConcatSmsInfo(0x2A, 2, 1))
+        duplicate_part1 = PendingSms("10086 26/06/28,12:00:00+32 AA", "AA", [], ConcatSmsInfo(0x2A, 2, 1))
         part2 = PendingSms("10086 26/06/28,12:00:00+32 BB", "BB", [], ConcatSmsInfo(0x2A, 2, 2))
 
         self.assertIsNone(assembler.add_message(part1, now=1.0))
@@ -159,6 +159,64 @@ class LongSmsAssemblerTests(unittest.TestCase):
         self.assertEqual(complete.full_msg, "B1B2")
         self.assertNotEqual(complete.full_msg, "A1B2")
 
+    def test_interleaved_reference_reuse_routes_parts_by_message_timestamp(self):
+        assembler = LongSmsAssembler(parse_head)
+
+        def part(body, index, timestamp):
+            return PendingSms(
+                f"10001 {timestamp} {body}",
+                body,
+                [],
+                ConcatSmsInfo(0x45, 2, index),
+                body,
+                "10001",
+                timestamp,
+            )
+
+        outputs = []
+        for now, pending in enumerate((
+            part("A1", 1, "26/07/22,19:30:00+32"),
+            part("B1", 1, "26/07/22,19:30:10+32"),
+            part("A2", 2, "26/07/22,19:30:00+32"),
+            part("B2", 2, "26/07/22,19:30:10+32"),
+        ), start=1):
+            result = assembler.add_message(pending, now=float(now))
+            if result is not None:
+                outputs.append(result.full_msg)
+
+        self.assertEqual(outputs, ["A1A2", "B1B2"])
+        self.assertEqual(assembler._pending, {})
+
+    def test_interleaved_reference_reuse_one_second_apart_does_not_cross_parts(self):
+        assembler = LongSmsAssembler(parse_head)
+
+        def part(body, index, timestamp):
+            return PendingSms(
+                f"10001 {timestamp} {body}",
+                body,
+                [],
+                ConcatSmsInfo(0x46, 2, index),
+                body,
+                "10001",
+                timestamp,
+            )
+
+        outputs = []
+        for now, pending in enumerate((
+            part("A1", 1, "26/07/22,19:31:00+32"),
+            part("B2", 2, "26/07/22,19:31:01+32"),
+            part("A2", 2, "26/07/22,19:31:00+32"),
+            part("B1", 1, "26/07/22,19:31:01+32"),
+        ), start=1):
+            result = assembler.add_message(pending, now=float(now))
+            if result is not None:
+                outputs.append(result.full_msg)
+
+        self.assertEqual(outputs, ["A1A2", "B1B2"])
+        self.assertNotIn("A1B2", outputs)
+        self.assertNotIn("B1A2", outputs)
+        self.assertEqual(assembler._pending, {})
+
     def test_late_part_after_session_window_does_not_complete_stale_message(self):
         assembler = LongSmsAssembler(parse_head)
         stale_part1 = PendingSms(
@@ -218,6 +276,35 @@ class LongSmsAssemblerTests(unittest.TestCase):
 
         self.assertEqual(complete.full_msg, "SAMEB2")
 
+    def test_completed_duplicate_grace_does_not_swallow_new_timestamped_message(self):
+        assembler = LongSmsAssembler(parse_head)
+
+        def part(body, index, timestamp):
+            return PendingSms(
+                f"10086 {timestamp} {body}",
+                body,
+                [],
+                ConcatSmsInfo(0x2B, 2, index),
+                body,
+                "10086",
+                timestamp,
+            )
+
+        first_timestamp = "26/06/28,12:00:00+32"
+        second_timestamp = "26/06/28,12:00:01+32"
+        common_part = "COMMON-FIRST-PART"
+
+        self.assertIsNone(assembler.add_message(part(common_part, 1, first_timestamp), now=1.0))
+        first = assembler.add_message(part("FIRST-END", 2, first_timestamp), now=2.0)
+        self.assertEqual(first.full_msg, common_part + "FIRST-END")
+
+        self.assertIsNone(assembler.add_message(part(common_part, 1, second_timestamp), now=3.0))
+        second = assembler.add_message(part("SECOND-END", 2, second_timestamp), now=4.0)
+
+        self.assertEqual(second.full_msg, common_part + "SECOND-END")
+        self.assertEqual(assembler._pending, {})
+        self.assertEqual(len(assembler._completed), 2)
+
     def test_duplicate_old_part_does_not_complete_new_message(self):
         assembler = LongSmsAssembler(parse_head)
         first_part1 = PendingSms(
@@ -255,7 +342,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
         self.assertIsNone(assembler.add_message(new_part1, now=20.0))
         self.assertEqual(len(assembler._pending), 1)
 
-    def test_completed_duplicate_near_timestamp_does_not_create_pending(self):
+    def test_completed_duplicate_same_timestamp_does_not_create_pending(self):
         logs = []
         assembler = LongSmsAssembler(parse_head)
         part1 = PendingSms(
@@ -277,13 +364,13 @@ class LongSmsAssemblerTests(unittest.TestCase):
             "26/06/28,12:00:00+32",
         )
         duplicate_part2 = PendingSms(
-            "10086 26/06/28,12:00:01+32 A2",
+            "10086 26/06/28,12:00:00+32 A2",
             "A2",
             [],
             ConcatSmsInfo(0x2A, 2, 2),
             "A2",
             "10086",
-            "26/06/28,12:00:01+32",
+            "26/06/28,12:00:00+32",
         )
 
         self.assertIsNone(assembler.add_message(part1, now=1.0, log=logs.append))
@@ -515,7 +602,11 @@ class LongSmsAssemblerTests(unittest.TestCase):
         complete_b = assembler.add_message(b1, now=72.0)
 
         self.assertEqual(complete_b.full_msg, "B1B2")
-        self.assertEqual(len(assembler._pending), 1)
+        self.assertEqual(len(assembler._pending), 2)
+        self.assertFalse(any(
+            entry.get("parts") == {1: "A1", 2: "A2"}
+            for entry in assembler._pending.values()
+        ))
 
     def test_concat_parts_with_timestamp_gap_still_complete_within_session_window(self):
         assembler = LongSmsAssembler(parse_head)
@@ -670,7 +761,7 @@ class LongSmsAssemblerTests(unittest.TestCase):
     def test_duplicate_part_does_not_extend_timeout(self):
         assembler = LongSmsAssembler(parse_head, timeout=30.0)
         part1 = PendingSms("10086 26/06/28,12:00:00+32 AA", "AA", [], ConcatSmsInfo(0x2A, 2, 1))
-        duplicate_part1 = PendingSms("10086 26/06/28,12:00:00+32 XX", "XX", [], ConcatSmsInfo(0x2A, 2, 1))
+        duplicate_part1 = PendingSms("10086 26/06/28,12:00:00+32 AA", "AA", [], ConcatSmsInfo(0x2A, 2, 1))
         part2 = PendingSms("10086 26/06/28,12:00:00+32 BB", "BB", [], ConcatSmsInfo(0x2A, 2, 2))
 
         self.assertIsNone(assembler.add_message(part1, now=1.0))

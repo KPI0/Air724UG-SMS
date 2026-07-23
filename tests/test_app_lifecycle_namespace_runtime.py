@@ -55,6 +55,12 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "serial_stop_event": "serial",
             "serial_wakeup_event": "wakeup",
             "TTS_STOP": "tts",
+            "THIRD_PUSH_Q": "third-queue",
+            "third_push_thread": "third-thread",
+            "serial_thread": "serial-thread",
+            "TTS_THREAD": "tts-thread",
+            "cloud_ws_thread": "cloud-thread",
+            "tray_thread": "tray-thread",
             "FILE_LOG_Q": "queue",
             "VOICE_ENABLED": True,
             "ALLOW_MULTI_INSTANCE": False,
@@ -117,8 +123,11 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "exited")
         forwarded = calls[0]
         self.assertEqual(forwarded["shutdown_events"], ("tk",))
-        self.assertEqual(forwarded["worker_stop_events"], ("third", "serial", "wakeup"))
+        self.assertEqual(forwarded["worker_stop_events"], ("serial", "wakeup"))
         self.assertEqual(forwarded["tts_stop_event"], "tts")
+        self.assertEqual(forwarded["deferred_worker_stop_events"], ("third",))
+        self.assertEqual(forwarded["deferred_worker_threads"](), ("third-thread",))
+        self.assertEqual(forwarded["deferred_worker_queues"], ("third-queue",))
         self.assertEqual(forwarded["file_log_stop_event"], "file")
         self.assertEqual(
             forwarded["worker_threads"]()[-4:],
@@ -126,6 +135,7 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         )
         self.assertIn("update-1", forwarded["worker_threads"]())
         self.assertIn("update-2", forwarded["worker_threads"]())
+        self.assertIn("tray-thread", forwarded["worker_threads"]())
         forwarded["set_exiting"](True)
         forwarded["set_serial_running"](False)
         self.assertTrue(namespace["is_exiting"])
@@ -284,7 +294,10 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         forwarded = calls[0]
         self.assertEqual(forwarded["autostart_flag"], "--autostart")
         self.assertEqual(forwarded["restart_helper_flag"], "--restart-helper")
-        self.assertEqual(forwarded["stop_events"], ("tk", "third", "serial", "wakeup", "tts"))
+        self.assertEqual(forwarded["stop_events"], ("tk", "serial", "wakeup", "tts"))
+        self.assertEqual(forwarded["deferred_stop_events"], ("third",))
+        self.assertEqual(forwarded["deferred_worker_threads"](), ("third-thread",))
+        self.assertEqual(forwarded["deferred_worker_queues"], ("third-queue",))
         self.assertEqual(forwarded["file_log_stop_event"], "file")
         self.assertEqual(
             forwarded["worker_threads"]()[-4:],
@@ -292,6 +305,7 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         )
         self.assertIn("update-1", forwarded["worker_threads"]())
         self.assertIn("update-2", forwarded["worker_threads"]())
+        self.assertIn("tray-thread", forwarded["worker_threads"]())
         self.assertEqual(forwarded["app_mutex"], "mutex")
         self.assertEqual(forwarded["file_log_queue"], "queue")
         forwarded["set_exiting"](True)
@@ -316,6 +330,23 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertIn("late-update", snapshot)
         self.assertIn("late-command", snapshot)
         self.assertIn("late-sms", snapshot)
+
+    def test_shutdown_worker_snapshot_propagates_registry_failure(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        class FailingRegistry:
+            def snapshot(self):
+                raise RuntimeError("snapshot failed")
+
+        namespace["SERIAL_COMMAND_THREAD_REGISTRY"] = FailingRegistry()
+        cleanup_and_exit_namespace_runtime(
+            namespace,
+            cleanup_app_runtime=lambda **kwargs: calls.append(kwargs) or "wired",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "SERIAL_COMMAND_THREAD_REGISTRY"):
+            calls[0]["worker_threads"]()
 
 
 if __name__ == "__main__":

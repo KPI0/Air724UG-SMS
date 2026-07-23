@@ -92,6 +92,33 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertEqual(base_cloud_backoff(0), 1.0)
         self.assertEqual(base_cloud_backoff("bad"), 1.0)
 
+    def test_cloud_ws_main_uses_current_enabled_state_when_stopping(self):
+        stop_event = FakeStopEvent()
+        stop_event.set()
+        statuses = []
+        enabled = {"value": True}
+        enabled["value"] = False
+
+        asyncio.run(cloud_ws_main_runtime(
+            "ws://server",
+            1,
+            stop_event=stop_event,
+            runtime_imei=lambda: "imei",
+            request_cloud_device_imei=lambda: None,
+            set_cloud_status=lambda text, color: statuses.append((text, color)),
+            log=lambda *_args, **_kwargs: None,
+            connect=lambda *_args, **_kwargs: None,
+            set_connection_state=lambda *_args, **_kwargs: None,
+            reset_serial_log_state=lambda: None,
+            send_register=lambda _ws: None,
+            wait_login_ack=lambda _ws: True,
+            handle_message=lambda _ws, _message: None,
+            cloud_control_enabled=lambda: enabled["value"],
+            monotonic=lambda: 0.0,
+        ))
+
+        self.assertEqual(statuses[-1], ("🌐 已关闭", "#666666"))
+
     def test_wait_for_cloud_imei_requests_periodically(self):
         stop_event = FakeStopEvent()
         calls = []

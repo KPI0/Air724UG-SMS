@@ -206,6 +206,28 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][1], "loop")
         calls[0][0].close()
 
+    def test_register_current_cloud_connection_closes_coro_when_submit_fails(self):
+        created = []
+
+        async def send_register(_ws):
+            return None
+
+        def build_register(ws):
+            coro = send_register(ws)
+            created.append(coro)
+            return coro
+
+        with self.assertRaisesRegex(RuntimeError, "loop rejected"):
+            register_current_cloud_connection(
+                lambda: "loop",
+                lambda: "ws",
+                build_register,
+                lambda _coro, _loop: (_ for _ in ()).throw(RuntimeError("loop rejected")),
+            )
+
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(created[0].cr_frame)
+
     def test_open_cloud_control_app_runtime_adapts_settings_and_callbacks(self):
         calls = []
 

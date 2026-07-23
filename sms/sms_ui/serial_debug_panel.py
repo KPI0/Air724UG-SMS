@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from sms_core.serial_debug import COMMON_SERIAL_COMMANDS, quick_command_label
+from sms_core.threading_runtime import task_done_safely
 from sms_ui.serial_debug_finder import SerialDebugFinder
 from sms_ui.serial_debug_dialogs import (
     open_dial_dialog,
@@ -207,9 +208,11 @@ def append_serial_debug_lines_once(
     lines = []
     for _ in range(batch_size):
         try:
-            lines.append(serial_queue.get_nowait())
+            line = serial_queue.get_nowait()
         except queue.Empty:
             break
+        task_done_safely(serial_queue)
+        lines.append(line)
 
     if not lines:
         return False
@@ -266,6 +269,7 @@ def reset_serial_debug_window_state(
     try:
         while True:
             serial_queue.get_nowait()
+            task_done_safely(serial_queue)
     except queue.Empty:
         pass
 

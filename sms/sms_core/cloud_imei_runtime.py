@@ -20,6 +20,7 @@ def notify_cloud_identity_changed_runtime(
     send_register,
     run_coroutine_threadsafe,
 ):
+    register_coro = None
     try:
         loop = get_loop()
         ws = get_ws()
@@ -27,9 +28,16 @@ def notify_cloud_identity_changed_runtime(
             return False
         if not runtime_imei():
             return False
-        run_coroutine_threadsafe(send_register(ws), loop)
+        register_coro = send_register(ws)
+        run_coroutine_threadsafe(register_coro, loop)
         return True
     except Exception:
+        close = getattr(register_coro, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
         return False
 
 

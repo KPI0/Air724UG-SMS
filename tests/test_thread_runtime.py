@@ -112,8 +112,9 @@ class ThreadRuntimeTests(unittest.TestCase):
     def test_ui_post_runtime_queues_callback_with_arguments(self):
         task_queue = queue.Queue()
 
-        ui_post_runtime(task_queue, lambda: None, (1,), {"name": "value"})
+        result = ui_post_runtime(task_queue, lambda: None, (1,), {"name": "value"})
 
+        self.assertTrue(result)
         _callback, args, kwargs = task_queue.get_nowait()
         self.assertEqual(args, (1,))
         self.assertEqual(kwargs, {"name": "value"})
@@ -123,8 +124,9 @@ class ThreadRuntimeTests(unittest.TestCase):
         task_queue = queue.Queue(maxsize=1)
         task_queue.put_nowait(("existing", (), {}))
 
-        ui_post_runtime(task_queue, lambda: None, on_full=lambda: calls.append("full"))
+        result = ui_post_runtime(task_queue, lambda: None, on_full=lambda: calls.append("full"))
 
+        self.assertFalse(result)
         self.assertEqual(calls, ["full"])
 
     def test_ui_post_runtime_logs_unexpected_queue_error(self):
@@ -134,10 +136,24 @@ class ThreadRuntimeTests(unittest.TestCase):
             def put_nowait(self, _item):
                 raise RuntimeError("queue closed")
 
-        ui_post_runtime(BrokenQueue(), lambda: None, log_error=logs.append)
+        result = ui_post_runtime(BrokenQueue(), lambda: None, log_error=logs.append)
 
+        self.assertFalse(result)
         self.assertEqual(len(logs), 1)
         self.assertIn("queue closed", logs[0])
+
+    def test_post_ui_if_running_reports_enqueue_failure_and_runs_skip_callback(self):
+        calls = []
+
+        result = post_ui_if_running_runtime(
+            lambda _callback: False,
+            lambda: calls.append("ran"),
+            lambda: False,
+            on_skipped=lambda: calls.append("skipped"),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(calls, ["skipped"])
 
     def test_post_ui_if_running_checks_shutdown_before_queue_and_execution(self):
         state = {"stopping": False}
@@ -186,6 +202,7 @@ class ThreadRuntimeTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(calls, ["ran"])
         self.assertEqual(root.after_calls[0][0], 30)
+        self.assertEqual(task_queue.unfinished_tasks, 0)
 
     def test_ui_pump_runtime_swallows_task_errors(self):
         calls = []
@@ -203,6 +220,7 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(processed, 2)
         self.assertEqual(calls, ["next"])
+        self.assertEqual(task_queue.unfinished_tasks, 0)
 
     def test_ui_pump_runtime_logs_task_errors(self):
         logs = []
@@ -220,6 +238,7 @@ class ThreadRuntimeTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(len(logs), 1)
         self.assertIn("boom", logs[0])
+        self.assertEqual(task_queue.unfinished_tasks, 0)
 
     def test_schedule_delayed_ui_runtime_schedules_remaining_startup_delay(self):
         calls = []

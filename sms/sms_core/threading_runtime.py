@@ -3,6 +3,24 @@ import time
 import traceback
 
 
+def task_done_safely(work_queue):
+    """Balance one successful queue ``get`` without trusting the queue type.
+
+    The production queues are :class:`queue.Queue` instances, but a few
+    headless/test paths use light-weight queue doubles.  Consumers should call
+    this exactly once for every item they remove; a missing or already-closed
+    ``task_done`` implementation must not take down the worker or UI pump.
+    """
+    task_done = getattr(work_queue, "task_done", None)
+    if not callable(task_done):
+        return False
+    try:
+        task_done()
+        return True
+    except Exception:
+        return False
+
+
 class WorkerThreadRegistry:
     """Thread-safe registry for short-lived workers that must join on exit."""
 
@@ -179,3 +197,45 @@ def wait_for_worker_threads(
                 except Exception:
                     pass
     return all_stopped
+
+
+def queues_are_drained(queues, *, log_error=None):
+    """Return whether queued work has no unfinished tasks after its worker exits."""
+    for work_queue in tuple(queues or ()):
+        if work_queue is None:
+            continue
+        try:
+            unfinished = int(work_queue.unfinished_tasks)
+        except (AttributeError, TypeError, ValueError):
+            unfinished = None
+        except Exception as exc:
+            if log_error is not None:
+                try:
+                    log_error(f"检查退出队列状态失败: {exc!r}")
+                except Exception:
+                    pass
+            return False
+        if unfinished is not None and unfinished != 0:
+            if log_error is not None:
+                try:
+                    log_error(f"退出时仍有 {unfinished} 个队列任务未完成")
+                except Exception:
+                    pass
+            return False
+        try:
+            empty = bool(work_queue.empty())
+        except Exception as exc:
+            if log_error is not None:
+                try:
+                    log_error(f"检查退出队列是否为空失败: {exc!r}")
+                except Exception:
+                    pass
+            return False
+        if not empty:
+            if log_error is not None:
+                try:
+                    log_error("退出时队列仍有待处理任务")
+                except Exception:
+                    pass
+            return False
+    return True

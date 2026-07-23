@@ -41,6 +41,7 @@ from sms_core.cloud_ws_namespace_runtime import (
 from sms_ui.cloud_control_namespace_runtime import (
     cloud_log_namespace_runtime,
     open_cloud_control_window_namespace_runtime,
+    refresh_cloud_control_settings_namespace_runtime,
     restart_cloud_control_namespace_runtime,
     save_cloud_control_setting_namespace_runtime,
     start_cloud_control_namespace_runtime,
@@ -166,6 +167,9 @@ def install_cloud_namespace_bindings(namespace):
         "restart_cloud_control": bind(
             "restart_cloud_control_namespace_runtime",
             positional_keywords=("show_errors",),
+        ),
+        "refresh_cloud_control_settings_from_config": bind(
+            "refresh_cloud_control_settings_namespace_runtime"
         ),
         "open_cloud_control_window": bind("open_cloud_control_window_namespace_runtime"),
     })

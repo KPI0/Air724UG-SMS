@@ -1,8 +1,11 @@
+import configparser
+import threading
 import unittest
 
 from sms_ui.cloud_control_namespace_runtime import (
     cloud_log_namespace_runtime,
     open_cloud_control_window_namespace_runtime,
+    refresh_cloud_control_settings_namespace_runtime,
     restart_cloud_control_namespace_runtime,
     save_cloud_control_setting_namespace_runtime,
     start_cloud_control_namespace_runtime,
@@ -33,6 +36,7 @@ class FakeRoot:
 
 class CloudControlNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
+        config = configparser.ConfigParser(interpolation=None)
         return {
             "websockets": object(),
             "CLOUD_WS_URL": "ws://host",
@@ -50,7 +54,9 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
             "cloud_restart_seq": 3,
             "cloud_control_win": "window",
             "cloud_var": "status_var",
-            "config": "config",
+            "config": config,
+            "CONFIG_FILE": "config.ini",
+            "CONFIG_LOCK": threading.RLock(),
             "root": FakeRoot(),
             "messagebox": FakeMessageBox(),
             "threading": FakeThreading,
@@ -83,6 +89,55 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: ("file", message),
             "ui_only": lambda *args: ("ui", args),
         }
+
+    def test_refresh_cloud_control_settings_applies_staged_values(self):
+        namespace = self.base_namespace()
+        staged = configparser.ConfigParser(interpolation=None)
+        staged["cloud_control"] = {
+            "enabled": "0",
+            "url": "wss://new.example/ws/device",
+            "device_secret": "next-secret",
+            "reconnect_interval": "9",
+            "auto_upload": "1",
+        }
+        applied = []
+        namespace["apply_cloud_control_settings"] = applied.append
+
+        def reload_config(**kwargs):
+            self.assertIs(kwargs["config"], namespace["config"])
+            self.assertIs(kwargs["config_lock"], namespace["CONFIG_LOCK"])
+            return kwargs["read_values"](staged)
+
+        result = refresh_cloud_control_settings_namespace_runtime(
+            namespace,
+            reload_config=reload_config,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(applied), 1)
+        self.assertFalse(applied[0].enabled)
+        self.assertEqual(applied[0].url, "wss://new.example/ws/device")
+        self.assertEqual(applied[0].reconnect_interval, 9)
+        self.assertTrue(applied[0].auto_upload)
+
+    def test_refresh_cloud_control_failure_preserves_runtime_and_redacts_error(self):
+        namespace = self.base_namespace()
+        logs = []
+        applied = []
+        namespace["log_file_only"] = logs.append
+        namespace["apply_cloud_control_settings"] = applied.append
+
+        result = refresh_cloud_control_settings_namespace_runtime(
+            namespace,
+            reload_config=lambda **_kwargs: (_ for _ in ()).throw(
+                ValueError("device_secret=do-not-log")
+            ),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(applied, [])
+        self.assertEqual(logs, ["Reload cloud-control config failed (ValueError)"])
+        self.assertNotIn("do-not-log", logs[0])
 
     def test_start_cloud_control_namespace_runtime_forwards_state(self):
         namespace = self.base_namespace()

@@ -1,16 +1,22 @@
 import configparser
 import os
 import tempfile
+import threading
 import unittest
 
 from sms_core.config_runtime import (
+    CONFIG_SNAPSHOT_ATTR,
     ConfigInitializationError,
+    ensure_config_defaults,
     initialize_config_runtime,
+    load_config_snapshot,
     remember_config_snapshot,
     read_startup_config_values,
+    reload_config_runtime,
     restore_config_section,
     safe_save_config_runtime,
     snapshot_config_section,
+    snapshot_config_runtime,
 )
 
 
@@ -37,6 +43,29 @@ class FakeFile:
 
 
 class ConfigRuntimeTests(unittest.TestCase):
+    def test_ensure_config_defaults_fills_all_missing_values_without_overwriting(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config["ui"] = {
+            "voice_enabled": "0",
+            "unknown_key": "keep",
+        }
+        defaults = {
+            "ui": {
+                "voice_enabled": "1",
+                "popup_enabled": "1",
+            },
+            "cloud_control": {
+                "enabled": "0",
+            },
+        }
+
+        self.assertTrue(ensure_config_defaults(config, defaults))
+        self.assertEqual(config.get("ui", "voice_enabled"), "0")
+        self.assertEqual(config.get("ui", "popup_enabled"), "1")
+        self.assertEqual(config.get("ui", "unknown_key"), "keep")
+        self.assertEqual(config.get("cloud_control", "enabled"), "0")
+        self.assertFalse(ensure_config_defaults(config, defaults))
+
     def test_config_section_snapshot_restores_values_and_missing_section(self):
         config = configparser.ConfigParser()
         config["serial"] = {"mode": "Manual", "port": "COM3", "extra": "keep"}
@@ -53,6 +82,82 @@ class ConfigRuntimeTests(unittest.TestCase):
         config["cloud_control"] = {"enabled": "1"}
         restore_config_section(config, "cloud_control", missing_snapshot)
         self.assertFalse(config.has_section("cloud_control"))
+
+    def test_load_config_snapshot_rejects_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                load_config_snapshot(os.path.join(tmp, "missing.ini"))
+
+    def test_reload_config_runtime_removes_disk_deletions_and_preserves_local_changes(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config["ui"] = {
+            "unchanged": "old",
+            "stale": "remove-me",
+            "local": "old",
+        }
+        remember_config_snapshot(config)
+        config.set("ui", "local", "pending")
+        disk_snapshot = {
+            "ui": {
+                "unchanged": "disk",
+                "local": "old",
+                "external": "kept",
+            }
+        }
+
+        values = reload_config_runtime(
+            config=config,
+            config_file="config.ini",
+            config_lock=threading.RLock(),
+            load_snapshot=lambda _path: disk_snapshot,
+            read_values=lambda current: dict(current.items("ui", raw=True)),
+        )
+
+        self.assertEqual(values["unchanged"], "disk")
+        self.assertEqual(values["local"], "pending")
+        self.assertEqual(values["external"], "kept")
+        self.assertNotIn("stale", values)
+        self.assertEqual(getattr(config, CONFIG_SNAPSHOT_ATTR), disk_snapshot)
+
+    def test_reload_config_runtime_rolls_back_config_and_baseline_when_commit_fails(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config["third_push"] = {"enabled": "1", "old": "keep"}
+        remember_config_snapshot(config)
+        before = snapshot_config_runtime(config)
+        before_baseline = getattr(config, CONFIG_SNAPSHOT_ATTR)
+
+        with self.assertRaises(RuntimeError):
+            reload_config_runtime(
+                config=config,
+                config_file="config.ini",
+                config_lock=threading.RLock(),
+                load_snapshot=lambda _path: {"third_push": {"enabled": "0"}},
+                prepare_config=lambda staged: staged.set("third_push", "defaulted", "1"),
+                commit_config=lambda: False,
+            )
+
+        self.assertEqual(snapshot_config_runtime(config), before)
+        self.assertEqual(getattr(config, CONFIG_SNAPSHOT_ATTR), before_baseline)
+
+    def test_reload_config_runtime_parse_failure_leaves_shared_config_untouched(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config["cloud_control"] = {"enabled": "1", "url": "ws://old"}
+        remember_config_snapshot(config)
+        before = snapshot_config_runtime(config)
+        before_baseline = getattr(config, CONFIG_SNAPSHOT_ATTR)
+
+        with self.assertRaises(configparser.ParsingError):
+            reload_config_runtime(
+                config=config,
+                config_file="config.ini",
+                config_lock=threading.RLock(),
+                load_snapshot=lambda _path: (_ for _ in ()).throw(
+                    configparser.ParsingError("config.ini")
+                ),
+            )
+
+        self.assertEqual(snapshot_config_runtime(config), before)
+        self.assertEqual(getattr(config, CONFIG_SNAPSHOT_ATTR), before_baseline)
 
     def test_read_startup_config_values_reads_ui_and_serial_settings(self):
         config = configparser.ConfigParser()
@@ -218,18 +323,16 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertTrue(any("returned False" in message for message in logs))
 
     def test_initialize_config_runtime_reads_existing_config_without_saving(self):
-        class FakeConfig:
+        class TrackingConfig(configparser.ConfigParser):
             def __init__(self):
-                self.sections = {}
+                super().__init__(interpolation=None)
                 self.read_calls = []
-
-            def __setitem__(self, key, value):
-                self.sections[key] = value
 
             def read(self, path, encoding):
                 self.read_calls.append((path, encoding))
+                self["ui"] = {"voice_enabled": "0"}
 
-        config = FakeConfig()
+        config = TrackingConfig()
         calls = []
 
         result = initialize_config_runtime(
@@ -242,8 +345,89 @@ class ConfigRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(calls, [])
-        self.assertEqual(config.sections, {})
+        self.assertEqual(config.get("ui", "voice_enabled"), "0")
         self.assertEqual(config.read_calls, [("config.ini", "utf-8-sig")])
+
+    def test_initialize_config_runtime_persists_all_missing_defaults_in_old_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.ini")
+            with open(config_file, "w", encoding="utf-8") as file:
+                file.write("[ui]\nvoice_enabled = 0\nunknown_key = keep\n")
+
+            config = configparser.ConfigParser(interpolation=None)
+            saves = []
+
+            def save_config():
+                saves.append("save")
+                with open(config_file, "w", encoding="utf-8") as file:
+                    config.write(file)
+                return True
+
+            result = initialize_config_runtime(
+                config=config,
+                config_file=config_file,
+                defaults_by_section={
+                    "ui": {
+                        "voice_enabled": "1",
+                        "popup_enabled": "1",
+                    },
+                    "cloud_control": {
+                        "enabled": "0",
+                    },
+                },
+                save_config=save_config,
+            )
+
+            self.assertFalse(result)
+            self.assertEqual(saves, ["save"])
+            self.assertEqual(config.get("ui", "voice_enabled"), "0")
+            self.assertEqual(config.get("ui", "popup_enabled"), "1")
+            self.assertEqual(config.get("ui", "unknown_key"), "keep")
+            self.assertEqual(config.get("cloud_control", "enabled"), "0")
+
+            disk = configparser.ConfigParser(interpolation=None)
+            disk.read(config_file, encoding="utf-8")
+            self.assertEqual(dict(disk.items("ui", raw=True)), {
+                "voice_enabled": "0",
+                "unknown_key": "keep",
+                "popup_enabled": "1",
+            })
+            self.assertEqual(disk.get("cloud_control", "enabled"), "0")
+
+    def test_initialize_config_runtime_restores_old_config_when_completion_save_fails(self):
+        class TrackingConfig(configparser.ConfigParser):
+            def read(self, path, encoding=None):
+                self["ui"] = {
+                    "voice_enabled": "0",
+                    "unknown_key": "keep",
+                }
+                return [path]
+
+        config = TrackingConfig(interpolation=None)
+
+        with self.assertRaises(ConfigInitializationError) as raised:
+            initialize_config_runtime(
+                config=config,
+                config_file="config.ini",
+                defaults_by_section={
+                    "ui": {
+                        "voice_enabled": "1",
+                        "popup_enabled": "1",
+                    },
+                    "cloud_control": {
+                        "enabled": "0",
+                    },
+                },
+                save_config=lambda: False,
+                path_exists=lambda _path: True,
+            )
+
+        self.assertIn("补齐失败", str(raised.exception))
+        self.assertEqual(dict(config.items("ui", raw=True)), {
+            "voice_enabled": "0",
+            "unknown_key": "keep",
+        })
+        self.assertFalse(config.has_section("cloud_control"))
 
     def test_initialize_config_runtime_accepts_utf8_bom_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,8 +451,9 @@ class ConfigRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_file = os.path.join(tmp, "config.ini")
             backup_file = os.path.join(tmp, "config.ini.broken.123.bak")
+            secret_marker = "DEVICE_SECRET_SUPER_PRIVATE"
             with open(config_file, "w", encoding="utf-8") as file:
-                file.write("this is not an ini file")
+                file.write(secret_marker + " = should-not-enter-logs")
 
             config = configparser.ConfigParser(interpolation=None)
             logs = []
@@ -291,6 +476,7 @@ class ConfigRuntimeTests(unittest.TestCase):
             self.assertTrue(os.path.exists(backup_file))
             self.assertEqual(config.get("ui", "voice_enabled"), "1")
             self.assertTrue(any("Config file invalid" in message for message in logs))
+            self.assertFalse(any(secret_marker in message for message in logs))
 
     def test_initialize_config_runtime_stops_when_repaired_config_cannot_be_saved(self):
         class BrokenConfig(configparser.ConfigParser):
@@ -449,6 +635,68 @@ class ConfigRuntimeTests(unittest.TestCase):
             self.assertEqual(final.get("ui", "popup_enabled"), "0")
             self.assertEqual(final.get("ui", "unknown_key"), "keep")
             self.assertEqual(instance_b.get("ui", "voice_enabled"), "0")
+
+    def test_safe_save_default_completion_preserves_newer_disk_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.ini")
+            with open(config_file, "w", encoding="utf-8") as file:
+                file.write("[ui]\nvoice_enabled = 1\n")
+
+            upgrading = configparser.ConfigParser(interpolation=None)
+            upgrading.read(config_file, encoding="utf-8")
+            remember_config_snapshot(upgrading)
+            ensure_config_defaults(
+                upgrading,
+                {
+                    "ui": {
+                        "voice_enabled": "1",
+                        "popup_enabled": "1",
+                        "sms_font_size": "30",
+                    },
+                    "cloud_control": {
+                        "enabled": "0",
+                        "device_secret": "",
+                    },
+                },
+            )
+
+            with open(config_file, "w", encoding="utf-8") as file:
+                file.write(
+                    "[ui]\n"
+                    "voice_enabled = 0\n"
+                    "popup_enabled = 0\n"
+                    "unknown_key = keep\n"
+                    "[cloud_control]\n"
+                    "enabled = 1\n"
+                )
+
+            self.assertTrue(
+                safe_save_config_runtime(
+                    config=upgrading,
+                    config_file=config_file,
+                    config_lock=DummyLock(),
+                    defaults_by_section={
+                        "ui": {
+                            "voice_enabled": "1",
+                            "popup_enabled": "1",
+                            "sms_font_size": "30",
+                        },
+                        "cloud_control": {
+                            "enabled": "0",
+                            "device_secret": "",
+                        },
+                    },
+                )
+            )
+
+            final = configparser.ConfigParser(interpolation=None)
+            final.read(config_file, encoding="utf-8")
+            self.assertEqual(final.get("ui", "voice_enabled"), "0")
+            self.assertEqual(final.get("ui", "popup_enabled"), "0")
+            self.assertEqual(final.get("ui", "sms_font_size"), "30")
+            self.assertEqual(final.get("ui", "unknown_key"), "keep")
+            self.assertEqual(final.get("cloud_control", "enabled"), "1")
+            self.assertTrue(final.has_option("cloud_control", "device_secret"))
 
 
 if __name__ == "__main__":

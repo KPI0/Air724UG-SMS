@@ -166,6 +166,14 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
         self.assertEqual(metadata["local_number"], "")
 
+    def test_parse_sms_callback_metadata_accepts_non_numeric_sender_token(self):
+        metadata = parse_sms_callback_metadata(
+            "3A968BD3FABBFC8C52 26/07/22,17:33:02+32 Brand message"
+        )
+
+        self.assertEqual(metadata["sender"], "3A968BD3FABBFC8C52")
+        self.assertEqual(metadata["sms_time"], "2026-07-22 17:33:02")
+
     def test_build_sms_ui_display_lines_formats_three_display_lines(self):
         lines = build_sms_ui_display_lines(
             "123123123 26/06/24,13:44:15+32 【中国电信】验证码461582",
