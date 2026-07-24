@@ -3,7 +3,9 @@ import unittest
 from sms_ui.sms_popup import (
     _pack_message_viewport,
     _pack_popup_sections,
+    display_line_total,
     estimate_message_lines,
+    initial_popup_size,
     message_viewport,
 )
 
@@ -78,6 +80,12 @@ class SmsPopupTests(unittest.TestCase):
         self.assertEqual(message_viewport(None), (2, False))
         self.assertEqual(message_viewport("bad"), (2, False))
 
+    def test_tk_display_line_boundaries_include_the_starting_line(self):
+        self.assertEqual(display_line_total(None), 1)
+        self.assertEqual(display_line_total((0,)), 1)
+        self.assertEqual(display_line_total((1,)), 2)
+        self.assertEqual(display_line_total((2,)), 3)
+
     def test_line_estimate_accounts_for_chinese_and_explicit_newlines(self):
         self.assertEqual(estimate_message_lines("short message"), 1)
         self.assertEqual(estimate_message_lines("\u4e2d" * 31), 2)
@@ -90,6 +98,10 @@ class SmsPopupTests(unittest.TestCase):
             "\u5207\u52ff\u5c06\u9a8c\u8bc1\u7801\u6cc4\u9732\u4e8e\u7ed9\u4ed6\u4eba\u3002"
         )
         self.assertGreaterEqual(estimate_message_lines(message), 3)
+
+    def test_initial_size_does_not_expose_a_partial_extra_line(self):
+        self.assertEqual(initial_popup_size(500, 170), (536, 180))
+        self.assertEqual(initial_popup_size(620, 240), (620, 240))
 
 
 if __name__ == "__main__":

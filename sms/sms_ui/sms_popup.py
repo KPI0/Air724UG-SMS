@@ -7,6 +7,10 @@ from PIL import Image, ImageDraw, ImageTk
 
 MIN_VISIBLE_MESSAGE_LINES = 2
 MAX_VISIBLE_MESSAGE_LINES = 10
+POPUP_MIN_WIDTH = 536
+POPUP_MIN_HEIGHT = 180
+# Keep the rendering guard inside Text so it cannot expose a partial extra line.
+MESSAGE_TEXT_VERTICAL_PADDING = 4
 
 
 def estimate_message_lines(message, units_per_line=42):
@@ -32,6 +36,30 @@ def message_viewport(display_lines):
         min(lines, MAX_VISIBLE_MESSAGE_LINES),
     )
     return visible_lines, lines > MAX_VISIBLE_MESSAGE_LINES
+
+
+def display_line_total(counted):
+    try:
+        line_boundaries = int(counted[0]) if counted else 0
+    except (TypeError, ValueError, IndexError):
+        line_boundaries = 0
+    # Text.count excludes the display line containing the starting index.
+    return max(1, line_boundaries + 1)
+
+
+def initial_popup_size(requested_width, requested_height):
+    width = max(POPUP_MIN_WIDTH, int(requested_width))
+    height = max(POPUP_MIN_HEIGHT, int(requested_height))
+    return width, height
+
+
+def _center_popup_for_content(win, center_on_screen):
+    win.update_idletasks()
+    width, height = initial_popup_size(
+        win.winfo_reqwidth(),
+        win.winfo_reqheight(),
+    )
+    center_on_screen(win, width, height)
 
 
 def create_information_icon(size=42, scale=4):
@@ -89,7 +117,7 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("\u77ed\u4fe1\u63d0\u9192")
-    win.minsize(536, 180)
+    win.minsize(POPUP_MIN_WIDTH, POPUP_MIN_HEIGHT)
     win.resizable(True, True)
     try:
         win.attributes("-topmost", True)
@@ -122,7 +150,7 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
         bd=0,
         highlightthickness=0,
         padx=0,
-        pady=0,
+        pady=MESSAGE_TEXT_VERTICAL_PADDING,
         cursor="arrow",
         takefocus=False,
         font=("Microsoft YaHei UI", 10),
@@ -150,12 +178,12 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
         recenter_on_refresh = False
         try:
             counted = message_text.count("1.0", "end-1c", "displaylines")
-            display_lines = int(counted[0]) if counted else 1
+            display_lines = display_line_total(counted)
             apply_viewport(display_lines)
             message_text.yview_moveto(0.0)
             win.update_idletasks()
             if should_recenter:
-                center_on_screen(win)
+                _center_popup_for_content(win, center_on_screen)
         except Exception:
             pass
 
@@ -195,7 +223,7 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
         try:
             replace_message(next_message)
             win.update_idletasks()
-            center_on_screen(win)
+            _center_popup_for_content(win, center_on_screen)
             win.deiconify()
             win.lift()
             win.focus_force()
