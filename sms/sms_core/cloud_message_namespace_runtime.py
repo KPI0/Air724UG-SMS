@@ -14,7 +14,15 @@ from sms_core.cloud_serial_log_runtime import (
     schedule_cloud_serial_log_drain,
     send_cloud_serial_log_runtime,
 )
-from sms_core.serial_sender import start_registered_serial_worker
+from sms_core.serial_debug import build_own_number_commands
+from sms_core.serial_sender import (
+    AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+    DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+    DEFAULT_SMS_PDU_SEND_COORDINATOR,
+    start_registered_serial_worker,
+    write_serial_command_sequence_confirmed_locked,
+    write_text_sms_pdu_locked,
+)
 
 
 def _call_with_optional_log_error(func, *args, log_error=None, **kwargs):
@@ -126,15 +134,53 @@ def send_cloud_serial_command_namespace_runtime(
     *,
     send_runtime=send_cloud_serial_command_runtime,
 ):
+    sms_coordinator = namespace.get(
+        "SMS_SEND_COORDINATOR",
+        DEFAULT_SMS_PDU_SEND_COORDINATOR,
+    )
+    command_coordinator = namespace.get(
+        "SERIAL_COMMAND_RESPONSE_COORDINATOR",
+        DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+    )
+
+    def execute_confirmed_command(_serial_obj, next_command):
+        return write_serial_command_sequence_confirmed_locked(
+            namespace["serial_lock"],
+            lambda: namespace["serial_obj"],
+            (next_command,),
+            response_coordinator=command_coordinator,
+            response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+        )
+
     return send_runtime(
         command,
         command_meta=command_data,
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: namespace["serial_obj"],
-        write_command_result=namespace["write_serial_command_result"],
+        write_command_result=execute_confirmed_command,
         push_serial_debug=namespace.get("_push_serial_debug"),
         port_ui=namespace.get("port_ui"),
         log=namespace["_cloud_log"],
+        allow_sensitive_commands=namespace.get(
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
+            {},
+        ),
+        send_sms_transaction=lambda phone, message: write_text_sms_pdu_locked(
+            namespace["serial_lock"],
+            lambda: namespace["serial_obj"],
+            phone,
+            message,
+            push_debug=namespace.get("_push_serial_debug"),
+            port_ui=namespace.get("port_ui"),
+            response_coordinator=sms_coordinator,
+            command_response_coordinator=command_coordinator,
+        ),
+        set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
+            namespace["serial_lock"],
+            lambda: namespace["serial_obj"],
+            build_own_number_commands(phone),
+            response_coordinator=command_coordinator,
+        ),
     )
 
 

@@ -4,12 +4,19 @@ import re
 import time
 from dataclasses import dataclass
 
+from sms_core.cloud_command_security import (
+    cloud_command_batch_error,
+    cloud_command_control_char_error,
+    sensitive_cloud_command_decision,
+)
+
 
 SECRET_KEYS = {"secret", "device_secret", "password", "pwd", "token"}
 SMS_META_KEYS = {"sms_phone", "sms_message"}
 SMS_COMMAND_KEYS = {"cmd", "command", "data"}
 HIDDEN_SMS_COMMAND = "短信PDU命令（已隐藏）"
 HIDDEN_SMS_META = "短信元数据（已隐藏）"
+HIDDEN_SENSITIVE_COMMAND = "云端敏感指令（内容已隐藏）"
 SECRET_TEXT_RE = re.compile(
     r"(?i)"
     r"([\"']?(?:secret|device_secret|password|pwd|token)[\"']?"
@@ -33,8 +40,24 @@ def safe_preview(raw: str, limit: int = 500) -> str:
         if isinstance(obj, dict):
             sms_log = str(obj.get("sms_log") or "").strip().lower()
             command_kind = str(obj.get("command_kind") or "").strip().lower()
-            hide_sms_command = sms_log == "suppress"
-            hide_sms_meta = sms_log in ("summary", "suppress") or command_kind == "send_sms"
+            command_value = next(
+                (
+                    obj.get(key)
+                    for key in ("command", "data", "cmd")
+                    if isinstance(obj.get(key), (str, bytes)) and str(obj.get(key)).strip()
+                ),
+                "",
+            )
+            sensitive_decision = sensitive_cloud_command_decision(command_value, obj)
+            sensitive_reason = sensitive_decision.reason
+            hide_sensitive_command = bool(sensitive_reason)
+            command_is_sms = sensitive_decision.category == "sms"
+            hide_sms_command = command_is_sms and sms_log == "suppress"
+            hide_sms_meta = command_is_sms and (
+                sms_log in ("summary", "suppress") or command_kind == "send_sms"
+            )
+            hide_batched_command = bool(cloud_command_batch_error(command_value))
+            hide_control_command = bool(cloud_command_control_char_error(command_value))
             masked = {}
             for key, value in obj.items():
                 key_lower = str(key).lower()
@@ -42,6 +65,12 @@ def safe_preview(raw: str, limit: int = 500) -> str:
                     masked[key] = "***"
                 elif hide_sms_command and key_lower in SMS_COMMAND_KEYS:
                     masked[key] = HIDDEN_SMS_COMMAND
+                elif hide_sensitive_command and key_lower in SMS_COMMAND_KEYS:
+                    masked[key] = HIDDEN_SENSITIVE_COMMAND
+                elif hide_batched_command and key_lower in SMS_COMMAND_KEYS:
+                    masked[key] = "云端 AT 指令（已隐藏：包含多条指令）"
+                elif hide_control_command and key_lower in SMS_COMMAND_KEYS:
+                    masked[key] = "云端 AT 指令（已隐藏：包含不支持的控制字符）"
                 elif hide_sms_meta and key_lower in SMS_META_KEYS:
                     masked[key] = HIDDEN_SMS_META
                 else:

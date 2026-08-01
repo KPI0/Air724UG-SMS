@@ -55,6 +55,7 @@ class AppMenuRuntimeTests(unittest.TestCase):
     def test_build_main_menu_runtime_wires_menu_commands_and_state(self):
         root = FakeRoot()
         popup_var = FakeVar(True)
+        call_popup_var = FakeVar(True)
         calls = []
         command_names = [
             "clear_window",
@@ -69,6 +70,7 @@ class AppMenuRuntimeTests(unittest.TestCase):
             "toggle_autostart",
             "toggle_multi_instance",
             "toggle_popup",
+            "toggle_call_popup",
             "open_log_cleanup_dialog",
             "open_update_proxy_dialog",
             "open_desktop_shortcut_dialog",
@@ -88,6 +90,7 @@ class AppMenuRuntimeTests(unittest.TestCase):
             is_autostart_enabled=lambda: True,
             allow_multi_instance=False,
             popup_var=popup_var,
+            call_popup_var=call_popup_var,
             commands=commands,
         )
 
@@ -102,6 +105,8 @@ class AppMenuRuntimeTests(unittest.TestCase):
         settings_menu = root.menu.items[5][2]
         settings_menu.items[0][3]()
         settings_menu.items[2][3]()
+        settings_menu.items[3][3]()
+        settings_menu.items[7][2]()
         help_menu = root.menu.items[6][2]
         help_menu.items[1][2]()
 
@@ -110,6 +115,8 @@ class AppMenuRuntimeTests(unittest.TestCase):
             "open_serial_setting",
             "toggle_autostart",
             "toggle_popup",
+            "toggle_call_popup",
+            "open_desktop_shortcut_dialog",
             "check_update_and_prompt",
         ])
 

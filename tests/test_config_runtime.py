@@ -164,6 +164,7 @@ class ConfigRuntimeTests(unittest.TestCase):
         config["ui"] = {
             "voice_text": " custom ",
             "popup_enabled": "0",
+            "call_popup_enabled": "0",
             "auto_log_cleanup": "0",
             "log_retention_days": "12",
             "allow_multi_instance": "1",
@@ -186,6 +187,7 @@ class ConfigRuntimeTests(unittest.TestCase):
 
         self.assertEqual(values.voice_text, "custom")
         self.assertFalse(values.popup_enabled)
+        self.assertFalse(values.call_popup_enabled)
         self.assertFalse(values.auto_log_cleanup)
         self.assertEqual(values.log_retention_days, 12)
         self.assertTrue(values.allow_multi_instance)
@@ -201,11 +203,21 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(values.baud, 9600)
         self.assertEqual(values.mode, "Manual")
 
+    def test_old_config_without_call_popup_setting_keeps_existing_behavior(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {"popup_enabled": "0"}
+
+        values = read_startup_config_values(config, default_voice_text="default")
+
+        self.assertFalse(values.popup_enabled)
+        self.assertTrue(values.call_popup_enabled)
+
     def test_read_startup_config_values_uses_fallbacks_and_normalizes_bad_mode(self):
         config = configparser.ConfigParser()
         config["ui"] = {
             "voice_text": " ",
             "popup_enabled": "bad",
+            "call_popup_enabled": "bad",
             "auto_log_cleanup": "bad",
             "log_retention_days": "bad",
             "allow_multi_instance": "bad",
@@ -226,6 +238,7 @@ class ConfigRuntimeTests(unittest.TestCase):
 
         self.assertEqual(values.voice_text, "default")
         self.assertTrue(values.popup_enabled)
+        self.assertTrue(values.call_popup_enabled)
         self.assertTrue(values.auto_log_cleanup)
         self.assertEqual(values.log_retention_days, 30)
         self.assertFalse(values.allow_multi_instance)
@@ -245,6 +258,7 @@ class ConfigRuntimeTests(unittest.TestCase):
         config = configparser.ConfigParser()
         config["ui"] = {
             "popup_enabled": "bad",
+            "call_popup_enabled": "bad",
             "call_whitelist": "{bad json",
         }
         config["serial"] = {
@@ -260,10 +274,12 @@ class ConfigRuntimeTests(unittest.TestCase):
         )
 
         self.assertTrue(values.popup_enabled)
+        self.assertTrue(values.call_popup_enabled)
         self.assertEqual(values.call_whitelist, [])
         self.assertEqual(values.baud, 115200)
         self.assertEqual(values.mode, "Auto")
         self.assertTrue(any("ui.popup_enabled" in message for message in logs))
+        self.assertTrue(any("ui.call_popup_enabled" in message for message in logs))
         self.assertTrue(any("ui.call_whitelist" in message for message in logs))
         self.assertTrue(any("serial.baud" in message for message in logs))
         self.assertTrue(any("serial.mode" in message for message in logs))

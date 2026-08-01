@@ -141,7 +141,7 @@ class CloudMessageTests(unittest.TestCase):
         import asyncio
 
         calls = []
-        pdu = "0011000D916831..."
+        pdu = "0011000D916831...\x1a"
         payload = asyncio.run(self._dispatch(
             "send_at",
             {"cmd": pdu, "sms_log": "suppress"},
@@ -150,6 +150,32 @@ class CloudMessageTests(unittest.TestCase):
 
         self.assertIn(("send", pdu, {"cmd": pdu, "sms_log": "suppress"}), calls)
         self.assertFalse(any(call[0] == "log" and pdu in call[1] for call in calls))
+        self.assertEqual(payload["type"], "send_at_result")
+
+    def test_dispatch_cloud_action_hides_multiline_command_from_log(self):
+        import asyncio
+
+        command = "AT+CSQ\r\nAT+RESET"
+        calls = []
+        payload = asyncio.run(self._dispatch("send_at", {"cmd": command}, calls))
+
+        self.assertIn(("send", command, {"cmd": command}), calls)
+        self.assertFalse(any(call[0] == "log" and command in call[1] for call in calls))
+        self.assertEqual(payload["type"], "send_at_result")
+
+    def test_dispatch_cloud_action_hides_control_character_command_from_log(self):
+        import asyncio
+
+        command = "AT+CSQ\x00AT+RESET"
+        calls = []
+        payload = asyncio.run(self._dispatch(
+            "send_at",
+            {"cmd": command},
+            calls,
+        ))
+
+        self.assertFalse(any(call[0] == "log" and command in call[1] for call in calls))
+        self.assertTrue(any(call[0] == "log" and "控制字符" in call[1] for call in calls))
         self.assertEqual(payload["type"], "send_at_result")
 
 

@@ -106,6 +106,17 @@ class CloudControlWindowFormTests(unittest.TestCase):
         self.assertEqual(calls, [(True, values, "window")])
         self.assertFalse(form.enabled_var.get())
 
+    def test_security_settings_uses_cloud_window_as_parent(self):
+        calls = []
+        form = CloudControlFormController.__new__(CloudControlFormController)
+        form.win = "cloud_window"
+        form.open_security_settings = lambda parent: calls.append(parent) or "opened"
+
+        result = form._open_security_settings()
+
+        self.assertEqual(result, "opened")
+        self.assertEqual(calls, ["cloud_window"])
+
 
 if __name__ == "__main__":
     unittest.main()

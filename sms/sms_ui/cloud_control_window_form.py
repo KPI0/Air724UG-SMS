@@ -37,11 +37,13 @@ class CloudControlFormController:
         status_var,
         on_auto_upload_changed,
         on_enabled_changed=None,
+        open_security_settings=None,
     ):
         self.win = win
         self.state_provider = state_provider
         self.on_auto_upload_changed = on_auto_upload_changed
         self.on_enabled_changed = on_enabled_changed or (lambda *_args: False)
+        self.open_security_settings = open_security_settings or (lambda _parent: None)
         self.enabled_var = tk.BooleanVar(win, value=state["enabled"])
         self.auto_upload_var = tk.BooleanVar(win, value=state["auto_upload"])
         self.url_var = tk.StringVar(win, value=state["url"])
@@ -62,7 +64,7 @@ class CloudControlFormController:
 
     def _build_options(self, frame):
         top_opts_frame = ttk.Frame(frame)
-        top_opts_frame.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        top_opts_frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
             top_opts_frame,
             text="启用云端控制",
@@ -75,6 +77,15 @@ class CloudControlFormController:
             variable=self.auto_upload_var,
             command=self._auto_upload_toggled,
         ).pack(side="left")
+        ttk.Frame(top_opts_frame).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            top_opts_frame,
+            text="安全设置",
+            command=self._open_security_settings,
+        ).pack(side="right")
+
+    def _open_security_settings(self):
+        return self.open_security_settings(self.win)
 
     def _build_fields(self, frame):
         configure_placeholder_style(self.win)

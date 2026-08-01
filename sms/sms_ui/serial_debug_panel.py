@@ -9,6 +9,7 @@ from sms_ui.serial_debug_dialogs import (
     open_dial_dialog,
     open_input_pin_dialog,
     open_input_puk_dialog,
+    open_modify_information_center_dialog,
     open_modify_number_dialog,
     open_modify_pin_dialog,
     open_modify_sn_dialog,
@@ -132,6 +133,16 @@ def create_serial_debug_quick_actions(
             parent,
             enabled_var,
             send_command_sequence,
+            center_window,
+        ),
+    ).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(
+        quick_scroll_frame,
+        text="修改信息中心号码 ✉️",
+        command=lambda: open_modify_information_center_dialog(
+            parent,
+            enabled_var,
+            quick_send,
             center_window,
         ),
     ).pack(fill="x", padx=6, pady=(0, 6))

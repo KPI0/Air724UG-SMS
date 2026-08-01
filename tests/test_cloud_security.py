@@ -34,8 +34,15 @@ class CloudSecurityTests(unittest.TestCase):
 
         self.assertIn("ATI", preview)
 
+    def test_safe_preview_hides_command_with_unsupported_control_character(self):
+        command = "AT+CSQ\x00AT+RESET"
+        preview = safe_preview(json_text({"cmd": command, "type": "cmd"}))
+
+        self.assertNotIn(command, preview)
+        self.assertIn("控制字符", preview)
+
     def test_safe_preview_masks_suppressed_sms_pdu_command(self):
-        pdu = "0011000D916831..."
+        pdu = "0011000D916831...\x1a"
         preview = safe_preview(json_text({
             "cmd": pdu,
             "command": pdu,
@@ -57,10 +64,26 @@ class CloudSecurityTests(unittest.TestCase):
             "sms_message": message,
         }))
 
-        self.assertIn("AT+CMGF=0", preview)
+        self.assertNotIn("AT+CMGF=0", preview)
+        self.assertIn("已隐藏", preview)
         self.assertNotIn(phone, preview)
         self.assertNotIn(message, preview)
         self.assertIn("短信元数据", preview)
+
+    def test_safe_preview_masks_pin_command(self):
+        pin_command = 'AT+CPIN="1234"'
+        preview = safe_preview(json_text({"cmd": pin_command, "type": "cmd"}))
+
+        self.assertNotIn(pin_command, preview)
+        self.assertNotIn("1234", preview)
+        self.assertIn("已隐藏", preview)
+
+    def test_safe_preview_masks_multiline_cloud_command(self):
+        command = "AT+CSQ\r\nAT+RESET"
+        preview = safe_preview(json_text({"cmd": command, "type": "cmd"}))
+
+        self.assertNotIn(command, preview)
+        self.assertIn("包含多条指令", preview)
 
     def test_safe_preview_handles_non_json(self):
         """Non-JSON input should be returned as-is."""

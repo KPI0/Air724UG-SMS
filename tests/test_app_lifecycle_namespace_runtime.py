@@ -4,6 +4,7 @@ from sms_ui.app_lifecycle_namespace_runtime import (
     cleanup_and_exit_namespace_runtime,
     restart_software_namespace_runtime,
     set_autostart_namespace_runtime,
+    toggle_call_popup_namespace_runtime,
     toggle_multi_instance_namespace_runtime,
     toggle_popup_namespace_runtime,
     toggle_voice_broadcast_namespace_runtime,
@@ -66,9 +67,11 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "ALLOW_MULTI_INSTANCE": False,
             "APP_DIR": "app-dir",
             "POPUP_ENABLED": True,
+            "CALL_POPUP_ENABLED": True,
             "config": "config",
             "multi_instance_var": FakeVar(True),
             "popup_var": FakeVar(False),
+            "call_popup_var": FakeVar(False),
             "os": FakeOs,
             "create_startup_shortcut": lambda flag: ("create", flag),
             "remove_startup_shortcut": lambda: "remove",
@@ -79,6 +82,8 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "safe_set_events": lambda *events: ("events", events),
             "stop_cloud_control": lambda **kwargs: ("cloud", kwargs),
             "safe_close_serial": lambda: "close",
+            "close_call_popup": lambda: "close-call-popup",
+            "close_missed_call_popup": lambda: "close-missed-call-popup",
             "stop_tray_icon": lambda **kwargs: ("tray", kwargs),
             "flush_log_queue": lambda queue: ("flush", queue),
             "log_file_only": lambda message: ("log", message),
@@ -170,17 +175,31 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
                 "popup-result",
             )[-1],
         )
+        call_popup = toggle_call_popup_namespace_runtime(
+            namespace,
+            toggle_runtime=lambda enabled, config, save, set_popup, system_ui, **kwargs: (
+                set_popup(enabled),
+                calls.append(("call_popup", enabled, config, save(), system_ui("c"), kwargs["log_error"]("call popup log"))),
+                "call-popup-result",
+            )[-1],
+        )
 
-        self.assertEqual((voice, multi, popup), ("voice-result", "multi-result", "popup-result"))
+        self.assertEqual(
+            (voice, multi, popup, call_popup),
+            ("voice-result", "multi-result", "popup-result", "call-popup-result"),
+        )
         self.assertFalse(namespace["VOICE_ENABLED"])
         self.assertTrue(namespace["ALLOW_MULTI_INSTANCE"])
         self.assertFalse(namespace["POPUP_ENABLED"])
+        self.assertFalse(namespace["CALL_POPUP_ENABLED"])
         self.assertEqual(calls[0][0], "voice")
         self.assertEqual(calls[1][0], "multi")
         self.assertEqual(calls[2][0], "popup")
+        self.assertEqual(calls[3][0], "call_popup")
         self.assertEqual(calls[0][-1], ("log", "voice log"))
         self.assertEqual(calls[1][-1], ("log", "multi log"))
         self.assertEqual(calls[2][-1], ("log", "popup log"))
+        self.assertEqual(calls[3][-1], ("log", "call popup log"))
 
     def test_toggle_namespace_runtimes_restore_menu_vars_when_save_fails(self):
         namespace = self.base_namespace()
@@ -193,11 +212,35 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             namespace,
             toggle_runtime=lambda *args, **kwargs: None,
         )
+        call_popup_result = toggle_call_popup_namespace_runtime(
+            namespace,
+            toggle_runtime=lambda *args, **kwargs: None,
+        )
 
         self.assertIsNone(multi_result)
         self.assertIsNone(popup_result)
+        self.assertIsNone(call_popup_result)
         self.assertFalse(namespace["multi_instance_var"].get())
         self.assertTrue(namespace["popup_var"].get())
+        self.assertTrue(namespace["call_popup_var"].get())
+
+    def test_disabling_call_popup_closes_existing_phone_windows(self):
+        namespace = self.base_namespace()
+        calls = []
+        namespace["close_call_popup"] = lambda: calls.append("incoming")
+        namespace["close_missed_call_popup"] = lambda: calls.append("missed")
+
+        result = toggle_call_popup_namespace_runtime(
+            namespace,
+            toggle_runtime=lambda enabled, config, save, set_popup, system_ui, **kwargs: (
+                set_popup(enabled),
+                False,
+            )[-1],
+        )
+
+        self.assertFalse(result)
+        self.assertFalse(namespace["CALL_POPUP_ENABLED"])
+        self.assertEqual(calls, ["incoming", "missed"])
 
     def test_disabling_multi_instance_acquires_mutex_before_saving(self):
         namespace = self.base_namespace()

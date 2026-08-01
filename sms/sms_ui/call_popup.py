@@ -79,7 +79,7 @@ def open_call_popup(
             pass
         on_hangup(restore_hangup)
 
-    def ignore():
+    def hide():
         on_ignore()
 
     btn_answer = ttk.Button(btn_frm, text="✅ 接听", command=answer)
@@ -88,7 +88,7 @@ def open_call_popup(
     btn_hangup = ttk.Button(btn_frm, text="❌ 挂断", command=hangup)
     btn_hangup.pack(side="left", padx=6)
 
-    btn_ignore = ttk.Button(btn_frm, text="忽略", command=ignore)
+    btn_ignore = ttk.Button(btn_frm, text="隐藏", command=hide)
     btn_ignore.pack(side="left", padx=6)
 
     win.protocol("WM_DELETE_WINDOW", on_close)

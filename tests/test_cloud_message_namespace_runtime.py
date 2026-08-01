@@ -1,5 +1,6 @@
 import asyncio
 import queue
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from sms_core.cloud_message_namespace_runtime import (
     send_cloud_serial_log_namespace_runtime,
     send_cloud_sms_event_namespace_runtime,
 )
+from sms_core.serial_sender import AtCommandResponseCoordinator, SerialCommandResult
 from sms_core.threading_runtime import WorkerThreadRegistry
 
 
@@ -23,6 +25,21 @@ class FakeLoop:
         return self.running
 
 
+class CallbackSerial:
+    def __init__(self, on_write=None):
+        self.is_open = True
+        self.on_write = on_write
+        self.writes = []
+
+    def write(self, payload):
+        self.writes.append(payload)
+        if self.on_write:
+            self.on_write(payload)
+
+    def flush(self):
+        return None
+
+
 class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
@@ -32,6 +49,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "cloud_ws_conn": "ws",
             "cloud_connected": True,
             "cloud_device_authorized": True,
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS": {"sms": False},
             "cloud_ws_loop": FakeLoop(),
             "PORT": "COM5",
             "BAUD": 115200,
@@ -150,18 +168,94 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         namespace = self.base_namespace()
         calls = []
 
-        result = send_cloud_serial_command_namespace_runtime(
-            namespace,
-            "ATI",
-            send_runtime=lambda command, **kwargs: calls.append((command, kwargs)) or (True, "ok"),
-        )
+        with patch(
+            "sms_core.cloud_message_namespace_runtime.write_serial_command_sequence_confirmed_locked",
+            return_value=SerialCommandResult(True),
+        ) as confirmed:
+            result = send_cloud_serial_command_namespace_runtime(
+                namespace,
+                "ATI",
+                send_runtime=lambda command, **kwargs: calls.append((command, kwargs)) or (True, "ok"),
+            )
 
-        self.assertEqual(result, (True, "ok"))
-        command, forwarded = calls[0]
-        self.assertEqual(command, "ATI")
-        self.assertEqual(forwarded["serial_lock"], "lock")
-        self.assertEqual(forwarded["get_serial"](), "serial")
-        self.assertEqual(forwarded["write_command_result"]("serial", "ATI"), ("write", "serial", "ATI"))
+            self.assertEqual(result, (True, "ok"))
+            command, forwarded = calls[0]
+            self.assertEqual(command, "ATI")
+            self.assertEqual(forwarded["serial_lock"], "lock")
+            self.assertEqual(forwarded["get_serial"](), "serial")
+            self.assertEqual(
+                forwarded["write_command_result"]("serial", "ATI"),
+                SerialCommandResult(True),
+            )
+            self.assertEqual(forwarded["allow_sensitive_commands"], {"sms": False})
+
+        confirmed.assert_called_once()
+        confirmed_args = confirmed.call_args.args
+        self.assertEqual(confirmed_args[0], "lock")
+        self.assertTrue(callable(confirmed_args[1]))
+        self.assertEqual(confirmed_args[1](), "serial")
+        self.assertEqual(confirmed_args[2], ("ATI",))
+        self.assertEqual(confirmed.call_args.kwargs["response_timeout"], 10.0)
+
+    def test_cloud_at_reports_success_only_after_modem_ok(self):
+        namespace = self.base_namespace()
+        coordinator = AtCommandResponseCoordinator()
+        serial_obj = CallbackSerial(
+            lambda _payload: coordinator.observe_line("[I]-[ril.proatc] OK")
+        )
+        namespace.update({
+            "serial_lock": threading.RLock(),
+            "serial_obj": serial_obj,
+            "SERIAL_COMMAND_RESPONSE_COORDINATOR": coordinator,
+            "write_serial_command_result": lambda *_args: self.fail(
+                "云端 AT 不得回退到只确认串口写入的函数"
+            ),
+        })
+
+        result = send_cloud_serial_command_namespace_runtime(namespace, "ATI")
+
+        self.assertEqual(result, (True, "执行成功：ATI"))
+        self.assertEqual(serial_obj.writes, [b"ATI\r\n"])
+
+    def test_cloud_at_reports_modem_error_as_failure(self):
+        namespace = self.base_namespace()
+        coordinator = AtCommandResponseCoordinator()
+        serial_obj = CallbackSerial(
+            lambda _payload: coordinator.observe_line(
+                "[I]-[ril.proatc] +CME ERROR: 3"
+            )
+        )
+        namespace.update({
+            "serial_lock": threading.RLock(),
+            "serial_obj": serial_obj,
+            "SERIAL_COMMAND_RESPONSE_COORDINATOR": coordinator,
+        })
+
+        ok, info = send_cloud_serial_command_namespace_runtime(namespace, "AT+RESET")
+
+        self.assertFalse(ok)
+        self.assertEqual(info, "+CME ERROR: 3")
+        self.assertNotIn("AT+RESET", info)
+        self.assertEqual(serial_obj.writes, [b"AT+RESET\r\n"])
+
+    def test_cloud_at_reports_timeout_instead_of_write_success(self):
+        namespace = self.base_namespace()
+        serial_obj = CallbackSerial()
+        namespace.update({
+            "serial_lock": threading.RLock(),
+            "serial_obj": serial_obj,
+            "SERIAL_COMMAND_RESPONSE_COORDINATOR": AtCommandResponseCoordinator(),
+        })
+
+        with patch(
+            "sms_core.cloud_message_namespace_runtime.AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT",
+            0,
+        ):
+            ok, info = send_cloud_serial_command_namespace_runtime(namespace, "ATI")
+
+        self.assertFalse(ok)
+        self.assertIn("超时", info)
+        self.assertEqual(serial_obj.writes, [b"ATI\r\n"])
 
     def test_handle_cloud_message_namespace_runtime_forwards_and_mutates_state(self):
         namespace = self.base_namespace()

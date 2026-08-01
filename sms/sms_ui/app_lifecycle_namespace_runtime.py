@@ -4,8 +4,10 @@ from sms_core.windows_runtime import acquire_mutex_with_error
 from sms_ui.app_autostart_runtime import set_autostart_runtime
 from sms_ui.app_instance_runtime import app_dir_mutex_name
 from sms_ui.app_restart_runtime import restart_software_app_runtime
+from sms_ui.call_popup_namespace_runtime import close_phone_popups_namespace_runtime
 from sms_ui.app_shutdown_runtime import cleanup_and_exit_app_runtime
 from sms_ui.settings_runtime import (
+    toggle_call_popup_runtime,
     toggle_multi_instance_runtime,
     toggle_popup_runtime,
     toggle_voice_broadcast_runtime,
@@ -192,6 +194,30 @@ def toggle_popup_namespace_runtime(namespace, *, toggle_runtime=toggle_popup_run
             namespace["popup_var"].set(previous)
         except Exception:
             pass
+    return result
+
+
+def toggle_call_popup_namespace_runtime(
+    namespace,
+    *,
+    toggle_runtime=toggle_call_popup_runtime,
+):
+    previous = bool(namespace["CALL_POPUP_ENABLED"])
+    result = toggle_runtime(
+        namespace["call_popup_var"].get(),
+        namespace["config"],
+        namespace["safe_save_config"],
+        lambda value: namespace.__setitem__("CALL_POPUP_ENABLED", bool(value)),
+        namespace["system_ui"],
+        log_error=namespace.get("log_file_only"),
+    )
+    if result is None:
+        try:
+            namespace["call_popup_var"].set(previous)
+        except Exception:
+            pass
+    elif result is False:
+        close_phone_popups_namespace_runtime(namespace)
     return result
 
 

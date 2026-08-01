@@ -1,5 +1,9 @@
 import time
 
+from sms_core.cloud_command_security import (
+    normalize_cloud_command_permissions,
+    read_cloud_command_permissions,
+)
 from sms_core.config_runtime import (
     load_config_snapshot,
     read_startup_config_values,
@@ -11,6 +15,7 @@ from sms_ui.config_sync_runtime import (
     report_config_reload_failure_runtime,
     schedule_config_file_watch_runtime,
 )
+from sms_ui.call_popup_namespace_runtime import close_phone_popups_namespace_runtime
 
 
 def _safe_log(namespace, message):
@@ -115,6 +120,20 @@ def reload_shared_ui_config_namespace_runtime(
         except Exception as exc:
             _safe_log(namespace, f"Sync popup menu state failed: {exc!r}")
 
+    call_popup_changed = (
+        bool(namespace.get("CALL_POPUP_ENABLED", True))
+        != values.call_popup_enabled
+    )
+    namespace["CALL_POPUP_ENABLED"] = values.call_popup_enabled
+    if call_popup_changed:
+        changed_groups.append("电话弹窗")
+        try:
+            namespace["call_popup_var"].set(values.call_popup_enabled)
+        except Exception as exc:
+            _safe_log(namespace, f"Sync call popup menu state failed: {exc!r}")
+        if not values.call_popup_enabled:
+            close_phone_popups_namespace_runtime(namespace)
+
     voice_enabled_changed = bool(namespace["VOICE_ENABLED"]) != values.voice_enabled
     namespace["VOICE_ENABLED"] = values.voice_enabled
     if voice_enabled_changed:
@@ -182,6 +201,18 @@ def reload_shared_ui_config_namespace_runtime(
             namespace["multi_instance_var"].set(values.allow_multi_instance)
         except Exception as exc:
             _safe_log(namespace, f"Sync multi-instance menu state failed: {exc!r}")
+
+    command_permissions = read_cloud_command_permissions(namespace["config"])
+    current_permissions = normalize_cloud_command_permissions(
+        namespace.get(
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
+            namespace.get("CLOUD_SENSITIVE_COMMANDS_ENABLED", False),
+        )
+    )
+    security_changed = current_permissions != command_permissions
+    namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"] = command_permissions
+    if security_changed:
+        changed_groups.append("安全设置")
 
     if changed_groups:
         try:

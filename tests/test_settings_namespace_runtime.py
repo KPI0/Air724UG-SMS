@@ -4,6 +4,7 @@ from sms_ui.settings_namespace_runtime import (
     open_call_filter_setting_namespace_runtime,
     open_desktop_shortcut_dialog_namespace_runtime,
     open_keywords_setting_namespace_runtime,
+    open_security_settings_namespace_runtime,
     open_serial_setting_namespace_runtime,
     open_sms_font_dialog_namespace_runtime,
     open_voice_text_dialog_namespace_runtime,
@@ -34,9 +35,11 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
             "CALL_FILTER_MODE": "Disabled",
             "CALL_WHITELIST": ["10086"],
             "CALL_BLACKLIST": ["10010"],
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS": {"sms": False},
             "_ui_open_sms_font_dialog": "font_dialog",
             "_ui_open_voice_text_dialog": "voice_dialog",
             "_ui_open_desktop_shortcut_dialog": "shortcut_dialog",
+            "_ui_open_security_settings_dialog": "security_dialog",
             "apply_sms_font_style": lambda: "font",
             "generate_alert_voice": lambda **kwargs: ("voice", kwargs),
             "scan_com_ports_all": lambda: ["COM1"],
@@ -86,6 +89,39 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["log_error"]("voice log"), ("log", "voice log"))
         forwarded["set_voice_text"]("next")
         self.assertEqual(namespace["VOICE_TEXT"], "next")
+
+    def test_open_security_settings_namespace_runtime_forwards_and_sets_flag(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        result = open_security_settings_namespace_runtime(
+            namespace,
+            open_setting_runtime=lambda parent, enabled, **kwargs: calls.append(
+                (parent, enabled, kwargs)
+            ) or "security",
+        )
+
+        self.assertEqual(result, "security")
+        parent, permissions, forwarded = calls[0]
+        self.assertEqual((parent, permissions), ("root", {"sms": False}))
+        self.assertEqual(forwarded["open_dialog"], "security_dialog")
+        forwarded["set_permissions"]({"sms": True})
+        self.assertEqual(namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"], {"sms": True})
+
+    def test_open_security_settings_namespace_runtime_uses_explicit_parent(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        result = open_security_settings_namespace_runtime(
+            namespace,
+            "cloud_window",
+            open_setting_runtime=lambda parent, permissions, **kwargs: calls.append(
+                (parent, permissions, kwargs)
+            ) or "security",
+        )
+
+        self.assertEqual(result, "security")
+        self.assertEqual(calls[0][0], "cloud_window")
 
     def test_open_serial_setting_namespace_runtime_forwards_and_sets_serial_state(self):
         namespace = self.base_namespace()

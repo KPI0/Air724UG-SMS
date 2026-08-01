@@ -53,6 +53,16 @@ def initial_popup_size(requested_width, requested_height):
     return width, height
 
 
+def additional_message_notice(total_count):
+    try:
+        additional_count = max(1, int(total_count)) - 1
+    except (TypeError, ValueError):
+        additional_count = 0
+    if additional_count <= 0:
+        return ""
+    return f"另有 {additional_count} 条短信已显示在主窗口"
+
+
 def _center_popup_for_content(win, center_on_screen):
     win.update_idletasks()
     width, height = initial_popup_size(
@@ -139,8 +149,13 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
     message_frame = tk.Frame(body, bg="white")
     message_frame.pack(side="left", fill="both", expand=True)
 
+    message_viewport_frame = tk.Frame(message_frame, bg="white")
+    message_viewport_frame.grid(row=0, column=0, sticky="nsew")
+    message_frame.grid_rowconfigure(0, weight=1)
+    message_frame.grid_columnconfigure(0, weight=1)
+
     message_text = tk.Text(
-        message_frame,
+        message_viewport_frame,
         width=42,
         height=MIN_VISIBLE_MESSAGE_LINES,
         wrap="char",
@@ -157,12 +172,21 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
     )
 
     message_scrollbar = ttk.Scrollbar(
-        message_frame,
+        message_viewport_frame,
         orient="vertical",
         command=message_text.yview,
     )
     message_text.configure(yscrollcommand=message_scrollbar.set)
     _pack_message_viewport(message_text, message_scrollbar)
+
+    additional_message_label = tk.Label(
+        message_frame,
+        bg="white",
+        fg="#555555",
+        anchor="w",
+        justify="left",
+        font=("Microsoft YaHei UI", 9),
+    )
     resize_after_id = None
     last_text_width = None
     recenter_on_refresh = False
@@ -211,6 +235,19 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
         apply_viewport(lines)
         message_text.yview_moveto(0.0)
 
+    def update_additional_message_notice(total_count):
+        notice = additional_message_notice(total_count)
+        additional_message_label.configure(text=notice)
+        if notice:
+            additional_message_label.grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(10, 0),
+            )
+        else:
+            additional_message_label.grid_remove()
+
     message_text.bind("<Button-1>", lambda _event: "break")
     message_text.bind("<Key>", lambda _event: "break")
     message_text.bind("<Configure>", schedule_viewport_refresh, add="+")
@@ -219,9 +256,10 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
     close_button = ttk.Button(footer, text="\u786e\u5b9a", command=on_close, width=12)
     _pack_popup_sections(body, footer, close_button)
 
-    def update_message(next_message):
+    def update_message(next_message, total_count=1):
         try:
             replace_message(next_message)
+            update_additional_message_notice(total_count)
             win.update_idletasks()
             _center_popup_for_content(win, center_on_screen)
             win.deiconify()
@@ -236,5 +274,5 @@ def open_sms_popup(parent, message, center_on_screen, on_close):
     win.sms_popup_update = update_message
     win.protocol("WM_DELETE_WINDOW", on_close)
     win.bind("<Escape>", lambda _event: on_close())
-    update_message(message)
+    update_message(message, 1)
     return win

@@ -8,6 +8,7 @@ from sms_core.call_effects import (
     apply_ring_timeout_expired,
 )
 from sms_core.call_events import CallLineDecision, CallState
+from sms_core.call_session import IncomingCallStartResult
 
 
 class CallEffectTests(unittest.TestCase):
@@ -208,6 +209,118 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("close",), calls)
         self.assertIn(("ui", "📞 对方已接听：10086", "normal"), calls)
         self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
+
+    def test_duplicate_incoming_session_does_not_repeat_push_or_popup(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            push_message="incoming",
+            incoming_number="10086",
+            show_popup_number="10086",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: calls.append(("hangup",)),
+            lambda *args, **kwargs: calls.append(("push", args, kwargs)),
+            lambda *args: calls.append(("ui", args)),
+            lambda *args: calls.append(("status", args)),
+            lambda number: calls.append(("popup", number)),
+            lambda: calls.append(("close",)),
+            start_incoming_call=lambda _number: False,
+        )
+
+        self.assertEqual(calls, [])
+
+    def test_hangup_closes_active_popup_before_showing_missed_call(self):
+        calls = []
+        missed_call = SimpleNamespace(caller_num="10086")
+        decision = CallLineDecision(state=CallState(), hangup_notify=True)
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *args, **kwargs: None,
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda number: None,
+            lambda: calls.append(("close",)),
+            finish_incoming_call=lambda: missed_call,
+            show_missed_call_popup=lambda value: calls.append(("missed", value)),
+        )
+
+        self.assertIn(("ui", "📵 未接来电：10086", "warning"), calls)
+        self.assertLess(calls.index(("close",)), calls.index(("missed", missed_call)))
+
+    def test_debounced_hangup_still_cleans_up_without_duplicate_end_log(self):
+        calls = []
+        missed_call = SimpleNamespace(caller_num="10010")
+        decision = CallLineDecision(state=CallState(), call_ended=True)
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *args, **kwargs: None,
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda number: None,
+            lambda: calls.append(("close",)),
+            finish_incoming_call=lambda: calls.append(("finish",)) or missed_call,
+            show_missed_call_popup=lambda value: calls.append(("missed", value)),
+        )
+
+        self.assertIn(("finish",), calls)
+        self.assertIn(("close",), calls)
+        self.assertIn(("missed", missed_call), calls)
+        self.assertNotIn(("ui", "📞 语音通话已结束", "normal"), calls)
+
+    def test_different_incoming_caller_replaces_popup_and_reports_previous_missed(self):
+        calls = []
+        previous_missed = SimpleNamespace(caller_num="10086")
+        decision = CallLineDecision(
+            state=CallState(),
+            push_message="incoming",
+            incoming_number="10010",
+            show_popup_number="10010",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *args, **kwargs: calls.append(("push",)),
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda number: calls.append(("popup", number)),
+            lambda: calls.append(("close",)),
+            start_incoming_call=lambda _number: IncomingCallStartResult(
+                started=True,
+                replaced=True,
+                replaced_missed_call=previous_missed,
+            ),
+            show_missed_call_popup=lambda value: calls.append(("missed", value)),
+        )
+
+        self.assertLess(calls.index(("close",)), calls.index(("missed", previous_missed)))
+        self.assertLess(calls.index(("missed", previous_missed)), calls.index(("popup", "10010")))
+        self.assertIn(("push",), calls)
+
+    def test_timeout_does_not_show_missed_call_after_user_handled_it(self):
+        calls = []
+
+        apply_ring_timeout_expired(
+            "COM5",
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda: calls.append(("close",)),
+            finish_incoming_call=lambda: None,
+            show_missed_call_popup=lambda value: calls.append(("missed", value)),
+        )
+
+        self.assertFalse(any(item[0] == "missed" for item in calls))
 
 
 if __name__ == "__main__":

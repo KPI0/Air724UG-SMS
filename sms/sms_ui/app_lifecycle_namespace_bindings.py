@@ -3,6 +3,7 @@ from sms_ui.app_lifecycle_namespace_runtime import (
     cleanup_and_exit_namespace_runtime,
     restart_software_namespace_runtime,
     set_autostart_namespace_runtime,
+    toggle_call_popup_namespace_runtime,
     toggle_multi_instance_namespace_runtime,
     toggle_popup_namespace_runtime,
     toggle_voice_broadcast_namespace_runtime,
@@ -30,6 +31,7 @@ def install_app_lifecycle_namespace_bindings(namespace):
         "toggle_multi_instance": bind("toggle_multi_instance_namespace_runtime"),
         "toggle_autostart": toggle_autostart,
         "toggle_popup": bind("toggle_popup_namespace_runtime"),
+        "toggle_call_popup": bind("toggle_call_popup_namespace_runtime"),
         "restart_software": bind("restart_software_namespace_runtime"),
     })
     return namespace

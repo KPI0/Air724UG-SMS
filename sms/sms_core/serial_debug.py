@@ -1,3 +1,6 @@
+import re
+
+
 SERIAL_DEBUG_MAX_STORE_LINES = 20000
 SERIAL_DEBUG_MAX_VISIBLE_LINES = 5000
 
@@ -14,7 +17,7 @@ COMMON_SERIAL_COMMANDS = [
     ("AT+CGDCONT?", "查APN配置"),
     ("AT+RFTEMPERATURE?", "查模组温度"),
     ("AT+CNUM", "查本机号码"),
-    ("AT+CSCA?", "查短信中心号码"),
+    ("AT+CSCA?", "查信息中心号码"),
     ("AT+COPS?", "查运营商"),
     ("AT+CPIN?", "查PIN码锁状态"),
     ("AT+ICCID", "查SIM卡ICCID"),
@@ -67,6 +70,21 @@ def normalize_own_number(phone: str) -> str:
 def build_own_number_commands(phone: str):
     normalized = normalize_own_number(phone)
     return 'AT+CPBS="ON"', f'AT+CPBW=1,"{normalized}",145', "AT+CNUM"
+
+
+def normalize_information_center_number(phone: str) -> str:
+    raw = str(phone or "").strip()
+    if not raw:
+        raise ValueError("信息中心号码不能为空")
+    normalized = re.sub(r"[\s\-().（）]", "", raw)
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", normalized):
+        raise ValueError("信息中心号码需以 + 开头，并包含 7-15 位数字")
+    return normalized
+
+
+def build_information_center_command(phone: str) -> str:
+    normalized = normalize_information_center_number(phone)
+    return f'AT+CSCA="{normalized}",145'
 
 
 def build_sn_command(sn: str) -> str:

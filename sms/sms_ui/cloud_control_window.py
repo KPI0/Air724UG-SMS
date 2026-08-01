@@ -22,6 +22,7 @@ def open_cloud_control_window_dialog(
     on_close,
     center_window,
     on_enabled_changed=None,
+    open_security_settings=None,
 ):
     state = state_provider()
     win = tk.Toplevel(parent)
@@ -29,7 +30,6 @@ def open_cloud_control_window_dialog(
     win.title("云端控制")
     win.minsize(540, 260)
     win.resizable(True, False)
-    win.transient(parent)
 
     frame = ttk.Frame(win, padding=12)
     frame.pack(fill="both", expand=True)
@@ -43,6 +43,7 @@ def open_cloud_control_window_dialog(
         status_var,
         on_auto_upload_changed,
         on_enabled_changed,
+        open_security_settings,
     )
     win._sync_form_from_state = form.sync_from_state
 
@@ -93,6 +94,7 @@ def open_cloud_control_window_runtime(
     sync_existing_window,
     set_window,
     center_window,
+    open_security_settings=None,
 ):
     refresh_settings()
 
@@ -179,6 +181,11 @@ def open_cloud_control_window_runtime(
             pass
         set_window(None)
 
+    dialog_kwargs = {}
+    if on_enabled_changed is not None:
+        dialog_kwargs["on_enabled_changed"] = on_enabled_changed
+    if open_security_settings is not None:
+        dialog_kwargs["open_security_settings"] = open_security_settings
     win = open_cloud_control_window_dialog(
         parent,
         state_provider,
@@ -189,7 +196,7 @@ def open_cloud_control_window_runtime(
         disconnect_values,
         close_window,
         center_window,
-        on_enabled_changed=on_enabled_changed,
+        **dialog_kwargs,
     )
     set_window(win)
     return win

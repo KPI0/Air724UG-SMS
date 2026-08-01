@@ -1,5 +1,6 @@
 ﻿import unittest
 
+from sms_core.call_session import IncomingCallSessionTracker
 from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.serial_runtime import (
     SerialLineDecoder,
@@ -221,6 +222,39 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertIn(("close_popup",), calls)
         self.assertTrue(any(item[0] == "status" for item in calls))
 
+    def test_timeout_and_hangup_on_same_line_only_apply_one_terminal_effect(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.ring_timeout_target = 5.0
+        state.call_state.last_clip_num = "10086"
+        tracker = IncomingCallSessionTracker(now_func=lambda: "started")
+        tracker.start("10086")
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "finish_incoming_call": tracker.finish,
+                "show_missed_call_popup": lambda missed: calls.append(("missed", missed)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            "NO CARRIER",
+            10.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertEqual(len([item for item in calls if item[0] == "missed"]), 1)
+        self.assertFalse(any(
+            item[0] == "ui" and item[1][0] == "📞 语音通话已结束"
+            for item in calls
+        ))
+
     def test_incoming_call_dispatches_push_status_and_popup(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)
@@ -246,6 +280,171 @@ class SerialRuntimeTests(unittest.TestCase):
             and item[2].get("variables", {}).get("caller") == "+8613123123123"
             for item in calls
         ))
+
+    def test_unhandled_call_hangup_creates_one_missed_call(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        tracker = IncomingCallSessionTracker(now_func=lambda: "started")
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "start_incoming_call": tracker.start,
+                "finish_incoming_call": tracker.finish,
+                "show_missed_call_popup": lambda missed: calls.append(("missed", missed)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CLIP: "+8613123123123",129',
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+        handle_serial_runtime_line(
+            state,
+            "NO CARRIER",
+            11.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+        handle_serial_runtime_line(
+            state,
+            "NO CARRIER",
+            12.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        missed = [item for item in calls if item[0] == "missed"]
+        self.assertEqual(len(missed), 1)
+        self.assertEqual(missed[0][1].caller_num, "+8613123123123")
+        self.assertTrue(any(item[0] == "ui" and "未接来电" in item[1][0] for item in calls))
+
+    def test_repeated_clip_does_not_repeat_active_call_notification(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        tracker = IncomingCallSessionTracker()
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "start_incoming_call": tracker.start,
+                "finish_incoming_call": tracker.finish,
+            }
+        )
+
+        for now in (10.0, 15.0):
+            handle_serial_runtime_line(
+                state,
+                '+CLIP: "10086",129',
+                now,
+                "COM5",
+                True,
+                runtime_config(),
+                callbacks,
+                {},
+            )
+
+        self.assertEqual(len([item for item in calls if item[0] == "call_popup"]), 1)
+        self.assertEqual(len([item for item in calls if item[0] == "push"]), 1)
+
+    def test_different_caller_replaces_active_session_without_losing_notifications(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        tracker = IncomingCallSessionTracker(now_func=lambda: "started")
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "start_incoming_call": tracker.start,
+                "finish_incoming_call": tracker.finish,
+                "show_missed_call_popup": lambda missed: calls.append(("missed", missed)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CLIP: "10086",129',
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+        handle_serial_runtime_line(
+            state,
+            '+CLIP: "10010",129',
+            11.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertEqual(tracker.snapshot().caller_num, "10010")
+        self.assertEqual(
+            [item[1][0] for item in calls if item[0] == "call_popup"],
+            ["10086", "10010"],
+        )
+        self.assertEqual(len([item for item in calls if item[0] == "push"]), 2)
+        missed = [item[1] for item in calls if item[0] == "missed"]
+        self.assertEqual([item.caller_num for item in missed], ["10086"])
+        self.assertIn(("close_popup",), calls)
+
+    def test_rapid_consecutive_calls_each_finish_their_own_session(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        tracker = IncomingCallSessionTracker(now_func=lambda: "started")
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "start_incoming_call": tracker.start,
+                "finish_incoming_call": tracker.finish,
+                "show_missed_call_popup": lambda missed: calls.append(("missed", missed)),
+            }
+        )
+
+        for line, now, popup_active in (
+            ('+CLIP: "10086",129', 10.0, False),
+            ("NO CARRIER", 11.0, True),
+            ('+CLIP: "10010",129', 12.0, False),
+            ("NO CARRIER", 13.0, True),
+        ):
+            handle_serial_runtime_line(
+                state,
+                line,
+                now,
+                "COM5",
+                popup_active,
+                runtime_config(),
+                callbacks,
+                {},
+            )
+
+        missed = [item[1] for item in calls if item[0] == "missed"]
+        self.assertEqual([item.caller_num for item in missed], ["10086", "10010"])
+        self.assertEqual(
+            len([
+                item for item in calls
+                if item[0] == "ui" and item[1][0] == "📞 语音通话已结束"
+            ]),
+            2,
+        )
+        self.assertEqual(tracker.snapshot().caller_num, "")
 
     def test_blocked_call_hangs_up_and_stops_processing(self):
         calls = []
@@ -836,6 +1035,14 @@ class SerialRuntimeTests(unittest.TestCase):
     def test_run_serial_runtime_thread_resets_call_state_before_disconnect_callback(self):
         app_state = []
         disconnects = []
+        reset_calls = []
+        callbacks = runtime_callbacks([])
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "reset_incoming_call": lambda: reset_calls.append("reset"),
+            }
+        )
 
         def fake_loop(**kwargs):
             kwargs["handle_error"](RuntimeError("gone"), "COM5")
@@ -843,7 +1050,7 @@ class SerialRuntimeTests(unittest.TestCase):
         run_serial_runtime_thread(
             parse_callback_head=parse_head,
             get_runtime_config=runtime_config,
-            callbacks=runtime_callbacks([]),
+            callbacks=callbacks,
             get_call_state=lambda: (8.0, "10086"),
             set_call_state=lambda ring_timeout, dial_num: app_state.append((ring_timeout, dial_num)),
             popup_active=lambda: False,
@@ -863,6 +1070,7 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertEqual(app_state, [(0.0, ""), (0.0, "")])
         self.assertEqual(disconnects, [("gone", "COM5")])
+        self.assertEqual(reset_calls, ["reset", "reset"])
 
     def test_reset_sms_state_clears_collector_pdu_cache_and_assembler(self):
         state = SerialRuntimeState.create(parse_head)

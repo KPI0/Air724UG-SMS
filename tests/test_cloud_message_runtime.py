@@ -2,6 +2,10 @@
 import json
 import unittest
 
+from sms_core.cloud_command_security import (
+    CLOUD_SEND_SMS_TRANSACTION_COMMAND,
+    CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND,
+)
 from sms_core.cloud_message_runtime import (
     cloud_status_payload_runtime,
     handle_cloud_message_runtime,
@@ -221,7 +225,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertNotIn(("send", "ATI"), calls)
 
     def test_handle_cloud_message_hides_suppressed_pdu_in_receive_log(self):
-        pdu = "0011000D916831..."
+        pdu = "0011000D916831...\x1a"
         state, calls, replies, replay_checks = run(self._handle(
             json.dumps({
                 "cmd": pdu,
@@ -538,6 +542,180 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("不能为空", info)
 
+    def test_cloud_sms_transaction_executes_once_without_raw_marker_write(self):
+        calls = []
+
+        ok, info = send_cloud_serial_command_runtime(
+            CLOUD_SEND_SMS_TRANSACTION_COMMAND,
+            command_meta={
+                "sms_phone": "+8613123123123",
+                "sms_message": "hello",
+            },
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: calls.append("raw_write") or SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            allow_sensitive_commands={"sms": True},
+            send_sms_transaction=lambda phone, message: (
+                calls.append(("sms", phone, message)) or True
+            ),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(info, "短信发送成功")
+        self.assertIn(("sms", "+8613123123123", "hello"), calls)
+        self.assertNotIn("raw_write", calls)
+
+    def test_cloud_own_number_transaction_stops_on_transaction_failure(self):
+        calls = []
+
+        ok, info = send_cloud_serial_command_runtime(
+            CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND,
+            command_meta={"own_number": "+8613123123123"},
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: calls.append("raw_write") or SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"phone_number": True},
+            set_own_number_transaction=lambda phone: (
+                calls.append(("own_number", phone))
+                or SimpleResult(False, "AT+CPBS 执行失败")
+            ),
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(info, "AT+CPBS 执行失败")
+        self.assertEqual(calls, [("own_number", "+8613123123123")])
+
+    def test_cloud_transaction_markers_require_permission_and_valid_metadata(self):
+        calls = []
+        common = {
+            "serial_lock": DummyLock(),
+            "get_serial": lambda: object(),
+            "write_command_result": lambda *_args: calls.append("raw_write") or SimpleResult(True),
+            "push_serial_debug": lambda *_args: None,
+            "log": lambda *_args, **_kwargs: None,
+            "send_sms_transaction": lambda *_args: calls.append("sms") or True,
+        }
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            CLOUD_SEND_SMS_TRANSACTION_COMMAND,
+            command_meta={"sms_phone": "+8613123123123", "sms_message": "hello"},
+            allow_sensitive_commands={"sms": False},
+            **common,
+        )
+        invalid, invalid_info = send_cloud_serial_command_runtime(
+            CLOUD_SEND_SMS_TRANSACTION_COMMAND,
+            command_meta={"sms_phone": "bad", "sms_message": "hello"},
+            allow_sensitive_commands={"sms": True},
+            **common,
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("安全设置", blocked_info)
+        self.assertFalse(invalid)
+        self.assertIn("格式", invalid_info)
+        self.assertEqual(calls, [])
+
+    def test_transaction_metadata_cannot_reclassify_regular_at_command(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "AT+RESET",
+            command_meta={
+                "command_kind": "modify_own_number",
+                "own_number": "+8613123123123",
+            },
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                calls.append(("raw", command)) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            set_own_number_transaction=lambda *_args: calls.append("transaction"),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [("raw", "AT+RESET")])
+
+    def test_send_cloud_serial_command_runtime_rejects_multiline_commands_even_when_all_permissions_enabled(self):
+        commands = (
+            "AT+CSQ\r\nAT+RESET",
+            "AT+CSQ\nAT+CMGD=1",
+            "AT+CSQ\rATD10086;",
+            "AT+CSQ;AT+RESET",
+            "001122\x1aAT+RESET",
+        )
+        for command in commands:
+            with self.subTest(command=repr(command)):
+                calls = []
+                ok, info = send_cloud_serial_command_runtime(
+                    command,
+                    serial_lock=DummyLock(),
+                    get_serial=lambda: object(),
+                    write_command_result=lambda *_args: calls.append("write") or SimpleResult(True),
+                    push_serial_debug=lambda message: calls.append(("debug", message)),
+                    port_ui=lambda *args: calls.append(("port_ui", args)),
+                    log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+                    allow_sensitive_commands=True,
+                )
+
+                self.assertFalse(ok)
+                self.assertIn("每次只发送一条", info)
+                self.assertNotIn("write", calls)
+                self.assertFalse(any(command in str(call) for call in calls))
+
+    def test_send_cloud_serial_command_runtime_rejects_unsupported_control_characters(self):
+        rejected_codes = (
+            *range(0x00, 0x09),
+            0x0B,
+            0x0C,
+            *range(0x0E, 0x1A),
+            *range(0x1B, 0x20),
+            0x7F,
+        )
+        for code in rejected_codes:
+            command = "AT+CSQ" + chr(code) + "AT+RESET"
+            calls = []
+            with self.subTest(code=hex(code)):
+                ok, info = send_cloud_serial_command_runtime(
+                    command,
+                    serial_lock=DummyLock(),
+                    get_serial=lambda: object(),
+                    write_command_result=lambda *_args: calls.append("write") or SimpleResult(True),
+                    push_serial_debug=lambda message: calls.append(("debug", message)),
+                    port_ui=lambda *args: calls.append(("port_ui", args)),
+                    log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+                    allow_sensitive_commands=True,
+                )
+
+                self.assertFalse(ok)
+                self.assertIn("控制字符", info)
+                self.assertNotIn("write", calls)
+                self.assertFalse(any(command in str(call) for call in calls))
+
+    def test_send_cloud_serial_command_runtime_allows_terminal_sms_ctrl_z(self):
+        writes = []
+        command = "001122\x1a"
+
+        ok, _info = send_cloud_serial_command_runtime(
+            command,
+            command_meta={"command_kind": "send_sms", "sms_log": "suppress"},
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, value: (
+                writes.append(value) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"sms": True},
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(writes, [command])
+
     def test_send_cloud_serial_command_runtime_writes_without_port_log_for_generic_at(self):
         calls = []
         serial_obj = object()
@@ -555,7 +733,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         )
 
         self.assertTrue(ok)
-        self.assertEqual(info, "已发送：ATI")
+        self.assertEqual(info, "执行成功：ATI")
         self.assertEqual(calls[0], ("write", serial_obj, "ATI"))
         self.assertIn("ATI", calls[1][1])
         self.assertEqual(calls[2][0], "log")
@@ -590,6 +768,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             push_serial_debug=lambda *_args: None,
             port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
             log=lambda *_args: None,
+            allow_sensitive_commands={"sms": True},
         )
 
         self.assertTrue(ok)
@@ -600,7 +779,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
     def test_send_cloud_serial_command_runtime_suppresses_sms_pdu_noise(self):
         calls = []
-        pdu = "0011000D916831..."
+        pdu = "0011000D916831...\x1a"
 
         ok, info = send_cloud_serial_command_runtime(
             pdu,
@@ -613,6 +792,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             push_serial_debug=lambda message: calls.append(("debug", message)),
             port_ui=lambda message, tag: calls.append(("port_ui", message, tag)),
             log=lambda message: calls.append(("log", message)),
+            allow_sensitive_commands={"sms": True},
         )
 
         self.assertTrue(ok)
@@ -621,6 +801,266 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertFalse(any(pdu in str(call) for call in calls[1:]))
         self.assertNotIn(pdu, info)
         self.assertIn("已隐藏", info)
+
+    def test_send_cloud_serial_command_runtime_rejects_metadata_category_spoofing(self):
+        writes = []
+        common = {
+            "serial_lock": DummyLock(),
+            "get_serial": lambda: object(),
+            "write_command_result": lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            "push_serial_debug": lambda *_args: None,
+            "log": lambda *_args, **_kwargs: None,
+            "allow_sensitive_commands": {"sms": True},
+        }
+
+        reset_ok, reset_info = send_cloud_serial_command_runtime(
+            "AT+REBOOT",
+            command_meta={"command_kind": "send_sms", "sms_log": "suppress"},
+            **common,
+        )
+        pin_ok, pin_info = send_cloud_serial_command_runtime(
+            'AT+CPIN="1234"',
+            command_meta={"command_kind": "send_sms", "sms_log": "summary"},
+            **common,
+        )
+
+        self.assertFalse(reset_ok)
+        self.assertFalse(pin_ok)
+        self.assertEqual(writes, [])
+        self.assertIn("重置或关闭设备", reset_info)
+        self.assertIn("PIN", pin_info)
+
+    def test_send_cloud_serial_command_runtime_blocks_sensitive_commands_by_default(self):
+        calls = []
+        pin_command = 'AT+CPIN="1234"'
+
+        ok, info = send_cloud_serial_command_runtime(
+            pin_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: calls.append("write") or SimpleResult(True),
+            push_serial_debug=lambda message: calls.append(("debug", message)),
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+        )
+
+        self.assertFalse(ok)
+        self.assertNotIn(pin_command, info)
+        self.assertIn("PIN", info)
+        self.assertNotIn("write", calls)
+        self.assertFalse(any(pin_command in str(call) for call in calls))
+
+    def test_send_cloud_serial_command_runtime_applies_permissions_independently(self):
+        writes = []
+        common = {
+            "serial_lock": DummyLock(),
+            "get_serial": lambda: object(),
+            "write_command_result": lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            "push_serial_debug": lambda *_args: None,
+            "log": lambda *_args, **_kwargs: None,
+            "allow_sensitive_commands": {"sms": True, "call": False},
+        }
+
+        sms_ok, _sms_info = send_cloud_serial_command_runtime(
+            "AT+CMGS=23",
+            **common,
+        )
+        call_ok, call_info = send_cloud_serial_command_runtime(
+            "ATD10086;",
+            **common,
+        )
+
+        self.assertTrue(sms_ok)
+        self.assertFalse(call_ok)
+        self.assertEqual(writes, ["AT+CMGS=23"])
+        self.assertIn("电话", call_info)
+
+    def test_send_cloud_serial_command_runtime_controls_cell_location_query(self):
+        writes = []
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            "AT+EEMGINFO?",
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"cell_location": False},
+        )
+        allowed, _allowed_info = send_cloud_serial_command_runtime(
+            "AT+EEMGINFO?",
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"cell_location": True},
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("基站定位", blocked_info)
+        self.assertTrue(allowed)
+        self.assertEqual(writes, ["AT+EEMGINFO?"])
+
+    def test_send_cloud_serial_command_runtime_controls_puk_separately_from_pin(self):
+        writes = []
+        puk_command = 'AT+CPIN="12345678","1234"'
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            puk_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin": True, "puk": False},
+        )
+        allowed, _allowed_info = send_cloud_serial_command_runtime(
+            puk_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin": False, "puk": True},
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("PUK", blocked_info)
+        self.assertTrue(allowed)
+        self.assertEqual(writes, [puk_command])
+
+    def test_send_cloud_serial_command_runtime_includes_pin_lock_in_pin_operations(self):
+        writes = []
+        lock_command = 'AT+CLCK="SC",1,"1234"'
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            lock_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin": False},
+        )
+        allowed, _allowed_info = send_cloud_serial_command_runtime(
+            lock_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin": True},
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("PIN 码操作", blocked_info)
+        self.assertTrue(allowed)
+        self.assertEqual(writes, [lock_command])
+
+    def test_send_cloud_serial_command_runtime_accepts_legacy_pin_lock_permission(self):
+        writes = []
+        lock_command = 'AT+CLCK="SC",1,"1234"'
+
+        allowed, _info = send_cloud_serial_command_runtime(
+            lock_command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin_lock": True},
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(writes, [lock_command])
+
+    def test_send_cloud_serial_command_runtime_controls_new_security_groups(self):
+        cases = (
+            ("ussd", 'AT+CUSD=1,"*100#"', "USSD"),
+            ("call_control", "AT+CCFC=0,3", "呼叫转移"),
+            ("sms_center", 'AT+CSCA="+8613800100500"', "信息中心"),
+            ("delete_data", "AT+CMGD=1", "删除设备数据"),
+            ("device_power", "AT+REBOOT", "重置或关闭设备"),
+        )
+
+        for category, command, expected_reason in cases:
+            with self.subTest(category=category):
+                writes = []
+                common = {
+                    "serial_lock": DummyLock(),
+                    "get_serial": lambda: object(),
+                    "write_command_result": lambda _serial, value: (
+                        writes.append(value) or SimpleResult(True)
+                    ),
+                    "push_serial_debug": lambda *_args: None,
+                    "log": lambda *_args, **_kwargs: None,
+                }
+
+                blocked, blocked_info = send_cloud_serial_command_runtime(
+                    command,
+                    allow_sensitive_commands={category: False},
+                    **common,
+                )
+                allowed, _allowed_info = send_cloud_serial_command_runtime(
+                    command,
+                    allow_sensitive_commands={category: True},
+                    **common,
+                )
+
+                self.assertFalse(blocked)
+                self.assertIn(expected_reason, blocked_info)
+                self.assertTrue(allowed)
+                self.assertEqual(writes, [command])
+
+    def test_ussd_permission_does_not_allow_call_forwarding_mmi_code(self):
+        command = "ATD**21*13800138000#;"
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"ussd": True, "call_control": False},
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("呼叫转移", blocked_info)
+
+    def test_pin_permission_does_not_allow_call_barring_password_change(self):
+        command = 'AT+CPWD="AO","1234","5678"'
+
+        blocked, blocked_info = send_cloud_serial_command_runtime(
+            command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            allow_sensitive_commands={"pin": True, "call_control": False},
+        )
+
+        self.assertFalse(blocked)
+        self.assertIn("呼叫限制", blocked_info)
 
 
 if __name__ == "__main__":

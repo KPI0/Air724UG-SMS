@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from sms_core.serial_sender import (
+    AtCommandResponseCoordinator,
     SerialCommandResult,
     SmsPduSendCoordinator,
     SmsPduSendResponse,
@@ -11,6 +12,7 @@ from sms_core.serial_sender import (
     send_command_with_result_async,
     send_text_sms_pdu_async,
     write_serial_command_sequence_locked,
+    write_serial_command_sequence_confirmed_locked,
     write_text_sms_pdu,
     write_text_sms_pdu_locked,
     write_serial_command_result,
@@ -560,6 +562,69 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual(sleep_locked_states, [False])
         self.assertIn(">>> 发送: ATI\\r\\n", debug)
 
+    def test_confirmed_command_sequence_waits_for_each_ok(self):
+        coordinator = AtCommandResponseCoordinator()
+
+        def on_write(_payload):
+            coordinator.observe_line("[I]-[ril.proatc] OK")
+
+        serial_obj = CallbackSerial(on_write)
+        result = write_serial_command_sequence_confirmed_locked(
+            threading.RLock(),
+            lambda: serial_obj,
+            ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613123123123",145', "AT+CNUM"),
+            response_coordinator=coordinator,
+            response_timeout=0.1,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            serial_obj.writes,
+            [
+                b'AT+CPBS="ON"\r\n',
+                b'AT+CPBW=1,"+8613123123123",145\r\n',
+                b"AT+CNUM\r\n",
+            ],
+        )
+
+    def test_confirmed_command_sequence_stops_after_first_error(self):
+        coordinator = AtCommandResponseCoordinator()
+
+        def on_write(_payload):
+            coordinator.observe_line("[I]-[ril.proatc] +CME ERROR: 3")
+
+        serial_obj = CallbackSerial(on_write)
+        result = write_serial_command_sequence_confirmed_locked(
+            threading.RLock(),
+            lambda: serial_obj,
+            ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613123123123",145', "AT+CNUM"),
+            response_coordinator=coordinator,
+            response_timeout=0.1,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "+CME ERROR: 3")
+        self.assertEqual(serial_obj.writes, [b'AT+CPBS="ON"\r\n'])
+
+    def test_confirmed_command_sequence_ignores_untrusted_ok(self):
+        coordinator = AtCommandResponseCoordinator()
+
+        def on_write(_payload):
+            coordinator.observe_line("[I]-[app.note] OK")
+
+        serial_obj = CallbackSerial(on_write)
+        result = write_serial_command_sequence_confirmed_locked(
+            threading.RLock(),
+            lambda: serial_obj,
+            ["AT"],
+            response_coordinator=coordinator,
+            response_timeout=0,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("超时", result.error)
+        self.assertEqual(serial_obj.writes, [b"AT\r\n"])
+
     def test_write_text_sms_pdu_locked_releases_lock_while_waiting(self):
         serial_obj = FakeSerial()
         lock = TrackingLock()
@@ -583,6 +648,57 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.5])
         self.assertEqual(ui_lines[0], ("📤 发送短信至 +1234：", "normal"))
         self.assertIn(">>> 发送: AT+CMGF=0\\r\\n", debug)
+
+    def test_cloud_sms_transaction_confirms_cmgf_before_cmgs(self):
+        command_coordinator = AtCommandResponseCoordinator()
+        sms_coordinator = SmsPduSendCoordinator()
+
+        def on_write(payload):
+            if payload == b"AT+CMGF=0\r\n":
+                command_coordinator.observe_line("[I]-[ril.proatc] OK")
+            elif payload.startswith(b"AT+CMGS="):
+                sms_coordinator.observe_line("[I]-[ril.proatc] >")
+            elif payload.endswith(b"\x1a"):
+                sms_coordinator.observe_line("+CMGS: 17")
+                sms_coordinator.observe_line("[I]-[ril.proatc] OK")
+
+        serial_obj = CallbackSerial(on_write)
+        result = write_text_sms_pdu_locked(
+            threading.RLock(),
+            lambda: serial_obj,
+            "+1234",
+            "hello",
+            response_coordinator=sms_coordinator,
+            command_response_coordinator=command_coordinator,
+            prompt_timeout=0.1,
+            segment_timeout=0.1,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(serial_obj.writes[0], b"AT+CMGF=0\r\n")
+        self.assertTrue(serial_obj.writes[1].startswith(b"AT+CMGS="))
+        self.assertTrue(serial_obj.writes[2].endswith(b"\x1a"))
+
+    def test_cloud_sms_transaction_stops_when_cmgf_fails(self):
+        command_coordinator = AtCommandResponseCoordinator()
+        serial_obj = CallbackSerial(
+            lambda _payload: command_coordinator.observe_line(
+                "[I]-[ril.proatc] ERROR"
+            )
+        )
+
+        result = write_text_sms_pdu_locked(
+            threading.RLock(),
+            lambda: serial_obj,
+            "+1234",
+            "hello",
+            response_coordinator=SmsPduSendCoordinator(),
+            command_response_coordinator=command_coordinator,
+            segment_timeout=0.1,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(serial_obj.writes, [b"AT+CMGF=0\r\n"])
 
     def test_write_text_sms_pdu_locked_fails_on_segment_error_and_stops(self):
         serial_obj = FakeSerial()

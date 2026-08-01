@@ -40,6 +40,12 @@ def safe_close_serial_namespace_runtime(namespace):
             coordinator.cancel_active("串口连接已关闭，短信发送已取消")
         except Exception as exc:
             _safe_log(namespace, f"Cancel active SMS send before serial close failed: {exc!r}")
+    command_coordinator = namespace.get("SERIAL_COMMAND_RESPONSE_COORDINATOR")
+    if command_coordinator is not None:
+        try:
+            command_coordinator.cancel_active("串口连接已关闭，AT 指令事务已取消")
+        except Exception as exc:
+            _safe_log(namespace, f"Cancel active AT transaction before serial close failed: {exc!r}")
     return safe_close_serial_runtime(
         namespace["serial_lock"],
         lambda: namespace["serial_obj"],

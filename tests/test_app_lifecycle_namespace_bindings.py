@@ -37,6 +37,7 @@ class AppLifecycleNamespaceBindingsTests(unittest.TestCase):
             "toggle_multi_instance",
             "toggle_autostart",
             "toggle_popup",
+            "toggle_call_popup",
             "restart_software",
         ):
             self.assertIn(name, namespace)
@@ -51,6 +52,7 @@ class AppLifecycleNamespaceBindingsTests(unittest.TestCase):
                 patch.object(bindings, "toggle_voice_broadcast_namespace_runtime", return_value="voice") as voice, \
                 patch.object(bindings, "toggle_multi_instance_namespace_runtime", return_value="multi") as multi, \
                 patch.object(bindings, "toggle_popup_namespace_runtime", return_value="popup") as popup, \
+                patch.object(bindings, "toggle_call_popup_namespace_runtime", return_value="call-popup") as call_popup, \
                 patch.object(bindings, "restart_software_namespace_runtime", return_value="restart") as restart:
             self.assertEqual(namespace["set_autostart"](False), "autostart")
             self.assertEqual(namespace["cleanup_and_exit"](), "cleaned")
@@ -58,6 +60,7 @@ class AppLifecycleNamespaceBindingsTests(unittest.TestCase):
             self.assertEqual(namespace["toggle_multi_instance"](), "multi")
             self.assertEqual(namespace["toggle_autostart"](), "autostart")
             self.assertEqual(namespace["toggle_popup"](), "popup")
+            self.assertEqual(namespace["toggle_call_popup"](), "call-popup")
             self.assertEqual(namespace["restart_software"](), "restart")
 
         self.assertEqual(set_autostart.call_args_list[0].args, (namespace, False))
@@ -67,6 +70,7 @@ class AppLifecycleNamespaceBindingsTests(unittest.TestCase):
         voice.assert_called_once_with(namespace)
         multi.assert_called_once_with(namespace)
         popup.assert_called_once_with(namespace)
+        call_popup.assert_called_once_with(namespace)
         restart.assert_called_once_with(namespace)
 
     def test_cleanup_from_background_thread_waits_for_ui_queue(self):

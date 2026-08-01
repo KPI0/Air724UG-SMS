@@ -73,6 +73,7 @@ from sms_core.cloud_runtime import (
     CloudControlSettings,
     read_cloud_control_settings,
 )
+from sms_core.cloud_command_security import read_cloud_command_permissions
 from sms_app.cloud_namespace_bindings import install_cloud_namespace_bindings
 from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
@@ -91,6 +92,7 @@ from sms_core.cloud_security import (
     check_replay_window as _cloud_check_replay_window_core,
     safe_preview as _cloud_safe_preview,
 )
+from sms_core.call_session import IncomingCallSessionTracker
 from sms_core.config_schema import (
     DEFAULT_CLOUD_CONTROL_CONFIG,
     DEFAULT_SERIAL_CONFIG,
@@ -106,6 +108,7 @@ from sms_core.config_runtime import (
 )
 from sms_app.serial_namespace_bindings import install_serial_namespace_bindings
 from sms_core.serial_sender import (
+    DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
     DEFAULT_SMS_PDU_SEND_COORDINATOR,
     DEFAULT_SMS_SEND_THREAD_REGISTRY,
@@ -137,6 +140,9 @@ from sms_ui.app_instance_runtime import (
 )
 from sms_ui.settings_dialogs import (
     open_sms_font_dialog as _ui_open_sms_font_dialog,
+)
+from sms_ui.security_settings_dialog import (
+    open_security_settings_dialog as _ui_open_security_settings_dialog,
 )
 from sms_ui.settings_namespace_bindings import install_settings_namespace_bindings
 from sms_ui.config_sync_namespace_bindings import install_config_sync_namespace_bindings
@@ -204,6 +210,7 @@ def _initialize_paths_and_constants():
 
 def _initialize_config():
     global config, CONFIG_LOCK, startup_config, VOICE_TEXT, POPUP_ENABLED
+    global CALL_POPUP_ENABLED
     global AUTO_LOG_CLEANUP, LOG_RETENTION_DAYS, ALLOW_MULTI_INSTANCE
     global LOG_UNMATCHED_SMS, VOICE_ENABLED, SMS_FONT_SIZE, SMS_FONT_COLOR
     global KEYWORDS, CALL_FILTER_MODE, CALL_WHITELIST, CALL_BLACKLIST
@@ -229,6 +236,7 @@ def _initialize_config():
     startup_config = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
     VOICE_TEXT = startup_config.voice_text
     POPUP_ENABLED = startup_config.popup_enabled
+    CALL_POPUP_ENABLED = startup_config.call_popup_enabled
     AUTO_LOG_CLEANUP = startup_config.auto_log_cleanup
     LOG_RETENTION_DAYS = startup_config.log_retention_days
     ALLOW_MULTI_INSTANCE = startup_config.allow_multi_instance
@@ -257,13 +265,14 @@ def apply_cloud_control_settings(settings: CloudControlSettings):
 
 
 def _initialize_cloud_settings():
-    global CLOUD_DEVICE_IMEI, websockets
+    global CLOUD_DEVICE_IMEI, CLOUD_SENSITIVE_COMMAND_PERMISSIONS, websockets
 
     try:
         import websockets
     except Exception:
         websockets = None
     CLOUD_DEVICE_IMEI = ""
+    CLOUD_SENSITIVE_COMMAND_PERMISSIONS = read_cloud_command_permissions(config)
     apply_cloud_control_settings(read_cloud_control_settings(config))
 
 
@@ -371,6 +380,7 @@ def _initialize_worker_state():
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
+    global SERIAL_COMMAND_RESPONSE_COORDINATOR
     global SERIAL_COMMAND_THREAD_REGISTRY, UPDATE_THREAD_REGISTRY, UPDATE_CHECK_TASK_STATE
 
     TTS_LOCK = threading.Lock()
@@ -390,6 +400,7 @@ def _initialize_worker_state():
     app_mutex = None
     instance_number_mutex = None
     SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
+    SERIAL_COMMAND_RESPONSE_COORDINATOR = DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
     SERIAL_COMMAND_THREAD_REGISTRY = DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY
     UPDATE_THREAD_REGISTRY = WorkerThreadRegistry()
@@ -436,12 +447,13 @@ def _run_startup_guards():
 
 
 def _create_root_window():
-    global root, popup_var, tray_icon, tray_thread, is_exiting, on_close
+    global root, popup_var, call_popup_var, tray_icon, tray_thread, is_exiting, on_close
 
     root = tk.Tk()
     root.withdraw()
     root.minsize(520, 200)
     popup_var = tk.BooleanVar(value=POPUP_ENABLED)
+    call_popup_var = tk.BooleanVar(value=CALL_POPUP_ENABLED)
     generate_alert_voice(force=False)
     install_window_icon_runtime(
         root,
@@ -495,7 +507,8 @@ def _build_main_layout():
 
 
 def _install_cloud_and_serial_bindings():
-    global _last_play_time, current_call_popup, third_push_thread
+    global _last_play_time, current_call_popup, current_missed_call_popup
+    global INCOMING_CALL_SESSION, third_push_thread
 
     _last_play_time = 0.0
     third_push_thread = start_daemon_thread(
@@ -505,6 +518,8 @@ def _install_cloud_and_serial_bindings():
     )
     install_cloud_namespace_bindings(globals())
     current_call_popup = None
+    current_missed_call_popup = None
+    INCOMING_CALL_SESSION = IncomingCallSessionTracker()
     install_serial_namespace_bindings(globals())
 
 
@@ -517,6 +532,7 @@ def _build_main_menu():
         is_autostart_enabled=is_autostart_enabled,
         allow_multi_instance=ALLOW_MULTI_INSTANCE,
         popup_var=popup_var,
+        call_popup_var=call_popup_var,
         commands={
             "clear_window": clear_window,
             "open_log_dir": open_log_dir,
@@ -530,6 +546,7 @@ def _build_main_menu():
             "toggle_autostart": toggle_autostart,
             "toggle_multi_instance": toggle_multi_instance,
             "toggle_popup": toggle_popup,
+            "toggle_call_popup": toggle_call_popup,
             "open_log_cleanup_dialog": open_log_cleanup_dialog,
             "open_update_proxy_dialog": open_update_proxy_dialog,
             "open_desktop_shortcut_dialog": open_desktop_shortcut_dialog,

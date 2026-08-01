@@ -3,6 +3,7 @@ import unittest
 from sms_ui.sms_popup import (
     _pack_message_viewport,
     _pack_popup_sections,
+    additional_message_notice,
     display_line_total,
     estimate_message_lines,
     initial_popup_size,
@@ -23,6 +24,20 @@ class RecordingWidget:
 
 
 class SmsPopupTests(unittest.TestCase):
+    def test_additional_message_notice_is_hidden_for_one_message(self):
+        self.assertEqual(additional_message_notice(1), "")
+        self.assertEqual(additional_message_notice(None), "")
+
+    def test_additional_message_notice_reports_messages_in_main_window(self):
+        self.assertEqual(
+            additional_message_notice(2),
+            "另有 1 条短信已显示在主窗口",
+        )
+        self.assertEqual(
+            additional_message_notice(6),
+            "另有 5 条短信已显示在主窗口",
+        )
+
     def test_scrollbar_keeps_priority_at_the_right_of_the_message(self):
         events = []
         message_text = RecordingWidget("message_text", events)

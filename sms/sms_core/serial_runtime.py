@@ -86,6 +86,10 @@ class SerialRuntimeCallbacks:
     show_call_popup: object
     set_local_number: object = lambda *_args: None
     observe_sms_send_line: object = lambda *_args: None
+    start_incoming_call: object = lambda _caller_num: True
+    finish_incoming_call: object = lambda: None
+    reset_incoming_call: object = lambda: None
+    show_missed_call_popup: object = lambda _missed_call: None
 
 
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
@@ -191,7 +195,10 @@ def handle_serial_runtime_line(
             callbacks.port_ui,
             callbacks.set_status,
             callbacks.close_call_popup,
+            callbacks.finish_incoming_call,
+            callbacks.show_missed_call_popup,
         )
+        popup_active = False
 
     sms_diagnostic_log = build_sms_diagnostic_log(config, callbacks)
     ready_sms = state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
@@ -252,6 +259,9 @@ def handle_serial_runtime_line(
         callbacks.set_status,
         callbacks.show_call_popup,
         callbacks.close_call_popup,
+        callbacks.start_incoming_call,
+        callbacks.finish_incoming_call,
+        callbacks.show_missed_call_popup,
     )
     if call_effect.stop_processing:
         return SerialRuntimeResult(continue_read=True)
@@ -348,6 +358,7 @@ def run_serial_runtime_thread(
     state = SerialRuntimeState.create(parse_callback_head)
     now = clock or time.monotonic
     set_call_state(0.0, "")
+    callbacks.reset_incoming_call()
     config = get_runtime_config()
 
     def handle_connected_port(target_port):
@@ -381,6 +392,7 @@ def run_serial_runtime_thread(
     def handle_error(error, target_port):
         state.reset_sms_state()
         state.reset_call_state()
+        callbacks.reset_incoming_call()
         sync_app_call_state()
         return handle_disconnect(error, target_port)
 

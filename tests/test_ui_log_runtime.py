@@ -184,17 +184,20 @@ class UiLogRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "shown")
         self.assertEqual(calls[0][0:4], ("open", "root", "hello", "center"))
         self.assertEqual(calls[1], ("set", popup))
+        self.assertEqual(popup.sms_popup_message_count, 1)
         self.assertNotIn(("show",), calls)
 
     def test_show_sms_popup_runtime_updates_existing_singleton(self):
         calls = []
 
         class Popup:
+            sms_popup_message_count = 1
+
             def winfo_exists(self):
                 return True
 
-            def sms_popup_update(self, message):
-                calls.append(("update", message))
+            def sms_popup_update(self, message, message_count):
+                calls.append(("update", message, message_count))
 
         popup = Popup()
         result = show_sms_popup_runtime(
@@ -209,7 +212,36 @@ class UiLogRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "updated")
-        self.assertEqual(calls, [("update", "new message")])
+        self.assertEqual(calls, [("update", "new message", 2)])
+        self.assertEqual(popup.sms_popup_message_count, 2)
+
+    def test_show_sms_popup_runtime_increments_existing_message_count(self):
+        calls = []
+
+        class Popup:
+            sms_popup_message_count = 4
+
+            def winfo_exists(self):
+                return True
+
+            def sms_popup_update(self, message, message_count):
+                calls.append((message, message_count))
+
+        popup = Popup()
+        result = show_sms_popup_runtime(
+            "latest message",
+            popup_enabled=True,
+            parent="root",
+            current_popup=popup,
+            set_popup=lambda _value: None,
+            center_on_screen="center",
+            show_window=lambda: None,
+            open_popup=lambda *_args: self.fail("must reuse existing popup"),
+        )
+
+        self.assertEqual(result, "updated")
+        self.assertEqual(calls, [("latest message", 5)])
+        self.assertEqual(popup.sms_popup_message_count, 5)
 
     def test_show_sms_popup_runtime_close_callback_clears_singleton(self):
         calls = []

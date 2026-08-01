@@ -37,6 +37,7 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
             "open_desktop_shortcut_dialog",
             "open_keywords_setting",
             "open_call_filter_setting",
+            "open_security_settings",
             "update_voice_menu_label",
             "save_voice_setting",
         ):
@@ -52,13 +53,16 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
                 patch.object(bindings, "open_serial_setting_namespace_runtime", return_value="serial") as serial, \
                 patch.object(bindings, "open_desktop_shortcut_dialog_namespace_runtime", return_value="shortcut") as shortcut, \
                 patch.object(bindings, "open_keywords_setting_namespace_runtime", return_value="keywords") as keywords, \
-                patch.object(bindings, "open_call_filter_setting_namespace_runtime", return_value="filter") as filter_dialog:
+                patch.object(bindings, "open_call_filter_setting_namespace_runtime", return_value="filter") as filter_dialog, \
+                patch.object(bindings, "open_security_settings_namespace_runtime", return_value="security") as security:
             self.assertEqual(namespace["open_sms_font_dialog"](), "font")
             self.assertEqual(namespace["open_voice_text_dialog"](), "voice")
             self.assertEqual(namespace["open_serial_setting"](), "serial")
             self.assertEqual(namespace["open_desktop_shortcut_dialog"](), "shortcut")
             self.assertEqual(namespace["open_keywords_setting"](), "keywords")
             self.assertEqual(namespace["open_call_filter_setting"](), "filter")
+            self.assertEqual(namespace["open_security_settings"](), "security")
+            self.assertEqual(namespace["open_security_settings"]("cloud_window"), "security")
 
         font.assert_called_once_with(namespace)
         voice.assert_called_once_with(namespace)
@@ -66,6 +70,10 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
         shortcut.assert_called_once_with(namespace)
         keywords.assert_called_once_with(namespace)
         filter_dialog.assert_called_once_with(namespace)
+        self.assertEqual(
+            security.call_args_list,
+            [unittest.mock.call(namespace), unittest.mock.call(namespace, "cloud_window")],
+        )
 
     def test_save_voice_settings_and_update_menu_label(self):
         namespace = self.make_namespace()

@@ -371,6 +371,39 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertIn(("connection", (True, True, True)), calls)
         self.assertIn(("register", ("future", "loop")), calls)
 
+    def test_open_cloud_control_app_runtime_forwards_security_callback(self):
+        callback = lambda parent: ("security", parent)
+        forwarded = []
+
+        result = open_cloud_control_app_runtime(
+            "root",
+            current_window=None,
+            get_settings=lambda: {
+                "enabled": False,
+                "auto_upload": False,
+                "url": "wss://example.test/ws/device",
+                "secret": "secret",
+                "reconnect_interval": 5,
+            },
+            status_var="status",
+            refresh_settings=lambda: None,
+            save_setting=lambda **_: None,
+            get_connection_state=lambda: (False, False, False),
+            register_current=lambda: None,
+            schedule_unregister=lambda _reason: None,
+            restart_control=lambda **_: None,
+            stop_control=lambda **_: None,
+            cloud_log=lambda _message: None,
+            sync_existing_window=lambda *_args: False,
+            set_window=lambda _win: None,
+            center_window="center",
+            open_security_settings=callback,
+            open_window_runtime=lambda *_args, **kwargs: forwarded.append(kwargs) or "window",
+        )
+
+        self.assertEqual(result, "window")
+        self.assertIs(forwarded[0]["open_security_settings"], callback)
+
     def test_open_cloud_control_values_app_runtime_builds_state(self):
         calls = []
 
@@ -623,6 +656,43 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "window")
         self.assertEqual(calls[0], False)
         self.assertNotIn("restart", calls)
+
+    def test_open_cloud_control_window_forwards_security_callback_to_dialog(self):
+        callback = lambda parent: ("security", parent)
+        forwarded = []
+
+        def fake_dialog(*_args, **kwargs):
+            forwarded.append(kwargs)
+            return "window"
+
+        with patch("sms_ui.cloud_control_window.open_cloud_control_window_dialog", side_effect=fake_dialog):
+            result = open_cloud_control_window_runtime(
+                "root",
+                None,
+                lambda: {
+                    "enabled": False,
+                    "auto_upload": False,
+                    "url": "wss://example.test/ws/device",
+                    "secret": "secret",
+                    "reconnect_interval": 5,
+                },
+                "status",
+                lambda: None,
+                lambda **_: object(),
+                lambda: (False, False, False),
+                lambda: None,
+                lambda _reason: None,
+                lambda **_: None,
+                lambda **_: None,
+                lambda *_: None,
+                lambda *_: False,
+                lambda *_: None,
+                "center",
+                open_security_settings=callback,
+            )
+
+        self.assertEqual(result, "window")
+        self.assertIs(forwarded[0]["open_security_settings"], callback)
 
 
 if __name__ == "__main__":

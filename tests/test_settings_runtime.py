@@ -9,16 +9,20 @@ from sms_ui.settings_runtime import (
     log_unmatched_status,
     open_call_filter_setting_runtime,
     open_keywords_setting_runtime,
+    open_security_settings_runtime,
     open_sms_font_dialog_runtime,
     open_voice_text_dialog_runtime,
     save_call_filter_list,
     save_call_filter_mode,
     save_keywords_config,
     save_log_unmatched_config,
+    save_cloud_sensitive_commands_config,
     save_ui_config_values,
+    toggle_call_popup_runtime,
     toggle_popup_runtime,
     toggle_voice_broadcast_runtime,
 )
+from sms_core.cloud_command_security import CLOUD_COMMAND_PERMISSION_SPECS
 
 
 class SettingsRuntimeTests(unittest.TestCase):
@@ -104,6 +108,54 @@ class SettingsRuntimeTests(unittest.TestCase):
         self.assertFalse(config.has_section("ui"))
         self.assertEqual(len(logs), 1)
         self.assertIn("配置保存失败", logs[0])
+
+    def test_save_cloud_sensitive_commands_config_defaults_to_cloud_section(self):
+        config = configparser.ConfigParser()
+        calls = []
+
+        self.assertTrue(save_cloud_sensitive_commands_config(
+            config,
+            True,
+            lambda: calls.append("saved"),
+        ))
+
+        self.assertFalse(config.getboolean("cloud_control", "allow_sensitive_commands"))
+        self.assertTrue(all(
+            config.getboolean("cloud_control", spec.option)
+            for spec in CLOUD_COMMAND_PERMISSION_SPECS
+        ))
+        self.assertEqual(calls, ["saved"])
+
+    def test_open_security_settings_runtime_saves_and_updates_state(self):
+        config = configparser.ConfigParser()
+        calls = []
+
+        def open_dialog(parent, permissions, on_change, center_window):
+            calls.append(("open", parent, permissions, center_window))
+            next_permissions = dict(permissions)
+            next_permissions["sms"] = True
+            self.assertTrue(on_change(next_permissions))
+            return "opened"
+
+        result = open_security_settings_runtime(
+            "root",
+            {},
+            config=config,
+            safe_save=lambda: calls.append("save"),
+            set_permissions=lambda value: calls.append(("permissions", value)),
+            system_ui=lambda *args: calls.append(("ui", args)),
+            center_window="center",
+            open_dialog=open_dialog,
+        )
+
+        self.assertEqual(result, "opened")
+        self.assertEqual(calls[0][0:2], ("open", "root"))
+        self.assertTrue(all(not value for value in calls[0][2].values()))
+        self.assertEqual(calls[0][3], "center")
+        self.assertEqual(calls[1], "save")
+        self.assertTrue(calls[2][1]["sms"])
+        self.assertEqual(calls[2][0], "permissions")
+        self.assertIn("1/12", calls[3][1][0])
 
     def test_save_helpers_log_save_errors(self):
         config = configparser.ConfigParser()
@@ -197,6 +249,41 @@ class SettingsRuntimeTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(config.get("ui", "popup_enabled"), "0")
+        self.assertEqual(states, [])
+
+    def test_toggle_call_popup_runtime_sets_state_and_saves(self):
+        config = configparser.ConfigParser()
+        calls = []
+
+        result = toggle_call_popup_runtime(
+            False,
+            config,
+            lambda: calls.append("save"),
+            lambda value: calls.append(("call_popup", value)),
+            lambda *args: calls.append(("ui", args)),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(config.get("ui", "call_popup_enabled"), "0")
+        self.assertEqual(calls[0], "save")
+        self.assertEqual(calls[1], ("call_popup", False))
+        self.assertIn("电话弹窗", calls[-1][1][0])
+
+    def test_toggle_call_popup_runtime_does_not_commit_on_save_failure(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {"call_popup_enabled": "1"}
+        states = []
+
+        result = toggle_call_popup_runtime(
+            False,
+            config,
+            lambda: False,
+            states.append,
+            lambda *_args: None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(config.get("ui", "call_popup_enabled"), "1")
         self.assertEqual(states, [])
 
     def test_open_voice_text_dialog_runtime_wires_preview_and_save(self):

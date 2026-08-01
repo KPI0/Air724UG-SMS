@@ -17,6 +17,7 @@ from sms_core.serial_debug import (
     SERIAL_DEBUG_MAX_STORE_LINES,
     SERIAL_DEBUG_MAX_VISIBLE_LINES,
     build_dial_command,
+    build_information_center_command,
     build_own_number_commands,
     build_pin_change_command,
     build_pin_lock_command,
@@ -24,6 +25,7 @@ from sms_core.serial_debug import (
     build_puk_unlock_command,
     build_serial_command_payload,
     build_sn_command,
+    normalize_information_center_number,
     normalize_dial_number,
     normalize_own_number,
     quick_command_label,
@@ -435,6 +437,7 @@ class CoreHelperTests(unittest.TestCase):
     def test_serial_debug_helpers(self):
         self.assertGreater(SERIAL_DEBUG_MAX_STORE_LINES, SERIAL_DEBUG_MAX_VISIBLE_LINES)
         self.assertIn(("AT", "\u6d4b\u8bd5\u901a\u4fe1"), COMMON_SERIAL_COMMANDS)
+        self.assertIn(("AT+CSCA?", "查信息中心号码"), COMMON_SERIAL_COMMANDS)
         self.assertEqual(quick_command_label("AT", "test"), "AT  (test)")
 
         payload, suffix = build_serial_command_payload("AT", append_crlf=True)
@@ -456,10 +459,34 @@ class CoreHelperTests(unittest.TestCase):
             build_own_number_commands("13123123123"),
             ('AT+CPBS="ON"', 'AT+CPBW=1,"+8613123123123",145', "AT+CNUM"),
         )
+        self.assertEqual(
+            build_information_center_command(" +8613800100500 "),
+            'AT+CSCA="+8613800100500",145',
+        )
+        self.assertEqual(
+            normalize_information_center_number(" +86 (1380) 010-0500 "),
+            "+8613800100500",
+        )
         self.assertEqual(build_sn_command("ABC123"), "AT+WISN=ABC123")
         self.assertEqual(normalize_dial_number("+8613123123123"), "13123123123")
         self.assertEqual(build_dial_command("13123123123"), "ATD13123123123;")
         self.assertEqual(HANGUP_COMMAND, "ATH")
+
+    def test_information_center_number_rejects_invalid_or_injected_values(self):
+        invalid_values = (
+            "",
+            "13800100500",
+            "+01234567",
+            "+123456",
+            "+1234567890123456",
+            '+8613800100500"',
+            "+8613800100500\r\nAT+RESET",
+            "+86ABC100500",
+        )
+        for value in invalid_values:
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError):
+                    build_information_center_command(value)
 
     def test_serial_sender_writes_command_and_sequence(self):
         serial_obj = self.FakeSerial()

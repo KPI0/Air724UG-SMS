@@ -117,8 +117,16 @@ def show_sms_popup_runtime(
 
     if popup_exists(current_popup):
         try:
+            try:
+                message_count = max(
+                    1,
+                    int(getattr(current_popup, "sms_popup_message_count", 1)),
+                ) + 1
+            except (TypeError, ValueError):
+                message_count = 2
             update_message = getattr(current_popup, "sms_popup_update")
-            update_message(message)
+            update_message(message, message_count)
+            current_popup.sms_popup_message_count = message_count
             return "updated"
         except Exception:
             try:
@@ -140,6 +148,7 @@ def show_sms_popup_runtime(
 
     try:
         popup = open_popup(parent, message, center_on_screen, close_popup)
+        popup.sms_popup_message_count = 1
         popup_holder["window"] = popup
         set_popup(popup)
         return "shown"

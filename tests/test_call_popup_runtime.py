@@ -130,6 +130,7 @@ class CallPopupRuntimeTests(unittest.TestCase):
         posted = []
         ring_timeout = []
         closed = []
+        handled = []
 
         def open_popup(parent, caller_num, center_window, on_answer, on_hangup, on_ignore, on_close):
             opened.update(
@@ -165,6 +166,7 @@ class CallPopupRuntimeTests(unittest.TestCase):
             posted.append,
             lambda: closed.append("closed"),
             ring_timeout.append,
+            lambda: handled.append("handled"),
             open_popup=open_popup,
             send_command_async=send_command_async,
         )
@@ -181,12 +183,14 @@ class CallPopupRuntimeTests(unittest.TestCase):
         self.assertEqual(ring_timeout, [-1.0])
         self.assertEqual(posted, [mark_connected])
         self.assertEqual(closed, ["closed", "closed", "closed"])
+        self.assertEqual(handled, ["handled", "handled"])
         self.assertTrue(port_messages)
         self.assertTrue(statuses)
 
     def test_show_call_popup_runtime_restores_buttons_on_command_failure(self):
         opened = {}
         posted = []
+        handled = []
 
         def open_popup(parent, caller_num, center_window, on_answer, on_hangup, on_ignore, on_close):
             opened.update(on_answer=on_answer, on_hangup=on_hangup)
@@ -208,6 +212,7 @@ class CallPopupRuntimeTests(unittest.TestCase):
             posted.append,
             lambda: None,
             lambda value: None,
+            lambda: handled.append("handled"),
             open_popup=open_popup,
             send_command_async=send_command_async,
         )
@@ -218,6 +223,7 @@ class CallPopupRuntimeTests(unittest.TestCase):
         opened["on_hangup"](restore_hangup)
 
         self.assertEqual(posted, [restore_answer, restore_hangup])
+        self.assertEqual(handled, ["handled", "handled"])
 
     def test_show_call_popup_app_runtime_posts_show_to_ui_thread(self):
         calls = []
@@ -246,6 +252,34 @@ class CallPopupRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[1][1][0], "root")
         self.assertEqual(calls[1][1][1], "10086")
         self.assertIs(calls[1][1][2], popup)
+
+    def test_show_call_popup_app_runtime_rechecks_setting_on_ui_thread(self):
+        queued = []
+        enabled = [True]
+        shown = []
+
+        result = show_call_popup_app_runtime(
+            parent="root",
+            caller_num="10086",
+            get_popup=lambda: None,
+            set_popup=lambda value: None,
+            center_window="center",
+            serial_lock="lock",
+            get_serial=lambda: "serial",
+            port_ui=lambda *_: None,
+            set_status=lambda *_: None,
+            ui_post="post",
+            close_popup=lambda: None,
+            set_ring_timeout=lambda value: None,
+            run_on_ui_thread=lambda callback, _ui_post: queued.append(callback),
+            is_enabled=lambda: enabled[0],
+            show_runtime=lambda *args: shown.append(args),
+        )
+
+        self.assertIsNone(result)
+        enabled[0] = False
+        self.assertEqual(queued[0](), "disabled")
+        self.assertEqual(shown, [])
 
 
 if __name__ == "__main__":

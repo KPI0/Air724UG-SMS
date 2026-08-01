@@ -14,10 +14,17 @@ from sms_core.serial_ports import choose_manual_rebind_candidate, manual_rebind_
 from sms_core.serial_reconnect import apply_serial_disconnect_effects
 from sms_ui.call_popup_namespace_runtime import (
     close_call_popup_namespace_runtime,
+    close_missed_call_popup_namespace_runtime,
+    finish_incoming_call_session_namespace_runtime,
     get_serial_call_state_namespace_runtime,
+    mark_incoming_call_handled_namespace_runtime,
+    reset_incoming_call_session_namespace_runtime,
     set_call_popup_namespace_runtime,
+    set_missed_call_popup_namespace_runtime,
     set_serial_call_state_namespace_runtime,
+    show_missed_call_popup_namespace_runtime,
     show_call_popup_namespace_runtime,
+    start_incoming_call_session_namespace_runtime,
 )
 from sms_ui.repeat_notice_runtime import emit_repeat_notice
 from sms_ui.serial_debug_namespace_runtime import push_serial_debug_namespace_runtime
@@ -82,7 +89,14 @@ def install_serial_namespace_bindings(namespace):
         "serial_error_ui": serial_error_ui,
         "set_call_popup": bind("set_call_popup_namespace_runtime"),
         "close_call_popup": bind("close_call_popup_namespace_runtime"),
+        "close_missed_call_popup": bind("close_missed_call_popup_namespace_runtime"),
         "show_call_popup": bind("show_call_popup_namespace_runtime"),
+        "set_missed_call_popup": bind("set_missed_call_popup_namespace_runtime"),
+        "show_missed_call_popup": bind("show_missed_call_popup_namespace_runtime"),
+        "start_incoming_call_session": bind("start_incoming_call_session_namespace_runtime"),
+        "mark_incoming_call_handled": bind("mark_incoming_call_handled_namespace_runtime"),
+        "finish_incoming_call_session": bind("finish_incoming_call_session_namespace_runtime"),
+        "reset_incoming_call_session": bind("reset_incoming_call_session_namespace_runtime"),
         "resolve_serial_target_port": bind("resolve_serial_target_port_namespace_runtime"),
         "open_and_initialize_serial": bind("open_and_initialize_serial_namespace_runtime"),
         "schedule_delayed_connected_log": bind("schedule_delayed_connected_log_namespace_runtime"),

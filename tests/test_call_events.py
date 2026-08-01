@@ -84,7 +84,7 @@ class CallEventTests(unittest.TestCase):
         )
         self.assertTrue(debounced.matched)
         self.assertFalse(debounced.should_notify)
-        self.assertEqual(debounced.last_clip_num, "10086")
+        self.assertEqual(debounced.last_clip_num, "")
 
     def test_connected_call_number_and_active_state(self):
         self.assertEqual(connected_call_number(' +CIEV: "CALL",1', "10086"), "10086")
@@ -153,6 +153,7 @@ class CallEventTests(unittest.TestCase):
             popup_active=False,
         )
         self.assertTrue(hangup.hangup_notify)
+        self.assertTrue(hangup.call_ended)
         self.assertEqual(hangup.state.ring_timeout_target, 0.0)
         self.assertEqual(hangup.state.last_clip_num, "")
 
@@ -167,6 +168,51 @@ class CallEventTests(unittest.TestCase):
         )
         self.assertEqual(connected.connected_number, "10086")
         self.assertEqual(connected.state.ring_timeout_target, 0.0)
+
+    def test_new_call_resets_hangup_debounce_generation(self):
+        incoming = handle_call_line(
+            '+CLIP: "10010",129',
+            CallState(last_hangup_time=10.0),
+            now=11.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+        ended = handle_call_line(
+            "NO CARRIER",
+            incoming.state,
+            now=12.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(incoming.state.last_hangup_time, 0.0)
+        self.assertTrue(ended.call_ended)
+        self.assertTrue(ended.hangup_notify)
+        self.assertEqual(ended.state.last_clip_num, "")
+
+    def test_debounced_hangup_still_marks_call_ended(self):
+        ended = handle_call_line(
+            "NO CARRIER",
+            CallState(
+                ring_timeout_target=20.0,
+                last_clip_num="10010",
+                last_hangup_time=9.0,
+            ),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertTrue(ended.call_ended)
+        self.assertFalse(ended.hangup_notify)
+        self.assertEqual(ended.state.ring_timeout_target, 0.0)
+        self.assertEqual(ended.state.last_clip_num, "")
 
 
 if __name__ == "__main__":

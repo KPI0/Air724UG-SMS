@@ -2,6 +2,11 @@ from dataclasses import dataclass
 import json
 
 from sms_core.cloud_auth import command_action, command_text
+from sms_core.cloud_command_security import (
+    cloud_command_batch_error,
+    cloud_command_control_char_error,
+    sensitive_cloud_command_decision,
+)
 
 
 JSON_OBJECT_REQUIRED_MESSAGE = "仅支持 JSON 对象消息，且必须携带 target_imei 和 secret/password"
@@ -140,8 +145,19 @@ def cloud_unknown_command_payload(action):
 
 def cloud_command_log_text(command, data):
     meta = data if isinstance(data, dict) else {}
-    if str(meta.get("sms_log") or "").strip().lower() == "suppress":
+    if cloud_command_batch_error(command):
+        return "云端 AT 指令（已拒绝：只允许单条指令）"
+    if cloud_command_control_char_error(command):
+        return "云端 AT 指令（已拒绝：包含不支持的控制字符）"
+    decision = sensitive_cloud_command_decision(command, meta)
+    if (
+        decision.category == "sms"
+        and str(meta.get("sms_log") or "").strip().lower() == "suppress"
+    ):
         return "短信PDU命令（已隐藏）"
+    reason = decision.reason
+    if reason:
+        return f"敏感指令（{reason}，内容已隐藏）"
     return str(command or "").strip()
 
 

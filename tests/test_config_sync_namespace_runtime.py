@@ -38,7 +38,11 @@ class FakeStopEvent:
 class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
     def make_namespace(self):
         config = configparser.ConfigParser(interpolation=None)
-        config["ui"] = {"popup_enabled": "1", "local_only": "old"}
+        config["ui"] = {
+            "popup_enabled": "1",
+            "call_popup_enabled": "1",
+            "local_only": "old",
+        }
         remember_config_snapshot(config)
         calls = []
         return {
@@ -47,6 +51,7 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "CONFIG_LOCK": threading.RLock(),
             "DEFAULT_VOICE_TEXT": "default voice",
             "POPUP_ENABLED": True,
+            "CALL_POPUP_ENABLED": True,
             "VOICE_ENABLED": True,
             "VOICE_TEXT": "old voice",
             "SMS_FONT_SIZE": 30,
@@ -59,10 +64,20 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "AUTO_LOG_CLEANUP": True,
             "LOG_RETENTION_DAYS": 30,
             "ALLOW_MULTI_INSTANCE": True,
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS": {
+                "sms": False,
+                "call": False,
+                "pin": False,
+                "puk": False,
+                "phone_number": False,
+                "sn": False,
+                "cell_location": False,
+            },
             "PORT": "COM1",
             "BAUD": 115200,
             "MODE": "Manual",
             "popup_var": FakeVar(True),
+            "call_popup_var": FakeVar(True),
             "multi_instance_var": FakeVar(True),
             "update_voice_menu_label": lambda: calls.append("voice_label"),
             "generate_alert_voice": lambda **kwargs: calls.append(("voice", kwargs)),
@@ -70,6 +85,8 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "schedule_auto_log_cleanup": lambda **kwargs: calls.append(("cleanup", kwargs)),
             "system_ui": lambda *args: calls.append(("ui", args)),
             "log_file_only": lambda message: calls.append(("log", message)),
+            "close_call_popup": lambda: calls.append("close_call_popup"),
+            "close_missed_call_popup": lambda: calls.append("close_missed_call_popup"),
             "calls": calls,
             "root": FakeRoot(),
             "tk_alive": lambda: True,
@@ -84,6 +101,7 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "ui": {
                 "voice_text": "new voice",
                 "popup_enabled": "0",
+                "call_popup_enabled": "0",
                 "auto_log_cleanup": "0",
                 "log_retention_days": "7",
                 "allow_multi_instance": "0",
@@ -115,6 +133,7 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             changed,
             (
                 "短信弹窗",
+                "电话弹窗",
                 "语音播报",
                 "语音内容",
                 "短信字体",
@@ -126,6 +145,10 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         )
         self.assertFalse(namespace["POPUP_ENABLED"])
         self.assertFalse(namespace["popup_var"].get())
+        self.assertFalse(namespace["CALL_POPUP_ENABLED"])
+        self.assertFalse(namespace["call_popup_var"].get())
+        self.assertIn("close_call_popup", namespace["calls"])
+        self.assertIn("close_missed_call_popup", namespace["calls"])
         self.assertFalse(namespace["VOICE_ENABLED"])
         self.assertEqual(namespace["VOICE_TEXT"], "new voice")
         self.assertEqual((namespace["SMS_FONT_SIZE"], namespace["SMS_FONT_COLOR"]), (24, "#123456"))
@@ -148,6 +171,7 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         self.assertIn("font", namespace["calls"])
         self.assertIn(("cleanup", {"restart": True, "first_delay_sec": 60}), namespace["calls"])
         self.assertTrue(any(call[0] == "ui" and "短信弹窗" in call[1][0] for call in namespace["calls"] if isinstance(call, tuple)))
+        self.assertTrue(any(call[0] == "ui" and "电话弹窗" in call[1][0] for call in namespace["calls"] if isinstance(call, tuple)))
 
     def test_reload_failure_preserves_existing_config_and_runtime(self):
         namespace = self.make_namespace()
@@ -168,6 +192,21 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         ]
         self.assertEqual(failure_logs, ["Reload shared UI config failed (ValueError)"])
         self.assertNotIn("invalid config", failure_logs[0])
+
+    def test_reload_syncs_cloud_sensitive_command_setting(self):
+        namespace = self.make_namespace()
+        snapshot = self.disk_snapshot()
+        snapshot["cloud_control"] = {"allow_sensitive_commands": "1"}
+
+        changed = reload_shared_ui_config_namespace_runtime(
+            namespace,
+            load_snapshot=lambda _path: snapshot,
+        )
+
+        self.assertIn("安全设置", changed)
+        self.assertTrue(all(
+            namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"].values()
+        ))
 
     def test_reload_repeated_failure_is_suppressed_and_success_logs_recovery(self):
         namespace = self.make_namespace()

@@ -1,5 +1,11 @@
 import json
 
+from sms_core.cloud_command_security import (
+    CLOUD_COMMAND_PERMISSION_SPECS,
+    LEGACY_PERMISSION_OPTIONS,
+    cloud_sensitive_commands_status,
+    normalize_cloud_command_permissions,
+)
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_ui.settings_dialogs import (
     open_call_filter_setting_dialog,
@@ -58,6 +64,62 @@ def save_ui_config_values(config, values, safe_save, *, log_error=None):
         safe_save,
         "Save UI config values failed",
         log_error,
+    )
+
+
+def save_cloud_sensitive_commands_config(config, permissions, safe_save, *, log_error=None):
+    snapshot = snapshot_config_section(config, "cloud_control")
+    try:
+        if not config.has_section("cloud_control"):
+            config["cloud_control"] = {}
+        normalized = normalize_cloud_command_permissions(permissions)
+        config.set("cloud_control", "allow_sensitive_commands", "0")
+        for option in LEGACY_PERMISSION_OPTIONS:
+            config.set("cloud_control", option, "0")
+        for spec in CLOUD_COMMAND_PERMISSION_SPECS:
+            config.set(
+                "cloud_control",
+                spec.option,
+                "1" if normalized[spec.category] else "0",
+            )
+        return _save_or_raise(safe_save)
+    except Exception as exc:
+        restore_config_section(config, "cloud_control", snapshot)
+        _safe_log(log_error, f"Save cloud command security config failed: {exc!r}")
+        return False
+
+
+def open_security_settings_runtime(
+    parent,
+    current_permissions,
+    *,
+    config,
+    safe_save,
+    set_permissions,
+    system_ui,
+    center_window,
+    open_dialog,
+    log_error=None,
+):
+    def change(permissions):
+        normalized = normalize_cloud_command_permissions(permissions)
+        if not save_cloud_sensitive_commands_config(
+            config,
+            normalized,
+            safe_save,
+            log_error=log_error,
+        ):
+            system_ui(_save_failed_status(), "normal")
+            return False
+        set_permissions(normalized)
+        system_ui("🔐 " + cloud_sensitive_commands_status(normalized), "normal")
+        return True
+
+    return open_dialog(
+        parent,
+        normalize_cloud_command_permissions(current_permissions),
+        change,
+        center_window,
     )
 
 
@@ -123,6 +185,10 @@ def popup_status(enabled):
     return "✅️ 短信弹窗：已开启" if enabled else "❌ 短信弹窗：已关闭"
 
 
+def call_popup_status(enabled):
+    return "✅️ 电话弹窗：已开启" if enabled else "❌ 电话弹窗：已关闭"
+
+
 def toggle_voice_broadcast_runtime(current_enabled, config, safe_save, set_enabled, update_label, system_ui, *, log_error=None):
     enabled = not bool(current_enabled)
     if save_ui_config_values(config, {"voice_enabled": "1" if enabled else "0"}, safe_save, log_error=log_error):
@@ -144,6 +210,29 @@ def toggle_popup_runtime(enabled, config, safe_save, set_enabled, system_ui, *, 
     else:
         system_ui(_save_failed_status(), "normal")
         return None
+
+
+def toggle_call_popup_runtime(
+    enabled,
+    config,
+    safe_save,
+    set_enabled,
+    system_ui,
+    *,
+    log_error=None,
+):
+    enabled = bool(enabled)
+    if save_ui_config_values(
+        config,
+        {"call_popup_enabled": "1" if enabled else "0"},
+        safe_save,
+        log_error=log_error,
+    ):
+        set_enabled(enabled)
+        system_ui(call_popup_status(enabled), "normal")
+        return enabled
+    system_ui(_save_failed_status(), "normal")
+    return None
 
 
 def toggle_multi_instance_runtime(

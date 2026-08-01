@@ -3,7 +3,10 @@ from sms_core.serial_runtime import (
     SerialRuntimeConfig,
     run_serial_runtime_thread,
 )
-from sms_core.serial_sender import DEFAULT_SMS_PDU_SEND_COORDINATOR
+from sms_core.serial_sender import (
+    DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+    DEFAULT_SMS_PDU_SEND_COORDINATOR,
+)
 from sms_core.status_text import format_connecting_status
 
 
@@ -42,6 +45,13 @@ def build_serial_runtime_callbacks(callbacks):
         observe_sms_send_line=callbacks.get(
             "observe_sms_send_line",
             lambda line: DEFAULT_SMS_PDU_SEND_COORDINATOR.observe_line(line),
+        ),
+        start_incoming_call=callbacks.get("start_incoming_call", lambda _caller_num: True),
+        finish_incoming_call=callbacks.get("finish_incoming_call", lambda: None),
+        reset_incoming_call=callbacks.get("reset_incoming_call", lambda: None),
+        show_missed_call_popup=callbacks.get(
+            "show_missed_call_popup",
+            lambda _missed_call: None,
         ),
     )
 
@@ -155,6 +165,13 @@ def build_serial_app_wiring(
         "close_call_popup": callbacks["close_call_popup"],
         "send_call_hangup": callbacks["send_call_hangup"],
         "show_call_popup": callbacks["show_call_popup"],
+        "start_incoming_call": callbacks.get("start_incoming_call", lambda _caller_num: True),
+        "finish_incoming_call": callbacks.get("finish_incoming_call", lambda: None),
+        "reset_incoming_call": callbacks.get("reset_incoming_call", lambda: None),
+        "show_missed_call_popup": callbacks.get(
+            "show_missed_call_popup",
+            lambda _missed_call: None,
+        ),
         "schedule_connected_log": callbacks["schedule_connected_log"],
         "serial_error_ui": callbacks["serial_error_ui"],
     }
@@ -225,12 +242,25 @@ def run_serial_reader_namespace_runtime(
         "SMS_SEND_COORDINATOR",
         DEFAULT_SMS_PDU_SEND_COORDINATOR,
     )
+    command_response_coordinator = namespace.get(
+        "SERIAL_COMMAND_RESPONSE_COORDINATOR",
+        DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+    )
 
     def observe_sms_send_line(line):
-        return sms_send_coordinator.observe_line(
+        connection = namespace.get("serial_obj")
+        sms_send_coordinator.observe_line(
             line,
-            connection=namespace.get("serial_obj"),
+            connection=connection,
         )
+        return command_response_coordinator.observe_line(
+            line,
+            connection=connection,
+        )
+
+    def cancel_serial_transactions(error="串口连接已断开"):
+        sms_send_coordinator.cancel_active(error)
+        return command_response_coordinator.cancel_active(error)
 
     return run_reader(
         parse_callback_head=parse_callback_head,
@@ -259,11 +289,27 @@ def run_serial_reader_namespace_runtime(
             "set_signal": namespace["set_signal"],
             "set_local_number": lambda value: namespace.__setitem__("LOCAL_NUMBER", value),
             "observe_sms_send_line": observe_sms_send_line,
-            "cancel_sms_send": lambda error="串口连接已断开": sms_send_coordinator.cancel_active(error),
+            "cancel_sms_send": cancel_serial_transactions,
             "set_status": namespace["set_status"],
             "close_call_popup": namespace["close_call_popup"],
             "send_call_hangup": namespace["send_call_hangup_command"],
             "show_call_popup": namespace["show_call_popup"],
+            "start_incoming_call": namespace.get(
+                "start_incoming_call_session",
+                lambda _caller_num: True,
+            ),
+            "finish_incoming_call": namespace.get(
+                "finish_incoming_call_session",
+                lambda: None,
+            ),
+            "reset_incoming_call": namespace.get(
+                "reset_incoming_call_session",
+                lambda: None,
+            ),
+            "show_missed_call_popup": namespace.get(
+                "show_missed_call_popup",
+                lambda _missed_call: None,
+            ),
             "schedule_connected_log": namespace["schedule_delayed_connected_log"],
             "serial_error_ui": namespace["serial_error_ui"],
         },

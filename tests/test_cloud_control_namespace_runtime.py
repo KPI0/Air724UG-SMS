@@ -83,6 +83,7 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
             "restart_cloud_control": lambda **kwargs: ("restart", kwargs),
             "sync_and_focus_existing_window": lambda win, attr, **kwargs: ("sync", win, attr, kwargs["log_error"]("sync log")),
             "center_window": lambda win: ("center", win),
+            "open_security_settings": lambda parent=None: ("security", parent),
             "_cloud_file_notice": "file_notice",
             "_cloud_main_notice": "main_notice",
             "_cloud_repeat_filter": lambda notice, message: f"{notice}:{message}",
@@ -282,6 +283,10 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         forwarded["set_window"]("next_window")
         self.assertEqual(namespace["cloud_control_win"], "next_window")
         self.assertEqual(forwarded["run_coroutine_threadsafe"]("coro", "loop"), ("future", "coro", "loop"))
+        self.assertEqual(
+            forwarded["open_security_settings"]("cloud_window"),
+            ("security", "cloud_window"),
+        )
         self.assertEqual(
             forwarded["sync_existing_window"]("win", "_sync"),
             ("sync", "win", "_sync", ("file", "sync log")),

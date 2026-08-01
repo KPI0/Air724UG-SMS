@@ -1,3 +1,6 @@
+from sms_core.cloud_command_security import CLOUD_COMMAND_PERMISSION_DEFAULTS
+
+
 DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
 
 DEFAULT_SERIAL_CONFIG = {
@@ -9,6 +12,7 @@ DEFAULT_SERIAL_CONFIG = {
 DEFAULT_UI_CONFIG = {
     "voice_enabled": "1",
     "popup_enabled": "1",
+    "call_popup_enabled": "1",
     "voice_text": DEFAULT_VOICE_TEXT,
     "allow_multi_instance": "0",
     "auto_log_cleanup": "1",
@@ -34,6 +38,8 @@ DEFAULT_CLOUD_CONTROL_CONFIG = {
     "device_secret": "",
     "reconnect_interval": "5",
     "auto_upload": "0",
+    "allow_sensitive_commands": "0",
+    **CLOUD_COMMAND_PERMISSION_DEFAULTS,
 }
 
 THIRD_PUSH_SMS_TEMPLATE = "{msg}\n\n发件号码：{sender}\n本机号码：{local_number}\n时间：{sms_time}"

@@ -1,5 +1,15 @@
 import json
+import re
 
+from sms_core.cloud_command_security import (
+    CLOUD_SEND_SMS_TRANSACTION_COMMAND,
+    CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND,
+    cloud_command_batch_error,
+    cloud_command_control_char_error,
+    cloud_sensitive_command_block_message,
+    is_sensitive_cloud_command_allowed,
+    sensitive_cloud_command_decision,
+)
 from sms_core.cloud_messages import (
     attach_cloud_task_ids,
     cloud_auth_failed_payload,
@@ -9,7 +19,42 @@ from sms_core.cloud_messages import (
     parse_cloud_message,
 )
 from sms_core.cloud_protocol import auth_status_from_ack
-from sms_core.cloud_security import HIDDEN_SMS_COMMAND, HIDDEN_SMS_META, safe_preview
+from sms_core.cloud_security import (
+    HIDDEN_SENSITIVE_COMMAND,
+    HIDDEN_SMS_COMMAND,
+    HIDDEN_SMS_META,
+    safe_preview,
+)
+
+
+CLOUD_SMS_PHONE_RE = re.compile(r"(?:\+\d{7,15}|\d{3,20})\Z")
+CLOUD_OWN_NUMBER_RE = re.compile(r"\+[1-9]\d{6,14}\Z")
+CLOUD_SMS_MESSAGE_MAX_LENGTH = 70
+
+
+def _cloud_transaction_parameters(command, command_meta):
+    meta = command_meta if isinstance(command_meta, dict) else {}
+    normalized_command = str(command or "").strip().upper()
+    if normalized_command == CLOUD_SEND_SMS_TRANSACTION_COMMAND:
+        phone = str(meta.get("sms_phone") or "").strip()
+        message = str(meta.get("sms_message") or "")
+        if not CLOUD_SMS_PHONE_RE.fullmatch(phone):
+            return None, "短信接收号码格式不正确"
+        if len(message) > CLOUD_SMS_MESSAGE_MAX_LENGTH:
+            return None, f"短信正文不能超过 {CLOUD_SMS_MESSAGE_MAX_LENGTH} 个字符"
+        return (phone, message), ""
+    if normalized_command == CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND:
+        phone = str(meta.get("own_number") or "").strip()
+        if not CLOUD_OWN_NUMBER_RE.fullmatch(phone):
+            return None, "本机号码格式不正确"
+        return (phone,), ""
+    return (), ""
+
+
+def _cloud_transaction_result(result, fallback_error):
+    if hasattr(result, "ok"):
+        return bool(result.ok), str(getattr(result, "error", "") or fallback_error)
+    return bool(result), "" if result else fallback_error
 
 
 async def send_cloud_register_runtime(
@@ -93,17 +138,73 @@ def send_cloud_serial_command_runtime(
     push_serial_debug,
     port_ui=None,
     log,
+    allow_sensitive_commands=False,
+    send_sms_transaction=None,
+    set_own_number_transaction=None,
 ):
-    cmd = str(command or "").strip()
+    raw_command = str(command or "")
+    batch_error = cloud_command_batch_error(raw_command)
+    if batch_error:
+        return False, batch_error
+    control_error = cloud_command_control_char_error(raw_command)
+    if control_error:
+        return False, control_error
+
+    cmd = raw_command.strip()
     if not cmd:
         return False, "AT 指令不能为空"
 
+    sensitive_decision = sensitive_cloud_command_decision(cmd, command_meta)
+    sensitive_reason = sensitive_decision.reason
     try:
         display_cmd = _cloud_command_display_text(cmd, command_meta)
+        if sensitive_reason and not is_sensitive_cloud_command_allowed(
+            sensitive_decision,
+            allow_sensitive_commands,
+        ):
+            info = cloud_sensitive_command_block_message(sensitive_reason)
+            try:
+                log(info, show_main=True)
+            except TypeError:
+                log(info)
+            return False, info
+
+        transaction_parameters, transaction_error = _cloud_transaction_parameters(
+            cmd,
+            command_meta,
+        )
+        if transaction_error:
+            return False, transaction_error
+        normalized_command = cmd.upper()
+        if normalized_command == CLOUD_SEND_SMS_TRANSACTION_COMMAND:
+            if not callable(send_sms_transaction):
+                return False, "客户端未配置云端短信事务执行器"
+            ok, error = _cloud_transaction_result(
+                send_sms_transaction(*transaction_parameters),
+                "短信发送失败，Modem 未确认发送成功",
+            )
+            if not ok:
+                return False, error
+            log("云端短信事务执行成功")
+            return True, "短信发送成功"
+        if normalized_command == CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND:
+            if not callable(set_own_number_transaction):
+                return False, "客户端未配置本机号码修改事务执行器"
+            ok, error = _cloud_transaction_result(
+                set_own_number_transaction(*transaction_parameters),
+                "修改本机号码失败，事务已停止",
+            )
+            if not ok:
+                return False, error
+            log("云端本机号码修改事务执行成功")
+            return True, "本机号码修改成功"
+
         with serial_lock:
             serial_obj = get_serial()
         result = write_command_result(serial_obj, cmd)
         if not result.ok:
+            if sensitive_reason:
+                return False, "敏感指令执行失败（指令内容已隐藏，Modem 未确认成功）"
             return False, result.error
 
         try:
@@ -118,16 +219,27 @@ def send_cloud_serial_command_runtime(
         except Exception:
             pass
 
-        log(f"已向串口发送：{display_cmd}")
-        return True, f"已发送：{display_cmd}"
+        log(f"云端指令执行成功：{display_cmd}")
+        return True, f"执行成功：{display_cmd}"
     except Exception as exc:
-        return False, f"发送失败：{exc}"
+        if sensitive_reason:
+            return False, f"敏感指令执行失败（指令内容已隐藏）：{type(exc).__name__}"
+        return False, f"执行失败：{exc}"
 
 
 def _cloud_command_display_text(cmd, command_meta):
+    if cloud_command_batch_error(cmd):
+        return "云端 AT 指令（已拒绝：只允许单条指令）"
     meta = command_meta if isinstance(command_meta, dict) else {}
-    if str(meta.get("sms_log") or "").strip().lower() == "suppress":
+    decision = sensitive_cloud_command_decision(cmd, meta)
+    if (
+        decision.category == "sms"
+        and str(meta.get("sms_log") or "").strip().lower() == "suppress"
+    ):
         return HIDDEN_SMS_COMMAND
+    reason = decision.reason
+    if reason:
+        return f"敏感指令（{reason}，内容已隐藏）"
     return str(cmd or "").strip()
 
 
@@ -138,21 +250,50 @@ def cloud_incoming_preview(incoming):
 
     masked = dict(data)
     sms_log = str(masked.get("sms_log") or "").strip().lower()
-    if sms_log == "suppress":
+    command = next(
+        (
+            masked.get(key)
+            for key in ("command", "data", "cmd")
+            if isinstance(masked.get(key), (str, bytes)) and str(masked.get(key)).strip()
+        ),
+        "",
+    )
+    sensitive_decision = sensitive_cloud_command_decision(command, masked)
+    sensitive_reason = sensitive_decision.reason
+    if cloud_command_batch_error(command):
+        for key in ("cmd", "command", "data"):
+            if key in masked:
+                masked[key] = "云端 AT 指令（已隐藏：包含多条指令）"
+    elif cloud_command_control_char_error(command):
+        for key in ("cmd", "command", "data"):
+            if key in masked:
+                masked[key] = "云端 AT 指令（已隐藏：包含不支持的控制字符）"
+    elif sensitive_decision.category == "sms" and sms_log == "suppress":
         for key in ("cmd", "command", "data"):
             if key in masked:
                 masked[key] = HIDDEN_SMS_COMMAND
+    elif sensitive_reason:
+        for key in ("cmd", "command", "data"):
+            if key in masked:
+                masked[key] = HIDDEN_SENSITIVE_COMMAND
 
-    if sms_log in ("summary", "suppress") or str(masked.get("command_kind") or "") == "send_sms":
+    if sensitive_decision.category == "sms" and (
+        sms_log in ("summary", "suppress")
+        or str(masked.get("command_kind") or "") == "send_sms"
+    ):
         for key in ("sms_phone", "sms_message"):
             if key in masked:
                 masked[key] = HIDDEN_SMS_META
+    if sensitive_decision.category == "phone_number" and "own_number" in masked:
+        masked["own_number"] = HIDDEN_SENSITIVE_COMMAND
 
     return safe_preview(json.dumps(masked, ensure_ascii=False))
 
 
 def _log_cloud_command_to_port(port_ui, cmd, command_meta):
     meta = command_meta if isinstance(command_meta, dict) else {}
+    if sensitive_cloud_command_decision(cmd, meta).category != "sms":
+        return
     sms_log = str(meta.get("sms_log") or "").strip().lower()
     if sms_log == "suppress":
         return

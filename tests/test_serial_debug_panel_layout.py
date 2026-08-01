@@ -90,6 +90,38 @@ class SerialDebugPanelLayoutTests(unittest.TestCase):
             any(call.get("command") == serial_text.xview for call in horizontal.config_calls)
         )
 
+    def test_information_center_action_follows_own_number_action(self):
+        buttons = []
+
+        def make_button(parent=None, **kwargs):
+            widget = FakeWidget(parent, **kwargs)
+            buttons.append(widget)
+            return widget
+
+        quick_button = FakeWidget()
+        with patch.object(serial_debug_panel.ttk, "Button", side_effect=make_button):
+            serial_debug_panel.create_serial_debug_quick_actions(
+                "parent",
+                "enabled_var",
+                FakeWidget(),
+                FakeWidget(),
+                quick_button,
+                lambda _command: None,
+                lambda _commands: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+            )
+
+        labels = [button.kwargs.get("text") for button in buttons]
+        own_number_index = labels.index("修改本机号码 ☎")
+        self.assertEqual(
+            labels[own_number_index + 1],
+            "修改信息中心号码 ✉️",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

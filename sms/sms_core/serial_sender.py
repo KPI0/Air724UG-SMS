@@ -21,6 +21,13 @@ class SmsPduSendResponse:
     line: str = ""
 
 
+@dataclass(frozen=True)
+class AtCommandResponse:
+    ok: bool
+    error: str = ""
+    line: str = ""
+
+
 SERIAL_LOG_PREFIX_RE = re.compile(
     r"^\s*\[[IWE]\]-\[(?P<source>[^\]]+)\]\s*(?P<body>.*?)\s*$"
 )
@@ -37,6 +44,7 @@ TRUSTED_MODEM_LOG_SOURCE = "ril.proatc"
 TRUSTED_CMGS_RESULT_SOURCE = "lib_sms rsp"
 SMS_PDU_SEND_DEFAULT_TIMEOUT = 45.0
 SMS_PDU_PROMPT_TIMEOUT = 10.0
+AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT = 10.0
 DEFAULT_SERIAL_TRANSACTION_LOCK = threading.RLock()
 DEFAULT_SERIAL_WRITE_LOCK = threading.RLock()
 _UNSET_CONNECTION = object()
@@ -180,7 +188,89 @@ class SmsPduSendCoordinator:
         return True
 
 
+class AtCommandResponseWaiter:
+    def __init__(self, command="", connection=None):
+        self.command = str(command or "").strip()
+        self.connection = connection
+        self._event = threading.Event()
+        self._lock = threading.RLock()
+        self._response = None
+
+    def wait(self, timeout):
+        if self._event.wait(float(timeout)):
+            with self._lock:
+                return self._response or AtCommandResponse(False, "AT 指令执行结果未知")
+        return AtCommandResponse(False, "等待 Modem 指令响应超时")
+
+    def cancel(self, error="AT 指令执行已取消"):
+        self._complete(AtCommandResponse(False, str(error or "AT 指令执行已取消")))
+
+    def observe_line(self, line):
+        body = _modem_response_body(line)
+        if not body or not _is_trusted_modem_line(line, body):
+            return
+
+        upper = body.upper()
+        if upper == "ERROR" or MODEM_ERROR_RE.fullmatch(body):
+            self._complete(AtCommandResponse(False, body, str(line or "")))
+            return
+        if _response_has_final_ok(upper):
+            self._complete(AtCommandResponse(True, "", str(line or "")))
+
+    def done(self):
+        return self._event.is_set()
+
+    def _complete(self, response):
+        with self._lock:
+            if self._event.is_set():
+                return
+            self._response = response
+            self._event.set()
+
+
+class AtCommandResponseCoordinator:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = None
+
+    def begin(self, command="", connection=None):
+        waiter = AtCommandResponseWaiter(command, connection=connection)
+        with self._lock:
+            if self._active is not None and not self._active.done():
+                waiter.cancel("已有 AT 指令正在等待 Modem 响应")
+                return waiter
+            self._active = waiter
+        return waiter
+
+    def observe_line(self, line, connection=_UNSET_CONNECTION):
+        with self._lock:
+            waiter = self._active
+        if (
+            waiter is not None
+            and waiter.connection is not None
+            and connection is not _UNSET_CONNECTION
+            and waiter.connection is not connection
+        ):
+            return
+        if waiter is not None:
+            waiter.observe_line(line)
+
+    def finish(self, waiter):
+        with self._lock:
+            if self._active is waiter:
+                self._active = None
+
+    def cancel_active(self, error="AT 指令执行已取消"):
+        with self._lock:
+            waiter = self._active
+        if waiter is None or waiter.done():
+            return False
+        waiter.cancel(error)
+        return True
+
+
 DEFAULT_SMS_PDU_SEND_COORDINATOR = SmsPduSendCoordinator()
+DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR = AtCommandResponseCoordinator()
 DEFAULT_SMS_SEND_THREAD_REGISTRY = WorkerThreadRegistry()
 DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY = WorkerThreadRegistry()
 
@@ -590,6 +680,84 @@ def write_serial_command_sequence_locked(
         return True
 
 
+def _write_confirmed_command_locked(
+    serial_lock,
+    get_serial,
+    transaction_serial,
+    command,
+    response_coordinator,
+    response_timeout,
+    push_debug=None,
+):
+    if response_coordinator is None:
+        return SerialCommandResult(False, "未配置 AT 指令响应确认器")
+    try:
+        waiter = response_coordinator.begin(
+            command=command,
+            connection=transaction_serial,
+        )
+    except Exception as exc:
+        return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
+
+    result = _write_bytes_locked(
+        serial_lock,
+        get_serial,
+        (command + "\r\n").encode("utf-8"),
+        f">>> 发送: {command}\\r\\n" if push_debug else None,
+        push_debug,
+        expected_serial=transaction_serial,
+    )
+    if not result.ok:
+        try:
+            waiter.cancel(result.error)
+        except Exception:
+            pass
+        response_coordinator.finish(waiter)
+        return result
+
+    try:
+        response = waiter.wait(response_timeout)
+    except Exception as exc:
+        response = AtCommandResponse(False, str(exc) or exc.__class__.__name__)
+    finally:
+        response_coordinator.finish(waiter)
+    return SerialCommandResult(bool(response.ok), str(response.error or ""))
+
+
+def write_serial_command_sequence_confirmed_locked(
+    serial_lock,
+    get_serial,
+    commands,
+    *,
+    response_coordinator,
+    response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+    push_debug=None,
+):
+    commands = [str(command or "").strip() for command in commands or ()]
+    if not commands or any(not command for command in commands):
+        return SerialCommandResult(False, "AT 指令序列不能为空")
+
+    with DEFAULT_SERIAL_TRANSACTION_LOCK:
+        with serial_lock:
+            transaction_serial = get_serial()
+        if not _is_serial_open(transaction_serial):
+            return SerialCommandResult(False, "串口未连接")
+
+        for command in commands:
+            result = _write_confirmed_command_locked(
+                serial_lock,
+                get_serial,
+                transaction_serial,
+                command,
+                response_coordinator,
+                response_timeout,
+                push_debug,
+            )
+            if not result.ok:
+                return result
+    return SerialCommandResult(True)
+
+
 def write_text_sms_pdu_locked(
     serial_lock,
     get_serial,
@@ -599,6 +767,7 @@ def write_text_sms_pdu_locked(
     port_ui=None,
     sleep_func=time.sleep,
     response_coordinator=None,
+    command_response_coordinator=None,
     segment_timeout=SMS_PDU_SEND_DEFAULT_TIMEOUT,
     prompt_timeout=None,
 ):
@@ -624,19 +793,31 @@ def write_text_sms_pdu_locked(
                 return False
 
             command = "AT+CMGF=0"
-            result = _write_bytes_locked(
-                serial_lock,
-                get_serial,
-                (command + "\r\n").encode("utf-8"),
-                f">>> 发送: {command}\\r\\n",
-                push_debug,
-                expected_serial=transaction_serial,
-            )
+            if command_response_coordinator is not None:
+                result = _write_confirmed_command_locked(
+                    serial_lock,
+                    get_serial,
+                    transaction_serial,
+                    command,
+                    command_response_coordinator,
+                    min(float(segment_timeout), AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT),
+                    push_debug,
+                )
+            else:
+                result = _write_bytes_locked(
+                    serial_lock,
+                    get_serial,
+                    (command + "\r\n").encode("utf-8"),
+                    f">>> 发送: {command}\\r\\n",
+                    push_debug,
+                    expected_serial=transaction_serial,
+                )
             if not result.ok:
                 if port_ui:
                     port_ui(f"❌ 发送短信失败：{result.error}", "normal")
                 return False
-            sleep_func(0.3)
+            if command_response_coordinator is None:
+                sleep_func(0.3)
 
             for index, (pdu_str, cmgs_len) in enumerate(pdus, start=1):
                 suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""

@@ -80,6 +80,32 @@ class CallPopupTests(unittest.TestCase):
         self.assertIs(result, window)
         self.assertEqual(events, ["withdraw", "center", "deiconify", "lift"])
 
+    def test_third_action_is_labeled_as_hide(self):
+        events = []
+        buttons = []
+        window = FakeWindow(events)
+
+        class FakeButton(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                buttons.append(self)
+
+        with patch("sms_ui.call_popup.tk.Toplevel", return_value=window), \
+                patch("sms_ui.call_popup.ttk.Frame", FakeWidget), \
+                patch("sms_ui.call_popup.tk.Label", FakeWidget), \
+                patch("sms_ui.call_popup.ttk.Button", FakeButton):
+            open_call_popup(
+                object(),
+                "10086",
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda: None,
+                lambda: None,
+            )
+
+        self.assertEqual(buttons[2].kwargs["text"], "隐藏")
+
 
 if __name__ == "__main__":
     unittest.main()

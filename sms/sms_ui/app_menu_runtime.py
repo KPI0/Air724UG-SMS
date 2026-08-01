@@ -5,6 +5,7 @@ def build_main_menu_runtime(
     is_autostart_enabled,
     allow_multi_instance,
     popup_var,
+    call_popup_var,
     commands,
 ):
     menu_bar = tk_module.Menu(root)
@@ -42,6 +43,11 @@ def build_main_menu_runtime(
         label="短信弹窗",
         variable=popup_var,
         command=commands["toggle_popup"],
+    )
+    settings_menu.add_checkbutton(
+        label="电话弹窗",
+        variable=call_popup_var,
+        command=commands["toggle_call_popup"],
     )
     settings_menu.add_separator()
     settings_menu.add_command(label="日志清理", command=commands["open_log_cleanup_dialog"])

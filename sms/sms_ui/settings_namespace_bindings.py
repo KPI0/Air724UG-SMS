@@ -3,6 +3,7 @@ from sms_ui.settings_namespace_runtime import (
     open_call_filter_setting_namespace_runtime,
     open_desktop_shortcut_dialog_namespace_runtime,
     open_keywords_setting_namespace_runtime,
+    open_security_settings_namespace_runtime,
     open_serial_setting_namespace_runtime,
     open_sms_font_dialog_namespace_runtime,
     open_voice_text_dialog_namespace_runtime,
@@ -41,6 +42,11 @@ def install_settings_namespace_bindings(namespace):
             log_error=namespace.get("log_file_only"),
         )
 
+    def open_security_settings(parent=None):
+        if parent is None:
+            return open_security_settings_namespace_runtime(namespace)
+        return open_security_settings_namespace_runtime(namespace, parent)
+
     namespace.update({
         "save_voice_text_setting": save_voice_text_setting,
         "open_sms_font_dialog": bind("open_sms_font_dialog_namespace_runtime"),
@@ -49,6 +55,7 @@ def install_settings_namespace_bindings(namespace):
         "open_desktop_shortcut_dialog": bind("open_desktop_shortcut_dialog_namespace_runtime"),
         "open_keywords_setting": bind("open_keywords_setting_namespace_runtime"),
         "open_call_filter_setting": bind("open_call_filter_setting_namespace_runtime"),
+        "open_security_settings": open_security_settings,
         "update_voice_menu_label": update_voice_menu_label,
         "save_voice_setting": save_voice_setting,
     })

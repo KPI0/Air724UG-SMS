@@ -218,6 +218,7 @@ def open_cloud_control_app_runtime(
     sync_existing_window,
     set_window,
     center_window,
+    open_security_settings=None,
     open_window_runtime=open_cloud_control_window_runtime,
 ):
     def current_state():
@@ -240,7 +241,7 @@ def open_cloud_control_app_runtime(
             run_coroutine_threadsafe,
         )
 
-    return open_window_runtime(
+    runtime_args = (
         parent,
         current_window,
         current_state,
@@ -256,6 +257,12 @@ def open_cloud_control_app_runtime(
         sync_existing_window,
         set_window,
         center_window,
+    )
+    if open_security_settings is None:
+        return open_window_runtime(*runtime_args)
+    return open_window_runtime(
+        *runtime_args,
+        open_security_settings=open_security_settings,
     )
 
 
@@ -285,6 +292,7 @@ def open_cloud_control_values_app_runtime(
     sync_existing_window,
     set_window,
     center_window,
+    open_security_settings=None,
     open_window_runtime=open_cloud_control_window_runtime,
     settings_provider=None,
 ):
@@ -315,5 +323,6 @@ def open_cloud_control_values_app_runtime(
         sync_existing_window=sync_existing_window,
         set_window=set_window,
         center_window=center_window,
+        open_security_settings=open_security_settings,
         open_window_runtime=open_window_runtime,
     )

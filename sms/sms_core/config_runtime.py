@@ -22,6 +22,7 @@ class ConfigInitializationError(RuntimeError):
 class StartupConfigValues:
     voice_text: str
     popup_enabled: bool
+    call_popup_enabled: bool
     auto_log_cleanup: bool
     log_retention_days: int
     allow_multi_instance: bool
@@ -373,6 +374,12 @@ def read_startup_config_values(
         lambda: config.getboolean("ui", "popup_enabled", fallback=True),
         log_error,
     )
+    call_popup_enabled = _read_config_value(
+        "ui.call_popup_enabled",
+        True,
+        lambda: config.getboolean("ui", "call_popup_enabled", fallback=True),
+        log_error,
+    )
     auto_log_cleanup = _read_config_value(
         "ui.auto_log_cleanup",
         True,
@@ -462,6 +469,7 @@ def read_startup_config_values(
     return StartupConfigValues(
         voice_text=voice_text,
         popup_enabled=popup_enabled,
+        call_popup_enabled=call_popup_enabled,
         auto_log_cleanup=auto_log_cleanup,
         log_retention_days=log_retention_days,
         allow_multi_instance=allow_multi_instance,

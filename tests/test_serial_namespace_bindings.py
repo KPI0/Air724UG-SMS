@@ -42,7 +42,14 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
             "serial_error_ui",
             "set_call_popup",
             "close_call_popup",
+            "close_missed_call_popup",
             "show_call_popup",
+            "set_missed_call_popup",
+            "show_missed_call_popup",
+            "start_incoming_call_session",
+            "mark_incoming_call_handled",
+            "finish_incoming_call_session",
+            "reset_incoming_call_session",
             "resolve_serial_target_port",
             "open_and_initialize_serial",
             "schedule_delayed_connected_log",
@@ -79,6 +86,7 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
                 patch.object(bindings, "try_rebind_manual_port_namespace_runtime", return_value=True) as rebind, \
                 patch.object(bindings, "set_call_popup_namespace_runtime", return_value="set") as set_popup, \
                 patch.object(bindings, "close_call_popup_namespace_runtime", return_value="closed") as close_popup, \
+                patch.object(bindings, "close_missed_call_popup_namespace_runtime", return_value="missed-closed") as close_missed_popup, \
                 patch.object(bindings, "show_call_popup_namespace_runtime", return_value="shown") as show_popup, \
                 patch.object(bindings, "resolve_serial_target_port_namespace_runtime", return_value="COM1") as resolve, \
                 patch.object(bindings, "open_and_initialize_serial_namespace_runtime", return_value="serial") as open_serial, \
@@ -89,6 +97,7 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
             self.assertTrue(namespace["try_rebind_manual_port"]("changed"))
             self.assertEqual(namespace["set_call_popup"]("win"), "set")
             self.assertEqual(namespace["close_call_popup"](), "closed")
+            self.assertEqual(namespace["close_missed_call_popup"](), "missed-closed")
             self.assertEqual(namespace["show_call_popup"]("10086"), "shown")
             self.assertEqual(namespace["resolve_serial_target_port"](), "COM1")
             self.assertEqual(namespace["open_and_initialize_serial"]("COM1"), "serial")
@@ -100,6 +109,7 @@ class SerialNamespaceBindingsTests(unittest.TestCase):
         rebind.assert_called_once_with(namespace, "changed")
         set_popup.assert_called_once_with(namespace, "win")
         close_popup.assert_called_once_with(namespace)
+        close_missed_popup.assert_called_once_with(namespace)
         show_popup.assert_called_once_with(namespace, "10086")
         resolve.assert_called_once_with(namespace)
         open_serial.assert_called_once_with(namespace, "COM1")

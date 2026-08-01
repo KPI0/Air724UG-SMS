@@ -61,6 +61,7 @@ def show_call_popup_runtime(
     ui_post,
     close_popup,
     set_ring_timeout,
+    mark_call_handled=lambda: None,
     *,
     open_popup=open_call_popup,
     send_command_async=send_command_with_result_async,
@@ -69,7 +70,15 @@ def show_call_popup_runtime(
     if popup_exists(current_popup, log_error=log_error):
         return current_popup
 
+    def mark_handled():
+        try:
+            mark_call_handled()
+        except Exception as exc:
+            _safe_log(log_error, f"Mark incoming call handled failed: {exc!r}")
+
     def answer(mark_connected, restore_answer):
+        mark_handled()
+
         def on_result(result):
             apply_call_answer_result(
                 result,
@@ -88,6 +97,8 @@ def show_call_popup_runtime(
         send_command_async(serial_lock, serial_getter, "ATA", **kwargs)
 
     def hangup(restore_hangup):
+        mark_handled()
+
         def on_result(result):
             apply_call_hangup_result(
                 result,
@@ -130,10 +141,14 @@ def show_call_popup_app_runtime(
     close_popup,
     set_ring_timeout,
     run_on_ui_thread,
+    is_enabled=lambda: True,
+    mark_call_handled=lambda: None,
     log_error=None,
     show_runtime=show_call_popup_runtime,
 ):
     def show_on_ui():
+        if not is_enabled():
+            return "disabled"
         args = (
             parent,
             caller_num,
@@ -147,6 +162,7 @@ def show_call_popup_app_runtime(
             ui_post,
             close_popup,
             set_ring_timeout,
+            mark_call_handled,
         )
         if log_error is None:
             return show_runtime(*args)

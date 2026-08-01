@@ -48,6 +48,7 @@ class CallLineDecision:
     block_reason: str = ""
     incoming_number: str = ""
     show_popup_number: str = ""
+    call_ended: bool = False
     hangup_notify: bool = False
     connected_number: str = ""
     stop_processing: bool = False
@@ -138,7 +139,7 @@ def handle_hangup_line(
         should_notify=should_notify,
         ring_timeout_target=0.0,
         current_dial_num="",
-        last_clip_num="" if should_notify else last_clip_num,
+        last_clip_num="",
         last_hangup_time=now if should_notify else last_hangup_time,
     )
 
@@ -182,6 +183,7 @@ def handle_call_line(
         if clip.new_clip:
             next_state.last_clip_num = clip.last_clip_num
             next_state.last_clip_time = clip.last_clip_time
+            next_state.last_hangup_time = 0.0
             decision.push_message = call_push_message(clip.caller_num, clip.blocked, clip.block_reason)
 
         if clip.blocked:
@@ -211,12 +213,13 @@ def handle_call_line(
         now,
     )
     if hangup.matched:
+        decision.call_ended = True
         next_state.ring_timeout_target = hangup.ring_timeout_target
         next_state.current_dial_num = hangup.current_dial_num
+        next_state.last_clip_num = hangup.last_clip_num
         if hangup.should_notify:
             decision.hangup_notify = True
             next_state.last_hangup_time = hangup.last_hangup_time
-            next_state.last_clip_num = hangup.last_clip_num
 
     connected_num = connected_call_number(line, next_state.current_dial_num)
     if connected_num:

@@ -3,6 +3,7 @@ from sms_ui.serial_settings_runtime import open_serial_setting_runtime
 from sms_ui.settings_runtime import (
     open_call_filter_setting_runtime,
     open_keywords_setting_runtime,
+    open_security_settings_runtime,
     open_sms_font_dialog_runtime,
     open_voice_text_dialog_runtime,
 )
@@ -46,6 +47,28 @@ def open_voice_text_dialog_namespace_runtime(
         system_ui=namespace["system_ui"],
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_voice_text_dialog"],
+        log_error=namespace.get("log_file_only"),
+    )
+
+
+def open_security_settings_namespace_runtime(
+    namespace,
+    parent=None,
+    *,
+    open_setting_runtime=open_security_settings_runtime,
+):
+    return open_setting_runtime(
+        parent if parent is not None else namespace["root"],
+        namespace.get("CLOUD_SENSITIVE_COMMAND_PERMISSIONS", {}),
+        config=namespace["config"],
+        safe_save=namespace["safe_save_config"],
+        set_permissions=lambda permissions: namespace.__setitem__(
+            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
+            dict(permissions),
+        ),
+        system_ui=namespace["system_ui"],
+        center_window=namespace["center_window"],
+        open_dialog=namespace["_ui_open_security_settings_dialog"],
         log_error=namespace.get("log_file_only"),
     )
 
