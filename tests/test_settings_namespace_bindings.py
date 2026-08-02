@@ -62,7 +62,6 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
             self.assertEqual(namespace["open_keywords_setting"](), "keywords")
             self.assertEqual(namespace["open_call_filter_setting"](), "filter")
             self.assertEqual(namespace["open_security_settings"](), "security")
-            self.assertEqual(namespace["open_security_settings"]("cloud_window"), "security")
 
         font.assert_called_once_with(namespace)
         voice.assert_called_once_with(namespace)
@@ -70,10 +69,7 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
         shortcut.assert_called_once_with(namespace)
         keywords.assert_called_once_with(namespace)
         filter_dialog.assert_called_once_with(namespace)
-        self.assertEqual(
-            security.call_args_list,
-            [unittest.mock.call(namespace), unittest.mock.call(namespace, "cloud_window")],
-        )
+        security.assert_called_once_with(namespace)
 
     def test_save_voice_settings_and_update_menu_label(self):
         namespace = self.make_namespace()
@@ -88,6 +84,7 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
             {"voice_text": "hello"},
             namespace["safe_save_config"],
         ))
+
         self.assertEqual(save_values.call_args_list[1].args, (
             "config",
             {"voice_enabled": "1"},
@@ -102,6 +99,13 @@ class SettingsNamespaceBindingsTests(unittest.TestCase):
 
         self.assertIn(("entryconfig", 3, {"label": "🔊 语音播报"}), namespace["calls"])
         self.assertIn(("entryconfig", 3, {"label": "🔇 语音播报"}), namespace["calls"])
+
+    def test_security_settings_binding_rejects_transient_parent(self):
+        namespace = self.make_namespace()
+        bindings.install_settings_namespace_bindings(namespace)
+
+        with self.assertRaises(TypeError):
+            namespace["open_security_settings"]("cloud_window")
 
     def test_update_voice_menu_label_logs_failures(self):
         namespace = self.make_namespace()

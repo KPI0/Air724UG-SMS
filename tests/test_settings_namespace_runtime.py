@@ -108,21 +108,6 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         forwarded["set_permissions"]({"sms": True})
         self.assertEqual(namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"], {"sms": True})
 
-    def test_open_security_settings_namespace_runtime_uses_explicit_parent(self):
-        namespace = self.base_namespace()
-        calls = []
-
-        result = open_security_settings_namespace_runtime(
-            namespace,
-            "cloud_window",
-            open_setting_runtime=lambda parent, permissions, **kwargs: calls.append(
-                (parent, permissions, kwargs)
-            ) or "security",
-        )
-
-        self.assertEqual(result, "security")
-        self.assertEqual(calls[0][0], "cloud_window")
-
     def test_open_serial_setting_namespace_runtime_forwards_and_sets_serial_state(self):
         namespace = self.base_namespace()
         calls = []

@@ -42,10 +42,8 @@ def install_settings_namespace_bindings(namespace):
             log_error=namespace.get("log_file_only"),
         )
 
-    def open_security_settings(parent=None):
-        if parent is None:
-            return open_security_settings_namespace_runtime(namespace)
-        return open_security_settings_namespace_runtime(namespace, parent)
+    def open_security_settings():
+        return open_security_settings_namespace_runtime(namespace)
 
     namespace.update({
         "save_voice_text_setting": save_voice_text_setting,

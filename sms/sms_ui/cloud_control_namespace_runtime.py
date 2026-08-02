@@ -204,7 +204,7 @@ def open_cloud_control_window_namespace_runtime(
         sync_existing_window=sync_existing_window,
         set_window=lambda win: namespace.__setitem__("cloud_control_win", win),
         center_window=namespace["center_window"],
-        open_security_settings=lambda parent: namespace["open_security_settings"](parent),
+        open_security_settings=lambda: namespace["open_security_settings"](),
         settings_provider=lambda: {
             "enabled": namespace["CLOUD_CONTROL_ENABLED"],
             "auto_upload": namespace["CLOUD_AUTO_UPLOAD"],

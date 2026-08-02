@@ -53,12 +53,11 @@ def open_voice_text_dialog_namespace_runtime(
 
 def open_security_settings_namespace_runtime(
     namespace,
-    parent=None,
     *,
     open_setting_runtime=open_security_settings_runtime,
 ):
     return open_setting_runtime(
-        parent if parent is not None else namespace["root"],
+        namespace["root"],
         namespace.get("CLOUD_SENSITIVE_COMMAND_PERMISSIONS", {}),
         config=namespace["config"],
         safe_save=namespace["safe_save_config"],

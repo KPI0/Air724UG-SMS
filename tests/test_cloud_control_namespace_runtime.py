@@ -284,8 +284,8 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["cloud_control_win"], "next_window")
         self.assertEqual(forwarded["run_coroutine_threadsafe"]("coro", "loop"), ("future", "coro", "loop"))
         self.assertEqual(
-            forwarded["open_security_settings"]("cloud_window"),
-            ("security", "cloud_window"),
+            forwarded["open_security_settings"](),
+            ("security", None),
         )
         self.assertEqual(
             forwarded["sync_existing_window"]("win", "_sync"),

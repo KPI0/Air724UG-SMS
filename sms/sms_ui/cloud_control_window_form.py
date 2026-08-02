@@ -43,7 +43,7 @@ class CloudControlFormController:
         self.state_provider = state_provider
         self.on_auto_upload_changed = on_auto_upload_changed
         self.on_enabled_changed = on_enabled_changed or (lambda *_args: False)
-        self.open_security_settings = open_security_settings or (lambda _parent: None)
+        self.open_security_settings = open_security_settings or (lambda: None)
         self.enabled_var = tk.BooleanVar(win, value=state["enabled"])
         self.auto_upload_var = tk.BooleanVar(win, value=state["auto_upload"])
         self.url_var = tk.StringVar(win, value=state["url"])
@@ -85,7 +85,7 @@ class CloudControlFormController:
         ).pack(side="right")
 
     def _open_security_settings(self):
-        return self.open_security_settings(self.win)
+        return self.open_security_settings()
 
     def _build_fields(self, frame):
         configure_placeholder_style(self.win)
