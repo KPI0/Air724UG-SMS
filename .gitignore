@@ -12,6 +12,7 @@ dist/
 htmlcov/
 
 config.ini
+autostart_instances.json
 sms_logs/
 tts/
 

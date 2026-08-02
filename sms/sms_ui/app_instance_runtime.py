@@ -86,6 +86,23 @@ def claim_instance_number_app_runtime(
     return 1, None
 
 
+def is_instance_number_active_app_runtime(
+    *,
+    app_dir,
+    instance_number,
+    acquire_mutex=acquire_mutex_with_error,
+    close_handle=close_windows_handle,
+    existing_error=is_existing_instance_error,
+):
+    """Probe a numbered instance mutex without retaining the probe handle."""
+    handle, last_error = acquire_mutex(instance_mutex_name(app_dir, instance_number))
+    try:
+        return bool(existing_error(last_error))
+    finally:
+        if handle:
+            close_handle(handle)
+
+
 def check_single_instance_app_runtime(
     *,
     allow_multi_instance,

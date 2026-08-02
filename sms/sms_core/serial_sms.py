@@ -20,6 +20,7 @@ class PendingSms:
     concat_reference_bits: object = None
     concat_total: object = None
     message_trace_id: object = None
+    concat_sender_is_alphanumeric: bool = False
 
 
 @dataclass

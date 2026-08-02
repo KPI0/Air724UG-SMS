@@ -61,6 +61,12 @@ except ImportError:
 from sms_core.app_launch import (
     maybe_run_restart_helper_mode,
 )
+from sms_core.autostart_instances import (
+    AUTOSTART_CHILD_FLAG,
+    get_autostart_state_path,
+    launch_autostart_companions,
+    register_autostart_instance,
+)
 from sms_core.app_paths import get_app_dir, resource_path
 from sms_core.app_shutdown import flush_log_queue, safe_set_events
 from sms_core.file_log_runtime import start_file_log_worker
@@ -137,6 +143,7 @@ from sms_ui.serial_debug_namespace_bindings import install_serial_debug_namespac
 from sms_ui.app_instance_runtime import (
     claim_instance_number_app_runtime,
     format_instance_window_title,
+    is_instance_number_active_app_runtime,
 )
 from sms_ui.settings_dialogs import (
     open_sms_font_dialog as _ui_open_sms_font_dialog,
@@ -182,6 +189,7 @@ def _initialize_paths_and_constants():
     global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE, APP_INSTANCE_NUMBER
     global RECONNECT_INTERVAL, APP_VERSION, GITHUB_OWNER, GITHUB_REPO
     global AUTOSTART_FLAG, RESTART_HELPER_FLAG, START_MINIMIZED
+    global AUTOSTART_STATE_FILE, AUTOSTART_IS_LAUNCH, AUTOSTART_IS_LEADER
     global APP_START_MONO, START_UI_DELAY, VOICE_ENABLED, IMEI_REGEX
 
     IMEI_REGEX = re.compile(r"\b(\d{14,17})\b")
@@ -200,7 +208,10 @@ def _initialize_paths_and_constants():
     GITHUB_REPO = "Air724UG-SMS"
     AUTOSTART_FLAG = "--autostart"
     RESTART_HELPER_FLAG = "--restart-helper"
-    START_MINIMIZED = AUTOSTART_FLAG in sys.argv
+    AUTOSTART_IS_LAUNCH = AUTOSTART_FLAG in sys.argv
+    AUTOSTART_IS_LEADER = AUTOSTART_IS_LAUNCH and AUTOSTART_CHILD_FLAG not in sys.argv
+    AUTOSTART_STATE_FILE = get_autostart_state_path(APP_DIR)
+    START_MINIMIZED = AUTOSTART_IS_LAUNCH
     APP_START_MONO = time.monotonic()
     START_UI_DELAY = 2.0
     VOICE_ENABLED = True
@@ -380,6 +391,8 @@ def _initialize_worker_state():
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
+    global autostart_spawn_thread, AUTOSTART_INSTANCE_REGISTERED
+    global AUTOSTART_DESIRED_INSTANCE_COUNT
     global SERIAL_COMMAND_RESPONSE_COORDINATOR
     global SERIAL_COMMAND_THREAD_REGISTRY, UPDATE_THREAD_REGISTRY, UPDATE_CHECK_TASK_STATE
 
@@ -399,6 +412,9 @@ def _initialize_worker_state():
     current_port_mutex = None
     app_mutex = None
     instance_number_mutex = None
+    autostart_spawn_thread = None
+    AUTOSTART_INSTANCE_REGISTERED = False
+    AUTOSTART_DESIRED_INSTANCE_COUNT = 1
     SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
     SERIAL_COMMAND_RESPONSE_COORDINATOR = DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
@@ -431,6 +447,7 @@ def _run_startup_guards():
     global APP_INSTANCE_NUMBER, instance_number_mutex
     global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE
     global LOG_PREFIX, TTS_FILE
+    global AUTOSTART_DESIRED_INSTANCE_COUNT, AUTOSTART_INSTANCE_REGISTERED
 
     maybe_run_restart_helper_mode(RESTART_HELPER_FLAG)
     check_single_instance()
@@ -438,6 +455,20 @@ def _run_startup_guards():
         app_dir=APP_DIR,
         log_error=log_file_only,
     )
+    registration = register_autostart_instance(
+        app_dir=APP_DIR,
+        state_path=AUTOSTART_STATE_FILE,
+        instance_number=APP_INSTANCE_NUMBER,
+        preserve_desired=AUTOSTART_IS_LAUNCH,
+        allow_multi_instance=ALLOW_MULTI_INSTANCE,
+        is_instance_active=lambda number: is_instance_number_active_app_runtime(
+            app_dir=APP_DIR,
+            instance_number=number,
+        ),
+        log_error=log_file_only,
+    )
+    AUTOSTART_DESIRED_INSTANCE_COUNT = registration.desired_count
+    AUTOSTART_INSTANCE_REGISTERED = registration.registered
     APP_DISPLAY_TITLE = format_instance_window_title(APP_WINDOW_TITLE, APP_INSTANCE_NUMBER)
     SERIAL_DEBUG_WINDOW_TITLE = format_instance_window_title("串口调试", APP_INSTANCE_NUMBER)
     if LOG_PREFIX == "system":
@@ -567,7 +598,7 @@ def _build_main_menu():
 
 
 def _start_services():
-    global serial_thread
+    global serial_thread, autostart_spawn_thread
 
     schedule_next_midnight_clear()
     start_config_file_watch()
@@ -578,6 +609,25 @@ def _start_services():
     if CLOUD_CONTROL_ENABLED:
         start_cloud_control()
     serial_thread = start_daemon_thread("serial_reader", read_serial, log_error=log_file_only)
+    if (
+        AUTOSTART_IS_LEADER
+        and APP_INSTANCE_NUMBER == 1
+        and ALLOW_MULTI_INSTANCE
+        and AUTOSTART_DESIRED_INSTANCE_COUNT > 1
+    ):
+        autostart_spawn_thread = start_daemon_thread(
+            "autostart_instance_launcher",
+            lambda: launch_autostart_companions(
+                desired_count=AUTOSTART_DESIRED_INSTANCE_COUNT,
+                allow_multi_instance=ALLOW_MULTI_INSTANCE,
+                is_leader=True,
+                autostart_flag=AUTOSTART_FLAG,
+                child_flag=AUTOSTART_CHILD_FLAG,
+                wait_before_launch=TK_SHUTDOWN.wait,
+                log_error=log_file_only,
+            ),
+            log_error=log_file_only,
+        )
     schedule_auto_log_cleanup(restart=True, first_delay_sec=60)
 
 

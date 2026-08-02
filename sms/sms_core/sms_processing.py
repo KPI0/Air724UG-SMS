@@ -5,7 +5,7 @@ from datetime import datetime
 
 
 SMS_CALLBACK_META_RE = re.compile(
-    r"^\s*(?P<sender>\S+)\s+"
+    r"^\s*(?P<sender>[^\r\n]+?)\s+"
     r"(?P<year>\d{2})/(?P<month>\d{2})/(?P<day>\d{2}),"
     r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\+\d+"
 )

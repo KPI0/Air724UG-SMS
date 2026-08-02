@@ -23,6 +23,63 @@ def _calls_by_name(calls, name):
 
 
 class SmsSerialReplayFixtureTests(unittest.TestCase):
+    def test_real_alphanumeric_sender_replay_corrects_legacy_firmware_callback(self):
+        pdus = [
+            (
+                "07915862337419F76412D0A369B83DAFBBCFC8250008628020210284238"
+                "C05000361030100460075006E0067FF0C90019AD890546E2F5E630024003100"
+                "32002C003200390038002073685BB679AE9047000D000A000D000A7ACB537398"
+                "108A02002000470061006C0061007800790020005A00207CFB5217FF1A000D00"
+                "0A2728005B73685BB6005D6E2F5E630024003200340030002096505B9A6D888C"
+                "BB984D000D000A2728534A50F9"
+            ),
+            (
+                "07915862337419F76412D0A369B83DAFBBCFC8250008628020210284238"
+                "C0500036103025BB991CF53477D1A512A60E030010047006F006F0067006C0065"
+                "002000410049002000500072006F002053CA8B4966F88AB27A0B7B49FF01000D"
+                "000A000D000A512A60E078BCFF1A0050005A0047002D004D003200320058002D"
+                "0032005800320045002D0032003100500032000D000AD83DDED298108A025C077D"
+                "50675FFF0C7ACB5373884C"
+            ),
+            (
+                "07915862337419F76412D0A369B83DAFBBCFC8250008628020210284236"
+                "205000361030352D5FF1A0020006200690074002E006C0079002F00330052006D"
+                "005A003800630048000D000A000D000A53D7689D6B3E53CA7D3052477D04675F"
+                "000D000A67E58A62002F53D66D88FF1A0033003600390038002000340036003900"
+                "38"
+            ),
+        ]
+        body = (
+            "Fung，送高達港幣$12,298 獨家禮遇\n"
+            "立即預訂 Galaxy Z 系列：\n"
+            "✨[獨家]港幣$240 限定消費額\n"
+            "✨半價容量升級優惠、Google AI Pro 及讀書證程等！\n"
+            "優惠碼：PZG-M22X-2X2E-21P2\n"
+            "🚅預訂將結束，立即行動：bit.ly/3RmZ8cH\n"
+            "受條款及細則約束\n"
+            "查詢/取消：3698 4698"
+        )
+        lines = []
+        for index, pdu in enumerate(pdus, start=1):
+            lines.append(f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,162")
+            lines.extend(_wrap_hex(pdu))
+            lines.append("[I]-[TP-PID : ] 0 dcs:  8")
+        first_line, *continuations = body.split("\n")
+        lines.append(
+            "[I]-[handler_sms.smsCallback] 3A968BD3FABBFC8C52 "
+            "26/08/02,12:20:48+32 " + first_line
+        )
+        lines.extend(continuations)
+        lines.append("[I]-[ril.proatc] OK")
+
+        calls = replay_lines(lines)
+        popups = [args[0] for args in _calls_by_name(calls, "sms_popup")]
+        cloud_events = _calls_by_name(calls, "cloud_sms")
+
+        self.assertEqual(popups, [body])
+        self.assertEqual([args[1] for args in cloud_events], [body])
+        self.assertTrue(cloud_events[0][0].startswith("#SamsungHK 26/08/02,12:20:48+32"))
+
     def test_fixture_schema_is_append_only_friendly(self):
         data = _load_fixture()
 

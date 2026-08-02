@@ -66,6 +66,9 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "VOICE_ENABLED": True,
             "ALLOW_MULTI_INSTANCE": False,
             "APP_DIR": "app-dir",
+            "AUTOSTART_STATE_FILE": "app-dir/autostart_instances.json",
+            "AUTOSTART_INSTANCE_REGISTERED": False,
+            "APP_INSTANCE_NUMBER": 1,
             "POPUP_ENABLED": True,
             "CALL_POPUP_ENABLED": True,
             "config": "config",
@@ -89,6 +92,7 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
             "log_file_only": lambda message: ("log", message),
             "app_mutex": "mutex",
             "release_mutex_handle": lambda mutex: ("release", mutex),
+            "is_instance_number_active_app_runtime": lambda **_kwargs: True,
             "UPDATE_THREAD_REGISTRY": FakeThreadRegistry(
                 ("update-1", "update-2")
             ),
@@ -141,11 +145,29 @@ class AppLifecycleNamespaceRuntimeTests(unittest.TestCase):
         self.assertIn("update-1", forwarded["worker_threads"]())
         self.assertIn("update-2", forwarded["worker_threads"]())
         self.assertIn("tray-thread", forwarded["worker_threads"]())
+        self.assertIsNone(namespace.get("autostart_spawn_thread"))
         forwarded["set_exiting"](True)
         forwarded["set_serial_running"](False)
         self.assertTrue(namespace["is_exiting"])
         self.assertFalse(namespace["serial_running"])
         self.assertEqual(forwarded["destroy_root"](), "destroyed")
+
+    def test_cleanup_unregisters_instance_only_after_shutdown_runtime_requests_it(self):
+        namespace = self.base_namespace()
+        namespace["AUTOSTART_INSTANCE_REGISTERED"] = True
+        calls = []
+
+        cleanup_and_exit_namespace_runtime(
+            namespace,
+            cleanup_app_runtime=lambda **kwargs: calls.append(("cleanup", kwargs)) or "wired",
+            unregister_runtime=lambda **kwargs: calls.append(("unregister", kwargs)) or 2,
+        )
+
+        self.assertEqual([item[0] for item in calls], ["cleanup"])
+        result = calls[0][1]["destroy_root"]()
+        self.assertEqual(result, "destroyed")
+        self.assertEqual([item[0] for item in calls], ["cleanup", "unregister"])
+        self.assertFalse(namespace["AUTOSTART_INSTANCE_REGISTERED"])
 
     def test_toggle_namespace_runtimes_update_state(self):
         namespace = self.base_namespace()

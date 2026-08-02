@@ -11,6 +11,53 @@ def _swap_number_digits(number):
     return "".join(digits[i + 1] + digits[i] for i in range(0, len(digits), 2))
 
 
+def _pack_gsm7_ascii_sender(sender):
+    septets = [ord(char) for char in str(sender or "")]
+    if any(value < 0 or value > 0x7F for value in septets):
+        raise ValueError("test sender must use GSM7-compatible ASCII")
+    packed = sum(value << (7 * index) for index, value in enumerate(septets))
+    octet_count = (len(septets) * 7 + 7) // 8
+    return packed.to_bytes(octet_count, "little")
+
+
+def _incoming_alphanumeric_ucs2_pdu(
+    sender,
+    message,
+    *,
+    timestamp_hex="62608211510523",
+    reference=0x2A,
+    total=1,
+    index=1,
+):
+    sender_text = str(sender or "")
+    sender_data = _pack_gsm7_ascii_sender(sender_text)
+    sender_length = (len(sender_text) * 7 + 3) // 4
+    payload = str(message or "").encode("utf-16-be")
+    first_octet = "40" if total > 1 else "00"
+    user_data = payload
+    if total > 1:
+        user_data = bytes((
+            0x05,
+            0x00,
+            0x03,
+            reference & 0xFF,
+            total & 0xFF,
+            index & 0xFF,
+        )) + payload
+    return (
+        "00"
+        + first_octet
+        + f"{sender_length:02X}"
+        + "D0"
+        + sender_data.hex().upper()
+        + "00"
+        + "08"
+        + timestamp_hex
+        + f"{len(user_data):02X}"
+        + user_data.hex().upper()
+    )
+
+
 def _incoming_ucs2_pdu(
     sender,
     message,
@@ -155,6 +202,91 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
             "+8613123123123 26/06/28,11:15:50+32 中国电信温馨提醒:尊享来电识别",
         )
 
+    def test_alphanumeric_sender_starting_with_86_is_not_country_code_normalized(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        body = "品牌短信正文"
+        cache._complete_by_key[("86Brand", timestamp)] = [(body, 10.0)]
+
+        corrected = cache.correct_single_pdu_callback_text(
+            "86Brand " + timestamp + " " + body,
+            parse_callback_head,
+            10.3,
+        )
+
+        self.assertEqual(corrected, "86Brand " + timestamp + " " + body)
+        self.assertNotIn(("86Brand", timestamp), cache._complete_by_key)
+
+    def test_spaced_alphanumeric_sender_uses_timestamp_boundary(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        body = "品牌活动温馨提醒内容完整"
+        pdu = _incoming_alphanumeric_ucs2_pdu("Bank Alert", body)
+        cache.observe_line(
+            f"[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,{len(pdu) // 2 - 1}",
+            10.0,
+        )
+        cache.observe_line(pdu, 10.1)
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2)
+
+        corrected = cache.correct_single_pdu_callback_text(
+            "Bank Alert " + timestamp + " 品牌活动温馨提醒�",
+            parse_sms_callback_head,
+            10.3,
+        )
+
+        self.assertEqual(corrected, "Bank Alert " + timestamp + " " + body)
+
+    def test_alphanumeric_numeric_text_keeps_exact_cache_identity(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        alpha_body = "ALPHA-MESSAGE-LONG-CONTENT"
+        numeric_body = "NUMERIC-MESSAGE-LONG-CONTENT"
+        alpha_pdu = _incoming_alphanumeric_ucs2_pdu("86123", alpha_body)
+        numeric_pdu = _incoming_ucs2_pdu("123", numeric_body)
+        for index, pdu in enumerate((alpha_pdu, numeric_pdu), start=1):
+            cache.observe_line(
+                f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,{len(pdu) // 2 - 1}",
+                10.0 + index,
+            )
+            cache.observe_line(pdu, 10.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2 + index)
+
+        self.assertIn(("86123", timestamp), cache._complete_by_key)
+        self.assertIn(("123", timestamp), cache._complete_by_key)
+        corrected = cache.correct_single_pdu_callback_text(
+            "86123 " + timestamp + " ALPHA-MESSAGE-LONG-�",
+            parse_sms_callback_head,
+            13.5,
+        )
+
+        self.assertEqual(corrected, "86123 " + timestamp + " " + alpha_body)
+        self.assertIn(("123", timestamp), cache._complete_by_key)
+
+    def test_alphanumeric_numeric_text_selects_its_own_concat_segment(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        body = "COMMON-CONCAT-SEGMENT-BODY"
+        numeric_pdu = _incoming_ucs2_pdu("123", body, total=2, index=1)
+        alpha_pdu = _incoming_alphanumeric_ucs2_pdu("86123", body, total=2, index=1)
+        for index, pdu in enumerate((numeric_pdu, alpha_pdu), start=1):
+            cache.observe_line(
+                f"[I]-[lib_sms rsp] +CMGR AT+CMGR={index} true OK +CMGR: 0,,{len(pdu) // 2 - 1}",
+                20.0 + index,
+            )
+            cache.observe_line(pdu, 20.1 + index)
+            cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 20.2 + index)
+
+        part = cache.concat_part_for_callback(
+            "86123 " + timestamp + " " + body,
+            parse_sms_callback_head,
+            23.5,
+        )
+
+        self.assertIsNotNone(part)
+        self.assertEqual(part.sender, "86123")
+        self.assertTrue(part.sender_is_alphanumeric)
+
     def test_correct_callback_text_matches_non_numeric_sender_and_surrogate_pair(self):
         cache = SmsPduCorrectionCache()
         sender = "3A968BD3FABBFC8C52"
@@ -174,8 +306,65 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
 
         self.assertEqual(
             corrected,
-            sender + " 26/06/28,11:15:50+32 " + body,
+            "#SamsungHK 26/06/28,11:15:50+32 " + body,
         )
+
+    def test_legacy_sender_correction_matches_old_firmware_86_filtered_alias(self):
+        cache = SmsPduCorrectionCache()
+        body = "品牌短信正文"
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,22", 10.0)
+        cache.observe_line(
+            "00000DD068B1501E7693010008626082115105230C"
+            + body.encode("utf-16-be").hex().upper(),
+            10.1,
+        )
+        cache.observe_line("[I]-[TP-PID : ] 0 dcs:  8", 10.2)
+
+        corrected = cache.correct_single_pdu_callback_text(
+            "1B05E1673910 26/06/28,11:15:50+32 " + body,
+            parse_sms_callback_head,
+            10.3,
+        )
+
+        self.assertEqual(
+            corrected,
+            "hbBrand 26/06/28,11:15:50+32 " + body,
+        )
+
+    def test_legacy_sender_correction_consumes_only_matching_cached_message(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        cache._complete_by_key[("#SamsungHK", timestamp)] = [
+            ("第一条品牌短信", 10.0, "#SamsungHK", True, "3A968BD3FABBFC8C52"),
+            ("第二条品牌短信", 10.0, "#SamsungHK", True, "3A968BD3FABBFC8C52"),
+        ]
+
+        corrected = cache.correct_single_pdu_callback_text(
+            "3A968BD3FABBFC8C52 " + timestamp + " 第一条品牌短信",
+            parse_callback_head,
+            10.3,
+        )
+
+        self.assertTrue(corrected.startswith("#SamsungHK " + timestamp))
+        self.assertEqual(
+            [item[0] for item in cache._complete_by_key[("#SamsungHK", timestamp)]],
+            ["第二条品牌短信"],
+        )
+
+    def test_legacy_sender_correction_requires_exact_pdu_derived_alias(self):
+        cache = SmsPduCorrectionCache()
+        timestamp = "26/06/28,11:15:50+32"
+        cache._complete_by_key[("#SamsungHK", timestamp)] = [
+            ("品牌短信正文", 10.0, "#SamsungHK", True, "3A968BD3FABBFC8C52"),
+        ]
+
+        unchanged = cache.correct_single_pdu_callback_text(
+            "10086 " + timestamp + " 品牌短信正文",
+            parse_callback_head,
+            10.3,
+        )
+
+        self.assertEqual(unchanged, "10086 " + timestamp + " 品牌短信正文")
 
     def test_correct_callback_text_selects_matching_candidate_for_same_timestamp(self):
         cache = SmsPduCorrectionCache()

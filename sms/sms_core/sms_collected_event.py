@@ -54,6 +54,12 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
             parse_callback_head,
             now,
         )
+        if concat_part is not None and hasattr(correction_cache, "correct_concat_callback_sender"):
+            corrected_text = correction_cache.correct_concat_callback_sender(
+                corrected_text,
+                parse_callback_head,
+                concat_part,
+            )
 
     sender, body = parse_callback_head(corrected_text)
     raw_lines = list(getattr(collected, "raw_lines", []) or getattr(collected, "follow_lines", []) or [])
@@ -95,6 +101,9 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
                     full_msg=fallback_body,
                     display_lines=["📩 收到短信：", corrected_text] + raw_lines,
                     concat_sender=sender,
+                    concat_sender_is_alphanumeric=bool(
+                        getattr(concat_part, "sender_is_alphanumeric", False)
+                    ),
                 ),
                 require_fallback_match=require_fallback_match,
             )
@@ -134,6 +143,9 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
         concat_reference_bits=concat_reference_bits,
         concat_total=concat_total,
         message_trace_id=trace_id,
+        concat_sender_is_alphanumeric=bool(
+            getattr(concat_part, "sender_is_alphanumeric", False)
+        ) if concat_part else False,
     )
 
 
@@ -187,6 +199,9 @@ def _segment_pendings(segments, callback_text, parse_callback_head):
             concat_reference=getattr(concat_info, "reference", None),
             concat_reference_bits=getattr(concat_info, "reference_bits", None),
             concat_total=getattr(concat_info, "total", None),
+            concat_sender_is_alphanumeric=bool(
+                getattr(segment, "sender_is_alphanumeric", False)
+            ),
         ))
     return pendings
 

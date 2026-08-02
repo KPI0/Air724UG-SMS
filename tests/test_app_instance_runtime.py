@@ -7,6 +7,7 @@ from sms_ui.app_instance_runtime import (
     check_single_instance_app_runtime,
     claim_instance_number_app_runtime,
     format_instance_window_title,
+    is_instance_number_active_app_runtime,
     instance_mutex_name,
 )
 
@@ -47,6 +48,34 @@ class AppInstanceRuntimeTests(unittest.TestCase):
                 ("acquire", instance_mutex_name(app_dir, 3)),
             ],
         )
+
+    def test_instance_number_probe_reports_existing_mutex_and_closes_handle(self):
+        closed = []
+
+        active = is_instance_number_active_app_runtime(
+            app_dir="E:/sms",
+            instance_number=3,
+            acquire_mutex=lambda _name: ("probe", 183),
+            close_handle=closed.append,
+            existing_error=lambda code: code == 183,
+        )
+
+        self.assertTrue(active)
+        self.assertEqual(closed, ["probe"])
+
+    def test_instance_number_probe_reports_free_mutex_and_closes_handle(self):
+        closed = []
+
+        active = is_instance_number_active_app_runtime(
+            app_dir="E:/sms",
+            instance_number=3,
+            acquire_mutex=lambda _name: ("probe", 0),
+            close_handle=closed.append,
+            existing_error=lambda code: code == 183,
+        )
+
+        self.assertFalse(active)
+        self.assertEqual(closed, ["probe"])
 
     def test_claim_instance_number_falls_back_to_plain_title(self):
         logs = []

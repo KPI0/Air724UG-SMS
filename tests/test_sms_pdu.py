@@ -1,6 +1,7 @@
 ﻿import unittest
 
 from sms_core.sms_pdu import (
+    ReceivedSmsPdu,
     decode_concat_udh,
     decode_received_pdu,
     encode_text_sms_pdu,
@@ -50,6 +51,62 @@ def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1, ref
 
 
 class SmsPduTests(unittest.TestCase):
+    def test_received_pdu_field_order_remains_backward_compatible(self):
+        decoded = ReceivedSmsPdu("10086", "正文", "26/08/02,12:20:48+32", 1, 2, 1, 8)
+
+        self.assertEqual(decoded.reference, 1)
+        self.assertEqual(decoded.total, 2)
+        self.assertEqual(decoded.index, 1)
+        self.assertEqual(decoded.reference_bits, 8)
+        self.assertFalse(decoded.sender_is_alphanumeric)
+
+    def test_decode_received_pdu_decodes_alphanumeric_sender(self):
+        pdu = (
+            "07915862337419F76412D0A369B83DAFBBCFC8250008628020210284238"
+            "C05000361030100460075006E0067FF0C90019AD890546E2F5E630024003100"
+            "32002C003200390038002073685BB679AE9047000D000A000D000A7ACB537398"
+            "108A02002000470061006C0061007800790020005A00207CFB5217FF1A000D00"
+            "0A2728005B73685BB6005D6E2F5E630024003200340030002096505B9A6D888C"
+            "BB984D000D000A2728534A50F9"
+        )
+        decoded = decode_received_pdu(pdu)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.sender, "#SamsungHK")
+        self.assertTrue(decoded.sender_is_alphanumeric)
+        self.assertEqual(decoded.sender_legacy_alias, "3A968BD3FABBFC8C52")
+        self.assertEqual(decoded.concat_info.reference, 0x61)
+        self.assertEqual(decoded.concat_info.index, 1)
+
+    def test_alphanumeric_sender_legacy_alias_matches_old_firmware_86_filter(self):
+        decoded = decode_received_pdu(
+            "00000DD068B1501E769301000862608211510523020041"
+        )
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.sender, "hbBrand")
+        self.assertTrue(decoded.sender_is_alphanumeric)
+        self.assertEqual(decoded.sender_legacy_alias, "1B05E1673910")
+
+    def test_alphanumeric_sender_legacy_alias_removes_only_one_trailing_f(self):
+        decoded = decode_received_pdu(
+            "00000ED0C16030180C02FF000862608211510523020041"
+        )
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.sender, "AAAAAA¡à")
+        self.assertEqual(decoded.sender_legacy_alias, "1C060381C020F")
+
+    def test_decode_received_pdu_rejects_invalid_alphanumeric_address_length(self):
+        self.assertIsNone(
+            decode_received_pdu("000003D04100000862608211510523020041")
+        )
+
+    def test_decode_received_pdu_rejects_trailing_data_after_user_data(self):
+        pdu = _incoming_ucs2_pdu("10086", "A")
+
+        self.assertIsNone(decode_received_pdu(pdu + "00"))
+
     def test_encode_text_sms_pdu_basic_message(self):
         """Should encode simple SMS with international number."""
         pdu, length = encode_text_sms_pdu("+8613123123123", "Hello")

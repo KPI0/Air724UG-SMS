@@ -4,7 +4,9 @@ import urllib.parse
 
 CLOUD_WS_DEFAULT_PATH = "/ws/device"
 SMS_CALLBACK_HEAD_REGEX = re.compile(
-    r"^\s*(\S+)\s+\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*(.*)$",
+    r"^\s*(?P<sender>[^\r\n]+?)\s+"
+    r"(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)\s*"
+    r"(?P<body>.*)$",
     re.DOTALL,
 )
 
@@ -37,7 +39,7 @@ def parse_sms_callback_head(text: str):
     match = SMS_CALLBACK_HEAD_REGEX.search(str(text or "").strip())
     if not match:
         return "", str(text or "").strip()
-    return match.group(1), (match.group(2) or "").strip()
+    return (match.group("sender") or "").strip(), (match.group("body") or "").strip()
 
 
 def auth_status_from_ack(data: dict):

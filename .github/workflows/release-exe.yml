@@ -28,20 +28,25 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Resolve release tag
         id: release
         shell: pwsh
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}".Trim()
+          $tag = ([string]$env:RELEASE_TAG_INPUT).Trim()
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
             throw "Stable release tag must use vX.Y.Z format. Got: '$tag'"
           }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Release tag: $tag"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -75,12 +80,14 @@ jobs:
           $repoRoot = (Resolve-Path ".").Path
           $smsSrc = (Resolve-Path "sms").Path
           $env:PYTHONPATH = "$repoRoot;$smsSrc"
-          if (Test-Path tests) {
-              python -m unittest discover -s tests -v
+          if (-not (Test-Path -LiteralPath "tests" -PathType Container)) {
+              throw "Required tests directory is missing. Refusing to publish an untested release."
           }
-          else {
-              Write-Host "No tests directory found, skipping tests."
+          $testFiles = @(Get-ChildItem -LiteralPath "tests" -Filter "test*.py" -File -Recurse)
+          if ($testFiles.Count -eq 0) {
+              throw "No test*.py files were found. Refusing to publish an untested release."
           }
+          python -m unittest discover -s tests -v
 
       - name: Build EXE with PyInstaller
         shell: pwsh

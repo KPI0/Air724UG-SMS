@@ -38,6 +38,8 @@ class ReceivedSmsPdu:
     total: Optional[int] = None
     index: Optional[int] = None
     reference_bits: Optional[int] = None
+    sender_is_alphanumeric: bool = False
+    sender_legacy_alias: str = ""
 
     @property
     def concat_info(self):
@@ -76,8 +78,91 @@ def _decode_semi_octet_number(value: str, number_type: str, digit_count: int) ->
         if len(pair) == 2:
             digits.append(pair[1])
             digits.append(pair[0])
-    number = "".join(digits)[:digit_count].rstrip("Ff")
+    number = "".join(digits)[:digit_count]
+    if number.endswith(("F", "f")):
+        number = number[:-1]
     return ("+" if number_type == "91" else "") + number
+
+
+# GSM 03.38 default alphabet used by TP-OA alphanumeric addresses.
+_GSM7_DEFAULT_ALPHABET = (
+    "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1bÆæßÉ "
+    "!\"#¤%&'()*+,-./0123456789:;<=>?¡"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿"
+    "abcdefghijklmnopqrstuvwxyzäöñüà"
+)
+_GSM7_EXTENSION_ALPHABET = {
+    0x0A: "\f",
+    0x14: "^",
+    0x28: "{",
+    0x29: "}",
+    0x2F: "\\",
+    0x3C: "[",
+    0x3D: "~",
+    0x3E: "]",
+    0x40: "|",
+    0x65: "€",
+}
+
+
+def _decode_gsm7_packed(value: str, septet_count: int) -> str:
+    data = _hex_to_bytes(value)
+    septet_count = int(septet_count)
+    if septet_count < 0:
+        raise ValueError("invalid GSM7 address length")
+    expected_octets = (septet_count * 7 + 7) // 8
+    if len(data) != expected_octets:
+        raise ValueError("GSM7 packed address length mismatch")
+    if not data:
+        return ""
+
+    chars = []
+    escaped = False
+    bit_offset = 0
+    for _ in range(septet_count):
+        byte_index = bit_offset // 8
+        shift = bit_offset % 8
+        if byte_index >= len(data):
+            raise ValueError("truncated GSM7 address")
+        septet = data[byte_index] >> shift
+        if shift > 1:
+            if byte_index + 1 >= len(data):
+                raise ValueError("truncated GSM7 address")
+            septet |= data[byte_index + 1] << (8 - shift)
+        septet &= 0x7F
+        bit_offset += 7
+
+        if escaped:
+            char = _GSM7_EXTENSION_ALPHABET.get(septet)
+            if char is None:
+                raise ValueError("unsupported GSM7 extension")
+            chars.append(char)
+            escaped = False
+        elif septet == 0x1B:
+            escaped = True
+        elif septet < len(_GSM7_DEFAULT_ALPHABET):
+            chars.append(_GSM7_DEFAULT_ALPHABET[septet])
+        else:
+            raise ValueError("invalid GSM7 character")
+
+    if escaped:
+        raise ValueError("truncated GSM7 extension")
+    return "".join(chars)
+
+
+def _decode_sender_address(value: str, number_type: str, digit_count: int) -> tuple[str, bool, str]:
+    try:
+        toa = int(number_type, 16)
+    except (TypeError, ValueError):
+        return "", False, ""
+    ton = (toa >> 4) & 0x07
+    if ton == 0x05:
+        septet_count = (int(digit_count) * 4) // 7
+        legacy_alias = _decode_semi_octet_number(value, number_type, len(value))
+        if legacy_alias.startswith("86"):
+            legacy_alias = legacy_alias[2:]
+        return _decode_gsm7_packed(value, septet_count), True, legacy_alias
+    return _decode_semi_octet_number(value, number_type, digit_count), False, ""
 
 
 def _read_octet(hex_text: str, offset: int):
@@ -198,7 +283,7 @@ def decode_received_pdu(pdu_hex: str):
         number_type = pdu[offset:offset + 2]
         offset += 2
         sender_hex_len = ((sender_digits + 1) // 2) * 2
-        sender = _decode_semi_octet_number(
+        sender, sender_is_alphanumeric, sender_legacy_alias = _decode_sender_address(
             pdu[offset:offset + sender_hex_len],
             number_type,
             sender_digits,
@@ -210,9 +295,10 @@ def decode_received_pdu(pdu_hex: str):
         timestamp = _decode_timestamp(pdu[offset:offset + 14])
         offset += 14
         user_data_len, offset = _read_octet(pdu, offset)
-        user_data = pdu[offset:offset + user_data_len * 2]
-        if len(user_data) < user_data_len * 2:
+        user_data_end = offset + user_data_len * 2
+        if user_data_end != len(pdu):
             return None
+        user_data = pdu[offset:user_data_end]
 
         concat_info = None
         payload = user_data
@@ -239,10 +325,12 @@ def decode_received_pdu(pdu_hex: str):
             sender=sender,
             body=body,
             timestamp=timestamp,
+            sender_is_alphanumeric=sender_is_alphanumeric,
             reference=concat_info.reference if concat_info else None,
             total=concat_info.total if concat_info else None,
             index=concat_info.index if concat_info else None,
             reference_bits=concat_info.reference_bits if concat_info else None,
+            sender_legacy_alias=sender_legacy_alias,
         )
     except Exception:
         return None

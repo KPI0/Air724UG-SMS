@@ -1,5 +1,6 @@
 import os
 
+from sms_core.autostart_instances import unregister_autostart_instance
 from sms_core.windows_runtime import acquire_mutex_with_error
 from sms_ui.app_autostart_runtime import set_autostart_runtime
 from sms_ui.app_instance_runtime import app_dir_mutex_name
@@ -43,6 +44,7 @@ def _shutdown_worker_threads(namespace):
         namespace.get("TTS_THREAD"),
         namespace.get("cloud_ws_thread"),
         namespace.get("tray_thread"),
+        namespace.get("autostart_spawn_thread"),
     ) + _registered_worker_threads(namespace)
 
 
@@ -57,7 +59,34 @@ def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runt
     )
 
 
-def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup_and_exit_app_runtime):
+def cleanup_and_exit_namespace_runtime(
+    namespace,
+    *,
+    cleanup_app_runtime=cleanup_and_exit_app_runtime,
+    unregister_runtime=unregister_autostart_instance,
+):
+    def unregister_instance():
+        if not namespace.get("AUTOSTART_INSTANCE_REGISTERED"):
+            return None
+        result = unregister_runtime(
+            app_dir=namespace["APP_DIR"],
+            state_path=namespace["AUTOSTART_STATE_FILE"],
+            instance_number=namespace["APP_INSTANCE_NUMBER"],
+            is_instance_active=lambda number: namespace["is_instance_number_active_app_runtime"](
+                app_dir=namespace["APP_DIR"],
+                instance_number=number,
+            ),
+            log_error=None,
+        )
+        if result is not None:
+            namespace.__setitem__("AUTOSTART_INSTANCE_REGISTERED", False)
+        return result
+
+    def destroy_root_and_unregister():
+        destroy_result = namespace["root"].destroy()
+        unregister_instance()
+        return destroy_result
+
     return cleanup_app_runtime(
         root=namespace["root"],
         messagebox=namespace["messagebox"],
@@ -82,7 +111,7 @@ def cleanup_and_exit_namespace_runtime(namespace, *, cleanup_app_runtime=cleanup
         deferred_worker_stop_events=(namespace["third_push_stop"],),
         deferred_worker_threads=lambda: (namespace.get("third_push_thread"),),
         deferred_worker_queues=(namespace["THIRD_PUSH_Q"],),
-        destroy_root=namespace["root"].destroy,
+        destroy_root=destroy_root_and_unregister,
         log_error=namespace.get("log_file_only"),
     )
 

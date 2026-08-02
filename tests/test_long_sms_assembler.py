@@ -2,6 +2,7 @@ import unittest
 
 from itertools import permutations
 
+from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_sms import PendingSms
 from sms_core.sms_pdu import ConcatSmsInfo
@@ -49,6 +50,56 @@ class LongSmsAssemblerTests(unittest.TestCase):
         self.assertEqual(complete.full_msg, "AABB")
         self.assertEqual(complete.callback_head, "10086 26/06/28,12:00:00+32 AABB")
         self.assertTrue(any("SMS CONCAT COMPLETE" in item for item in logs))
+
+    def test_spaced_alphanumeric_sender_uses_timestamp_boundary(self):
+        assembler = LongSmsAssembler(parse_sms_callback_head)
+        part1 = PendingSms(
+            "Bank Alert 26/06/28,12:00:00+32 AA",
+            "AA",
+            [],
+            ConcatSmsInfo(0x2A, 2, 1),
+            "AA",
+            "Bank Alert",
+            concat_sender_is_alphanumeric=True,
+        )
+        part2 = PendingSms(
+            "Bank Alert 26/06/28,12:00:00+32 BB",
+            "BB",
+            [],
+            ConcatSmsInfo(0x2A, 2, 2),
+            "BB",
+            "Bank Alert",
+            concat_sender_is_alphanumeric=True,
+        )
+
+        self.assertIsNone(assembler.add_message(part1, now=1.0))
+        complete = assembler.add_message(part2, now=2.0)
+
+        self.assertEqual(complete.full_msg, "AABB")
+        self.assertEqual(complete.callback_head, "Bank Alert 26/06/28,12:00:00+32 AABB")
+
+    def test_alphanumeric_86_prefix_does_not_share_multipart_session(self):
+        assembler = LongSmsAssembler(parse_sms_callback_head)
+
+        def pending(sender, body, index):
+            return PendingSms(
+                f"{sender} 26/06/28,12:00:00+32 {body}",
+                body,
+                [],
+                ConcatSmsInfo(0x2A, 2, index),
+                body,
+                sender,
+                "26/06/28,12:00:00+32",
+                concat_sender_is_alphanumeric=True,
+            )
+
+        self.assertIsNone(assembler.add_message(pending("86Brand", "A1", 1), now=1.0))
+        self.assertIsNone(assembler.add_message(pending("Brand", "B2", 2), now=2.0))
+        brand = assembler.add_message(pending("Brand", "B1", 1), now=3.0)
+        prefixed_brand = assembler.add_message(pending("86Brand", "A2", 2), now=4.0)
+
+        self.assertEqual(brand.full_msg, "B1B2")
+        self.assertEqual(prefixed_brand.full_msg, "A1A2")
 
     def test_duplicate_part_is_ignored(self):
         assembler = LongSmsAssembler(parse_head)

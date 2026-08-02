@@ -98,6 +98,14 @@ class CloudProtocolTests(unittest.TestCase):
         self.assertEqual(sender, "3A968BD3FABBFC8C52")
         self.assertEqual(message, "Brand message")
 
+    def test_parse_sms_callback_head_uses_timestamp_boundary_for_spaced_sender(self):
+        sender, message = parse_sms_callback_head(
+            "Bank Alert 26/07/22,17:33:02+32 Brand message"
+        )
+
+        self.assertEqual(sender, "Bank Alert")
+        self.assertEqual(message, "Brand message")
+
     def test_parse_sms_callback_head_returns_original_on_no_match(self):
         """Should return empty phone and original text when format doesn't match."""
         text = 'Not a callback format'

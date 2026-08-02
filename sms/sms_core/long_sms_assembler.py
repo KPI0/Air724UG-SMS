@@ -9,7 +9,7 @@ from sms_core.sms_collected_event import CollectedPendingCandidates, pending_fro
 
 
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
-    r"^\s*\S+\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
+    r"^\s*[^\r\n]+?\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
 )
 DEFAULT_LONG_SMS_TTL = 180.0
 DEFAULT_COMPLETED_SMS_TTL = 30.0
@@ -411,6 +411,7 @@ class LongSmsAssembler:
             concat_reference_bits=reference_bits,
             concat_total=total,
             message_trace_id=entry.get("trace_id") or trace_id,
+            concat_sender_is_alphanumeric=False,
         )
         self._pending.pop(key, None)
         self._completed[key] = {
@@ -622,7 +623,12 @@ class LongSmsAssembler:
     def _sender_from_pending(self, pending):
         concat_sender = str(getattr(pending, "concat_sender", "") or "").strip()
         if concat_sender:
-            return _normalize_sender_for_key(concat_sender)
+            return _normalize_sender_for_key(
+                concat_sender,
+                sender_is_alphanumeric=bool(
+                    getattr(pending, "concat_sender_is_alphanumeric", False)
+                ),
+            )
 
         sender, _body = self.parse_callback_head(getattr(pending, "callback_head", ""))
         return _normalize_sender_for_key(sender)
@@ -743,6 +749,7 @@ class LongSmsAssembler:
             concat_reference_bits=entry.get("reference_bits"),
             concat_total=total,
             message_trace_id=trace_id,
+            concat_sender_is_alphanumeric=False,
         )
         self._pending.pop(key, None)
         self._completed[key] = {
@@ -958,11 +965,13 @@ def _body_without_line_breaks(value):
     return _normalized_body(value).replace("\n", "")
 
 
-def _normalize_sender_for_key(sender: str) -> str:
+def _normalize_sender_for_key(sender: str, *, sender_is_alphanumeric=False) -> str:
     text = str(sender or "").strip()
-    if text.startswith("+86") and len(text) > 3:
+    if sender_is_alphanumeric:
+        return text
+    if text.startswith("+86") and len(text) > 3 and text[3:].isdigit():
         return text[3:]
-    if text.startswith("86") and len(text) > 2:
+    if text.startswith("86") and len(text) > 2 and text[2:].isdigit():
         return text[2:]
     return text
 

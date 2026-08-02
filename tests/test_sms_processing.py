@@ -164,6 +164,17 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["from"], "123123123")
         self.assertEqual(metadata["phone"], "123123123")
         self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
+
+    def test_parse_sms_callback_metadata_supports_spaced_alphanumeric_sender(self):
+        callback = "Bank Alert 26/06/24,13:44:15+32 品牌短信"
+
+        metadata = parse_sms_callback_metadata(callback)
+        display_lines = build_sms_ui_display_lines(callback, "品牌短信")
+
+        self.assertEqual(metadata["sender"], "Bank Alert")
+        self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
+        self.assertEqual(display_lines[0], "号码：Bank Alert")
+        self.assertEqual(display_lines[1], "时间：2026-06-24 13:44:15")
         self.assertEqual(metadata["local_number"], "")
 
     def test_parse_sms_callback_metadata_accepts_non_numeric_sender_token(self):
