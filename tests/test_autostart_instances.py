@@ -7,7 +7,10 @@ from sms_core.autostart_instances import (
     AUTOSTART_CHILD_FLAG,
     MAX_AUTOSTART_INSTANCES,
     AutostartRegistrationResult,
+    autostart_launcher_mutex_name,
     build_autostart_child_command,
+    claim_autostart_launcher,
+    get_active_autostart_instance_count,
     launch_autostart_companions,
     normalize_desired_count,
     register_autostart_instance,
@@ -35,24 +38,22 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=False,
                 allow_multi_instance=True,
                 is_instance_active=lambda number: number in active,
                 with_state_lock=self.unlocked,
             )
-            self.assertEqual(first, AutostartRegistrationResult(1, True))
+            self.assertEqual(first, AutostartRegistrationResult(1, True, 1))
 
             active.add(2)
             second = register_autostart_instance(
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=2,
-                preserve_desired=False,
                 allow_multi_instance=True,
                 is_instance_active=lambda number: number in active,
                 with_state_lock=self.unlocked,
             )
-            self.assertEqual(second, AutostartRegistrationResult(2, True))
+            self.assertEqual(second, AutostartRegistrationResult(2, True, 2))
 
             active.remove(1)
             remaining = unregister_autostart_instance(
@@ -69,7 +70,7 @@ class AutostartInstanceStateTests(unittest.TestCase):
             self.assertEqual(state["desired_count"], 1)
             self.assertEqual(state["active_instances"], [2])
 
-    def test_autostart_leader_preserves_previous_count_while_pruning_stale_entries(self):
+    def test_start_preserves_previous_count_while_pruning_stale_entries(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "state.json")
             with open(state_path, "w", encoding="utf-8") as file_obj:
@@ -86,17 +87,51 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=True,
                 allow_multi_instance=True,
                 is_instance_active=lambda number: number == 1,
                 with_state_lock=self.unlocked,
             )
 
-            self.assertEqual(result, AutostartRegistrationResult(3, True))
+            self.assertEqual(result, AutostartRegistrationResult(3, True, 1))
             with open(state_path, "r", encoding="utf-8") as file_obj:
                 state = json.load(file_obj)
             self.assertEqual(state["desired_count"], 3)
             self.assertEqual(state["active_instances"], [1])
+
+    def test_manual_starts_before_autostart_do_not_reduce_restore_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as file_obj:
+                json.dump(
+                    {
+                        "version": 1,
+                        "desired_count": 5,
+                        "active_instances": [1, 2, 3, 4, 5],
+                    },
+                    file_obj,
+                )
+
+            active = {1}
+            first = register_autostart_instance(
+                app_dir=temp_dir,
+                state_path=state_path,
+                instance_number=1,
+                allow_multi_instance=True,
+                is_instance_active=lambda number: number in active,
+                with_state_lock=self.unlocked,
+            )
+            active.add(2)
+            second = register_autostart_instance(
+                app_dir=temp_dir,
+                state_path=state_path,
+                instance_number=2,
+                allow_multi_instance=True,
+                is_instance_active=lambda number: number in active,
+                with_state_lock=self.unlocked,
+            )
+
+            self.assertEqual(first, AutostartRegistrationResult(5, True, 1))
+            self.assertEqual(second, AutostartRegistrationResult(5, True, 2))
 
     def test_disabled_multi_instance_forces_desired_count_to_one(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -111,7 +146,6 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=True,
                 allow_multi_instance=False,
                 is_instance_active=lambda _number: True,
                 with_state_lock=self.unlocked,
@@ -130,14 +164,13 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=True,
                 allow_multi_instance=True,
                 is_instance_active=lambda _number: False,
                 log_error=logs.append,
                 with_state_lock=self.unlocked,
             )
 
-            self.assertEqual(result, AutostartRegistrationResult(1, True))
+            self.assertEqual(result, AutostartRegistrationResult(1, True, 1))
             self.assertTrue(any("Load autostart" in message for message in logs))
 
     def test_lock_failure_returns_saved_count_without_registering(self):
@@ -150,7 +183,6 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=True,
                 allow_multi_instance=True,
                 is_instance_active=lambda _number: False,
                 with_state_lock=lambda *_args: (_ for _ in ()).throw(RuntimeError("busy")),
@@ -183,13 +215,12 @@ class AutostartInstanceStateTests(unittest.TestCase):
                 app_dir=temp_dir,
                 state_path=state_path,
                 instance_number=1,
-                preserve_desired=True,
                 allow_multi_instance=True,
                 is_instance_active=lambda number: 1 <= number <= 100,
                 with_state_lock=self.unlocked,
             )
 
-            self.assertEqual(result, AutostartRegistrationResult(100, True))
+            self.assertEqual(result, AutostartRegistrationResult(100, True, 100))
             with open(state_path, "r", encoding="utf-8") as file_obj:
                 state = json.load(file_obj)
             self.assertEqual(state["desired_count"], 100)
@@ -206,7 +237,6 @@ class AutostartInstanceStateTests(unittest.TestCase):
                     app_dir=temp_dir,
                     state_path=state_path,
                     instance_number=first_number,
-                    preserve_desired=False,
                     allow_multi_instance=True,
                     is_instance_active=lambda number: is_instance_number_active_app_runtime(
                         app_dir=temp_dir,
@@ -218,7 +248,6 @@ class AutostartInstanceStateTests(unittest.TestCase):
                     app_dir=temp_dir,
                     state_path=state_path,
                     instance_number=second_number,
-                    preserve_desired=False,
                     allow_multi_instance=True,
                     is_instance_active=lambda number: is_instance_number_active_app_runtime(
                         app_dir=temp_dir,
@@ -232,6 +261,49 @@ class AutostartInstanceStateTests(unittest.TestCase):
             finally:
                 close_windows_handle(second_handle)
                 close_windows_handle(first_handle)
+
+
+class AutostartLauncherClaimTests(unittest.TestCase):
+    def test_claim_uses_app_directory_scoped_mutex(self):
+        calls = []
+
+        handle = claim_autostart_launcher(
+            "E:/sms",
+            acquire_mutex=lambda name: calls.append(name) or ("leader", 0),
+        )
+
+        self.assertEqual(handle, "leader")
+        self.assertEqual(calls, [autostart_launcher_mutex_name("E:/sms")])
+
+    def test_existing_launcher_is_not_claimed_and_probe_handle_is_closed(self):
+        closed = []
+
+        handle = claim_autostart_launcher(
+            "E:/sms",
+            acquire_mutex=lambda _name: ("occupied", 183),
+            close_handle=closed.append,
+            existing_error=lambda code: code == 183,
+        )
+
+        self.assertIsNone(handle)
+        self.assertEqual(closed, ["occupied"])
+
+    def test_active_count_prunes_stale_state_entries(self):
+        state = {
+            "version": 1,
+            "desired_count": 4,
+            "active_instances": [1, 2, 3, 4],
+        }
+
+        count = get_active_autostart_instance_count(
+            app_dir="E:/sms",
+            state_path="state.json",
+            is_instance_active=lambda number: number in {1, 3},
+            load_state=lambda *_args, **_kwargs: state,
+            with_state_lock=lambda _app_dir, callback: callback(),
+        )
+
+        self.assertEqual(count, 2)
 
 
 class AutostartCompanionLaunchTests(unittest.TestCase):
@@ -267,6 +339,90 @@ class AutostartCompanionLaunchTests(unittest.TestCase):
         self.assertEqual(launched, 2)
         self.assertEqual([item[0] for item in calls], ["wait", "launch", "wait", "launch"])
         self.assertEqual(calls[1], ("launch", ["sms.exe", "--autostart-child"], {"clean": "1"}, "E:/sms"))
+
+    def test_leader_only_launches_missing_instances(self):
+        launches = []
+
+        launched = launch_autostart_companions(
+            desired_count=5,
+            active_instance_count=2,
+            allow_multi_instance=True,
+            is_leader=True,
+            autostart_flag="--autostart",
+            wait_before_launch=lambda _seconds: False,
+            prepare_launch=lambda *_args: (["sms.exe", "--autostart-child"], "E:/sms"),
+            launch_process=lambda command, env, cwd: launches.append((command, env, cwd)),
+        )
+
+        self.assertEqual(launched, 3)
+        self.assertEqual(len(launches), 3)
+
+    def test_instances_started_during_restore_reduce_remaining_launches(self):
+        launches = []
+        observed_counts = iter((1, 2, 3))
+
+        launched = launch_autostart_companions(
+            desired_count=3,
+            active_instance_count=lambda: next(observed_counts),
+            allow_multi_instance=True,
+            is_leader=True,
+            autostart_flag="--autostart",
+            wait_before_launch=lambda _seconds: False,
+            prepare_launch=lambda *_args: (["sms.exe", "--autostart-child"], "E:/sms"),
+            launch_process=lambda command, env, cwd: launches.append((command, env, cwd)),
+        )
+
+        self.assertEqual(launched, 1)
+        self.assertEqual(len(launches), 1)
+
+    def test_transient_launch_failure_is_retried(self):
+        attempts = []
+        logs = []
+
+        def launch(command, env, cwd):
+            attempts.append((command, env, cwd))
+            if len(attempts) == 1:
+                raise OSError("transient")
+
+        launched = launch_autostart_companions(
+            desired_count=3,
+            allow_multi_instance=True,
+            is_leader=True,
+            autostart_flag="--autostart",
+            retry_count=3,
+            wait_before_launch=lambda _seconds: False,
+            prepare_launch=lambda *_args: (["sms.exe", "--autostart-child"], "E:/sms"),
+            launch_process=launch,
+            clean_env=lambda: {},
+            log_error=logs.append,
+        )
+
+        self.assertEqual(launched, 2)
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(any("attempt 1/3" in message for message in logs))
+
+    def test_exhausted_retries_do_not_skip_later_launch_slots(self):
+        attempts = []
+
+        def launch(_command, env, cwd):
+            attempts.append(len(attempts) + 1)
+            if len(attempts) <= 2:
+                raise OSError("persistent for first slot")
+
+        launched = launch_autostart_companions(
+            desired_count=3,
+            allow_multi_instance=True,
+            is_leader=True,
+            autostart_flag="--autostart",
+            retry_count=2,
+            wait_before_launch=lambda _seconds: False,
+            prepare_launch=lambda *_args: (["sms.exe", "--autostart-child"], "E:/sms"),
+            launch_process=launch,
+            clean_env=lambda: {},
+        )
+
+        self.assertEqual(launched, 1)
+        self.assertEqual(len(attempts), 3)
 
     def test_child_and_single_instance_mode_never_expand(self):
         for allow_multi, is_leader in ((True, False), (False, True)):

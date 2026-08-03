@@ -10,25 +10,31 @@ from sms_core.app_launch import (
     launch_detached_process,
 )
 from sms_core.windows_runtime import (
+    acquire_mutex_with_error,
     acquire_named_mutex_lock,
+    close_windows_handle,
+    is_existing_instance_error,
     release_named_mutex_lock,
 )
 
 
 AUTOSTART_STATE_FILENAME = "autostart_instances.json"
 AUTOSTART_STATE_MUTEX_PREFIX = "Air724UG_SMS_Autostart_State_V1"
+AUTOSTART_LAUNCHER_MUTEX_PREFIX = "Air724UG_SMS_Autostart_Launcher_V1"
 AUTOSTART_CHILD_FLAG = "--autostart-child"
 # Keep automatic restoration aligned with the per-process instance-number
 # boundary.  This is a technical guard against invalid state, not a smaller
 # product limit on how many running instances may be restored after login.
 MAX_AUTOSTART_INSTANCES = 9999
 AUTOSTART_LAUNCH_INTERVAL_SECONDS = 1.0
+AUTOSTART_LAUNCH_RETRY_COUNT = 3
 
 
 @dataclass(frozen=True)
 class AutostartRegistrationResult:
     desired_count: int
     registered: bool
+    active_count: int = 1
 
 
 def get_autostart_state_path(app_dir):
@@ -39,6 +45,43 @@ def autostart_state_mutex_name(app_dir):
     normalized = os.path.normcase(os.path.abspath(str(app_dir)))
     digest = hashlib.sha256(normalized.encode("utf-8", "surrogatepass")).hexdigest()[:16]
     return f"{AUTOSTART_STATE_MUTEX_PREFIX}_{digest}"
+
+
+def autostart_launcher_mutex_name(app_dir):
+    normalized = os.path.normcase(os.path.abspath(str(app_dir)))
+    digest = hashlib.sha256(normalized.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return f"{AUTOSTART_LAUNCHER_MUTEX_PREFIX}_{digest}"
+
+
+def claim_autostart_launcher(
+    app_dir,
+    *,
+    acquire_mutex=acquire_mutex_with_error,
+    close_handle=close_windows_handle,
+    existing_error=is_existing_instance_error,
+    log_error=None,
+):
+    try:
+        handle, last_error = acquire_mutex(autostart_launcher_mutex_name(app_dir))
+    except Exception as exc:
+        _safe_log(log_error, f"Claim autostart launcher mutex failed: {exc!r}")
+        return None
+
+    if existing_error(last_error):
+        if handle:
+            try:
+                close_handle(handle)
+            except Exception as exc:
+                _safe_log(log_error, f"Close occupied autostart launcher mutex failed: {exc!r}")
+        return None
+
+    if not handle:
+        _safe_log(
+            log_error,
+            f"Claim autostart launcher mutex failed with error code {last_error}",
+        )
+        return None
+    return handle
 
 
 def normalize_desired_count(value, *, maximum=MAX_AUTOSTART_INSTANCES):
@@ -155,7 +198,6 @@ def register_autostart_instance(
     app_dir,
     state_path,
     instance_number,
-    preserve_desired,
     allow_multi_instance,
     is_instance_active,
     log_error=None,
@@ -179,10 +221,10 @@ def register_autostart_instance(
 
         if not allow_multi_instance:
             desired = 1
-        elif preserve_desired:
-            desired = normalize_desired_count(max(previous_desired, len(active)))
         else:
-            desired = normalize_desired_count(len(active))
+            # Starting a process must never lower the remembered target. Only
+            # a clean unregister represents an intentional instance removal.
+            desired = normalize_desired_count(max(previous_desired, len(active)))
 
         save_state(
             state_path,
@@ -192,7 +234,7 @@ def register_autostart_instance(
                 "active_instances": active,
             },
         )
-        return AutostartRegistrationResult(desired, True)
+        return AutostartRegistrationResult(desired, True, len(active))
 
     try:
         return with_state_lock(app_dir, update)
@@ -203,7 +245,7 @@ def register_autostart_instance(
             desired = normalize_desired_count(fallback.get("desired_count", 1))
         except Exception:
             desired = 1
-        return AutostartRegistrationResult(desired, False)
+        return AutostartRegistrationResult(desired, False, 1)
 
 
 def unregister_autostart_instance(
@@ -249,6 +291,31 @@ def unregister_autostart_instance(
         return None
 
 
+def get_active_autostart_instance_count(
+    *,
+    app_dir,
+    state_path,
+    is_instance_active,
+    log_error=None,
+    load_state=_load_state,
+    with_state_lock=_with_state_lock,
+):
+    def read():
+        state = load_state(state_path, log_error=log_error)
+        active = _reconcile_active_instances(
+            state.get("active_instances", []),
+            is_instance_active,
+            log_error=log_error,
+        )
+        return max(1, len(active))
+
+    try:
+        return with_state_lock(app_dir, read)
+    except Exception as exc:
+        _safe_log(log_error, f"Read active autostart instance count failed: {exc!r}")
+        return 1
+
+
 def build_autostart_child_command(
     autostart_flag,
     child_flag=AUTOSTART_CHILD_FLAG,
@@ -270,30 +337,68 @@ def launch_autostart_companions(
     is_leader,
     autostart_flag,
     child_flag=AUTOSTART_CHILD_FLAG,
+    active_instance_count=1,
     wait_before_launch=lambda seconds: False,
     interval_seconds=AUTOSTART_LAUNCH_INTERVAL_SECONDS,
+    retry_count=AUTOSTART_LAUNCH_RETRY_COUNT,
     prepare_launch=build_autostart_child_command,
     launch_process=launch_detached_process,
     clean_env=get_clean_restart_env,
     log_error=None,
 ):
     target_count = normalize_desired_count(desired_count)
-    if not allow_multi_instance or not is_leader or target_count <= 1:
+    if not allow_multi_instance or not is_leader:
         return 0
 
-    command, workdir = prepare_launch(autostart_flag, child_flag)
-    launched = 0
-    for _index in range(target_count - 1):
-        if wait_before_launch(max(0.0, float(interval_seconds))):
-            break
+    def read_active_count(fallback):
         try:
-            launch_process(
-                list(command),
-                env=clean_env(),
-                cwd=workdir,
-            )
-            launched += 1
+            value = active_instance_count() if callable(active_instance_count) else active_instance_count
+            return max(1, int(value or 1))
         except Exception as exc:
-            _safe_log(log_error, f"Launch autostart companion failed: {exc!r}")
-            break
+            _safe_log(log_error, f"Read active instance count for autostart failed: {exc!r}")
+            return max(1, int(fallback or 1))
+
+    accounted_count = read_active_count(1)
+    launch_slot_count = max(0, target_count - accounted_count)
+    if launch_slot_count <= 0:
+        return 0
+
+    try:
+        attempts_per_instance = max(1, int(retry_count))
+    except (TypeError, ValueError):
+        attempts_per_instance = AUTOSTART_LAUNCH_RETRY_COUNT
+
+    try:
+        command, workdir = prepare_launch(autostart_flag, child_flag)
+    except Exception as exc:
+        _safe_log(log_error, f"Prepare autostart companion launch failed: {exc!r}")
+        return 0
+
+    launched = 0
+    for companion_index in range(launch_slot_count):
+        for attempt_index in range(attempts_per_instance):
+            if wait_before_launch(max(0.0, float(interval_seconds))):
+                return launched
+            accounted_count = max(
+                accounted_count,
+                read_active_count(accounted_count),
+            )
+            if accounted_count >= target_count:
+                return launched
+            try:
+                launch_process(
+                    list(command),
+                    env=clean_env(),
+                    cwd=workdir,
+                )
+                launched += 1
+                accounted_count += 1
+                break
+            except Exception as exc:
+                _safe_log(
+                    log_error,
+                    "Launch autostart companion "
+                    f"{companion_index + 1}/{launch_slot_count} failed "
+                    f"(attempt {attempt_index + 1}/{attempts_per_instance}): {exc!r}",
+                )
     return launched

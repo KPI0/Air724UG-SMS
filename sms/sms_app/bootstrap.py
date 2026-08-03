@@ -63,6 +63,8 @@ from sms_core.app_launch import (
 )
 from sms_core.autostart_instances import (
     AUTOSTART_CHILD_FLAG,
+    claim_autostart_launcher,
+    get_active_autostart_instance_count,
     get_autostart_state_path,
     launch_autostart_companions,
     register_autostart_instance,
@@ -190,6 +192,7 @@ def _initialize_paths_and_constants():
     global RECONNECT_INTERVAL, APP_VERSION, GITHUB_OWNER, GITHUB_REPO
     global AUTOSTART_FLAG, RESTART_HELPER_FLAG, START_MINIMIZED
     global AUTOSTART_STATE_FILE, AUTOSTART_IS_LAUNCH, AUTOSTART_IS_LEADER
+    global AUTOSTART_IS_LAUNCHER_CANDIDATE
     global APP_START_MONO, START_UI_DELAY, VOICE_ENABLED, IMEI_REGEX
 
     IMEI_REGEX = re.compile(r"\b(\d{14,17})\b")
@@ -209,7 +212,10 @@ def _initialize_paths_and_constants():
     AUTOSTART_FLAG = "--autostart"
     RESTART_HELPER_FLAG = "--restart-helper"
     AUTOSTART_IS_LAUNCH = AUTOSTART_FLAG in sys.argv
-    AUTOSTART_IS_LEADER = AUTOSTART_IS_LAUNCH and AUTOSTART_CHILD_FLAG not in sys.argv
+    AUTOSTART_IS_LAUNCHER_CANDIDATE = (
+        AUTOSTART_IS_LAUNCH and AUTOSTART_CHILD_FLAG not in sys.argv
+    )
+    AUTOSTART_IS_LEADER = False
     AUTOSTART_STATE_FILE = get_autostart_state_path(APP_DIR)
     START_MINIMIZED = AUTOSTART_IS_LAUNCH
     APP_START_MONO = time.monotonic()
@@ -391,8 +397,9 @@ def _initialize_worker_state():
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
-    global autostart_spawn_thread, AUTOSTART_INSTANCE_REGISTERED
-    global AUTOSTART_DESIRED_INSTANCE_COUNT
+    global autostart_spawn_thread, autostart_launcher_mutex
+    global AUTOSTART_INSTANCE_REGISTERED, AUTOSTART_DESIRED_INSTANCE_COUNT
+    global AUTOSTART_ACTIVE_INSTANCE_COUNT
     global SERIAL_COMMAND_RESPONSE_COORDINATOR
     global SERIAL_COMMAND_THREAD_REGISTRY, UPDATE_THREAD_REGISTRY, UPDATE_CHECK_TASK_STATE
 
@@ -413,8 +420,10 @@ def _initialize_worker_state():
     app_mutex = None
     instance_number_mutex = None
     autostart_spawn_thread = None
+    autostart_launcher_mutex = None
     AUTOSTART_INSTANCE_REGISTERED = False
     AUTOSTART_DESIRED_INSTANCE_COUNT = 1
+    AUTOSTART_ACTIVE_INSTANCE_COUNT = 1
     SMS_SEND_COORDINATOR = DEFAULT_SMS_PDU_SEND_COORDINATOR
     SERIAL_COMMAND_RESPONSE_COORDINATOR = DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
@@ -444,10 +453,11 @@ def _install_runtime_bindings():
 
 
 def _run_startup_guards():
-    global APP_INSTANCE_NUMBER, instance_number_mutex
+    global APP_INSTANCE_NUMBER, instance_number_mutex, autostart_launcher_mutex
     global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE
     global LOG_PREFIX, TTS_FILE
-    global AUTOSTART_DESIRED_INSTANCE_COUNT, AUTOSTART_INSTANCE_REGISTERED
+    global AUTOSTART_IS_LEADER, AUTOSTART_DESIRED_INSTANCE_COUNT
+    global AUTOSTART_ACTIVE_INSTANCE_COUNT, AUTOSTART_INSTANCE_REGISTERED
 
     maybe_run_restart_helper_mode(RESTART_HELPER_FLAG)
     check_single_instance()
@@ -459,7 +469,6 @@ def _run_startup_guards():
         app_dir=APP_DIR,
         state_path=AUTOSTART_STATE_FILE,
         instance_number=APP_INSTANCE_NUMBER,
-        preserve_desired=AUTOSTART_IS_LAUNCH,
         allow_multi_instance=ALLOW_MULTI_INSTANCE,
         is_instance_active=lambda number: is_instance_number_active_app_runtime(
             app_dir=APP_DIR,
@@ -468,7 +477,18 @@ def _run_startup_guards():
         log_error=log_file_only,
     )
     AUTOSTART_DESIRED_INSTANCE_COUNT = registration.desired_count
+    AUTOSTART_ACTIVE_INSTANCE_COUNT = registration.active_count
     AUTOSTART_INSTANCE_REGISTERED = registration.registered
+    if (
+        AUTOSTART_IS_LAUNCHER_CANDIDATE
+        and ALLOW_MULTI_INSTANCE
+        and AUTOSTART_DESIRED_INSTANCE_COUNT > AUTOSTART_ACTIVE_INSTANCE_COUNT
+    ):
+        autostart_launcher_mutex = claim_autostart_launcher(
+            APP_DIR,
+            log_error=log_file_only,
+        )
+        AUTOSTART_IS_LEADER = bool(autostart_launcher_mutex)
     APP_DISPLAY_TITLE = format_instance_window_title(APP_WINDOW_TITLE, APP_INSTANCE_NUMBER)
     SERIAL_DEBUG_WINDOW_TITLE = format_instance_window_title("串口调试", APP_INSTANCE_NUMBER)
     if LOG_PREFIX == "system":
@@ -611,9 +631,8 @@ def _start_services():
     serial_thread = start_daemon_thread("serial_reader", read_serial, log_error=log_file_only)
     if (
         AUTOSTART_IS_LEADER
-        and APP_INSTANCE_NUMBER == 1
         and ALLOW_MULTI_INSTANCE
-        and AUTOSTART_DESIRED_INSTANCE_COUNT > 1
+        and AUTOSTART_DESIRED_INSTANCE_COUNT > AUTOSTART_ACTIVE_INSTANCE_COUNT
     ):
         autostart_spawn_thread = start_daemon_thread(
             "autostart_instance_launcher",
@@ -623,6 +642,15 @@ def _start_services():
                 is_leader=True,
                 autostart_flag=AUTOSTART_FLAG,
                 child_flag=AUTOSTART_CHILD_FLAG,
+                active_instance_count=lambda: get_active_autostart_instance_count(
+                    app_dir=APP_DIR,
+                    state_path=AUTOSTART_STATE_FILE,
+                    is_instance_active=lambda number: is_instance_number_active_app_runtime(
+                        app_dir=APP_DIR,
+                        instance_number=number,
+                    ),
+                    log_error=log_file_only,
+                ),
                 wait_before_launch=TK_SHUTDOWN.wait,
                 log_error=log_file_only,
             ),
