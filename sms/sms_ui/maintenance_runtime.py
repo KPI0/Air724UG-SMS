@@ -2,6 +2,7 @@ import threading
 from dataclasses import dataclass
 
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_core.config_schema import normalize_log_retention_days
 from sms_core.threading_runtime import start_registered_daemon_thread
 from sms_core.updates import (
     format_proxy_test_result,
@@ -30,7 +31,7 @@ class AutoLogCleanupState:
 
 
 def normalized_retention_days(days):
-    return days if days >= 0 else 0
+    return normalize_log_retention_days(days)
 
 
 def open_log_dir_runtime(log_dir, *, path_abspath, path_exists, open_path, show_message):

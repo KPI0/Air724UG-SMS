@@ -264,7 +264,7 @@ class SmsSerialReplayFixtureTests(unittest.TestCase):
         self.assertEqual(cloud_bodies, [new_body])
         self.assertNotIn(old_part2, popups[0])
 
-    def test_replay_reuses_production_repeat_state_across_all_lines(self):
+    def test_same_second_identical_single_pdus_are_delivered_independently(self):
         sender = "10086"
         timestamp = "26/07/22,19:20:00+32"
         body = "DUPLICATE-MESSAGE-BODY"
@@ -282,7 +282,7 @@ class SmsSerialReplayFixtureTests(unittest.TestCase):
         calls = replay_lines(lines)
         popups = [args[0] for args in _calls_by_name(calls, "sms_popup")]
 
-        self.assertEqual(popups, [body])
+        self.assertEqual(popups, [body, body])
 
     def test_same_timestamp_shorter_followup_is_not_rewritten_or_suppressed(self):
         sender = "10001"

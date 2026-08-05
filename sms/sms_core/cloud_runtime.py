@@ -11,7 +11,7 @@ from sms_core.cloud_control_settings import (
     update_cloud_control_settings,
     write_cloud_control_settings,
 )
-from sms_core.cloud_protocol import normalize_cloud_ws_url
+from sms_core.cloud_protocol import cloud_ws_url_has_host, normalize_cloud_ws_url
 from sms_core.threading_runtime import start_daemon_thread
 
 
@@ -180,12 +180,15 @@ def stop_cloud_control_runtime(
     set_ws,
     set_cloud_status,
     run_coroutine_threadsafe,
+    clear_sms_event_state=None,
     stopped_status=cloud_stopped_status,
 ):
     stop_event.set()
     set_connected(False)
     set_authorized(False)
     reset_serial_log_state()
+    if clear_sms_event_state is not None and not enabled:
+        clear_sms_event_state()
 
     close_coro = None
     try:
@@ -296,7 +299,10 @@ def validate_cloud_start(websockets_available, url, device_secret):
             warning_message="请先填写 WebSocket 地址。",
         )
 
-    if not (normalized_url.startswith("ws://") or normalized_url.startswith("wss://")):
+    if not (
+        normalized_url.lower().startswith("ws://")
+        or normalized_url.lower().startswith("wss://")
+    ):
         return CloudStartValidation(
             ok=False,
             url=normalized_url,
@@ -304,6 +310,19 @@ def validate_cloud_start(websockets_available, url, device_secret):
             status_color="#cc0000",
             warning_title="云端控制",
             warning_message="WebSocket 地址必须以 ws:// 或 wss:// 开头。",
+        )
+
+    if not cloud_ws_url_has_host(normalized_url):
+        return CloudStartValidation(
+            ok=False,
+            url=normalized_url,
+            status_text="🌐 地址错误",
+            status_color="#cc0000",
+            warning_title="云端控制",
+            warning_message=(
+                "WebSocket 地址必须包含有效的主机名或 IP 地址，"
+                "且端口和路径格式正确。"
+            ),
         )
 
     if not str(device_secret or "").strip():

@@ -3,6 +3,7 @@ from tkinter import messagebox, ttk
 
 from sms_core.serial_debug import (
     build_information_center_command,
+    build_manual_operator_command,
     build_own_number_commands,
     build_sn_command,
 )
@@ -83,6 +84,42 @@ def open_modify_information_center_dialog(
             return
         try:
             command = build_information_center_command(number_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
+            return
+        win.destroy()
+        quick_send(command)
+
+    finish_debug_dialog(win, center_window, parent, ent, submit)
+
+
+def open_manual_operator_dialog(parent, enabled_var, quick_send, center_window):
+    win = create_debug_dialog(parent)
+    win.title("手动切换运营商")
+    win.resizable(False, False)
+    win.transient(parent)
+    win.grab_set()
+
+    frm = ttk.Frame(win, padding=15)
+    frm.pack(fill="both", expand=True)
+
+    ttk.Label(frm, text="请输入运营商 PLMN：").pack(anchor="w", pady=(0, 10))
+    plmn_var = tk.StringVar()
+    ent = ttk.Entry(frm, textvariable=plmn_var, width=28)
+    ent.pack(fill="x", pady=(0, 5))
+
+    tk.Label(
+        frm,
+        text="💡 请填写附近运营商查询结果中的 5-6 位数字，切换时可能短暂掉线。",
+        fg="gray",
+        font=("微软雅黑", 9),
+    ).pack(anchor="w", pady=(0, 15))
+
+    def submit():
+        if not ensure_debug_enabled(enabled_var, win):
+            return
+        try:
+            command = build_manual_operator_command(plmn_var.get())
         except ValueError as exc:
             messagebox.showerror("错误", str(exc), parent=win)
             return

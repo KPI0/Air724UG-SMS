@@ -292,10 +292,12 @@ class CloudWsRuntimeTests(unittest.TestCase):
             sleep=sleep,
             wait_for=wait_for,
             jitter=lambda start, end: 0.0,
+            schedule_pending_sms_events=lambda: calls.append(("schedule_sms",)),
         ))
 
         self.assertIn(("register", ws), calls)
         self.assertIn(("message", ws, "hello"), calls)
+        self.assertEqual(calls.count(("schedule_sms",)), 2)
         self.assertIn(("reset",), calls)
         self.assertTrue(calls[-1][0] == "log")
         self.assertGreaterEqual(

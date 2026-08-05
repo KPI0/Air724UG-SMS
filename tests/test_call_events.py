@@ -111,6 +111,38 @@ class CallEventTests(unittest.TestCase):
         self.assertEqual(decision.state.ring_timeout_target, 22.0)
         self.assertFalse(decision.stop_processing)
 
+    def test_handle_call_line_reports_corrupted_clip_as_unknown_call(self):
+        decision = handle_call_line(
+            '+CLIP: "(invalid)",129,,,,0',
+            CallState(),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertEqual(decision.incoming_number, "未知号码")
+        self.assertEqual(decision.show_popup_number, "未知号码")
+        self.assertEqual(decision.state.last_clip_num, "未知号码")
+        self.assertEqual(decision.state.ring_timeout_target, 22.0)
+
+    def test_handle_call_line_blocks_unknown_caller_in_whitelist_mode(self):
+        decision = handle_call_line(
+            '+CLIP: "",129',
+            CallState(),
+            now=10.0,
+            filter_mode="Whitelist",
+            whitelist=["10086", "未知号码"],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertEqual(decision.blocked_number, "未知号码")
+        self.assertEqual(decision.block_reason, "不在白名单")
+        self.assertTrue(decision.stop_processing)
+        self.assertEqual(decision.state.ring_timeout_target, 0.0)
+
     def test_handle_call_line_ignores_websocket_json_clip_payload(self):
         decision = handle_call_line(
             '[I]-[websocket] json: {"message":"+CLIP: \\"+8613123123123\\",129"}',

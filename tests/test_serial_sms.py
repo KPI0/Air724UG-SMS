@@ -114,6 +114,42 @@ class SerialSmsCollectorDecisionTests(unittest.TestCase):
         self.assertEqual(boundary.action, "boundary")
         self.assertEqual(flushed, ["flush"])
 
+    def test_handle_sms_collector_line_treats_star_urc_as_boundary(self):
+        collector = SmsPendingCollector(parse_head)
+        collector.start("+8613123123123 first", now=10.0)
+        flushed = []
+
+        boundary = handle_sms_collector_line(
+            collector,
+            "*CGEV: DEACT,6",
+            now=10.1,
+            flush_callback=lambda: flushed.append("flush"),
+        )
+
+        self.assertEqual(boundary.action, "boundary")
+        self.assertFalse(boundary.continue_read)
+        self.assertEqual(collector.raw_lines, [])
+        self.assertEqual(flushed, ["flush"])
+
+    def test_handle_sms_collector_line_keeps_unrecognized_star_content(self):
+        collector = SmsPendingCollector(parse_head)
+        collector.start("+8613123123123 first", now=10.0)
+        flushed = []
+
+        lines = ["*NOTICE=hello", "*CGEV", "*CGEV=body", "*cgev: body"]
+        for index, line in enumerate(lines, start=1):
+            consumed = handle_sms_collector_line(
+                collector,
+                line,
+                now=10.0 + index / 10,
+                flush_callback=lambda: flushed.append("flush"),
+            )
+            self.assertEqual(consumed.action, "consumed")
+            self.assertTrue(consumed.continue_read)
+
+        self.assertEqual(collector.raw_lines, lines)
+        self.assertEqual(flushed, [])
+
     def test_collector_flush_returns_raw_callback_output(self):
         collector = SmsPendingCollector(parse_head)
         collector.start("+8613123123123 first", now=10.0)

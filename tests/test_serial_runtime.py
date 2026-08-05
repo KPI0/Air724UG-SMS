@@ -281,6 +281,51 @@ class SerialRuntimeTests(unittest.TestCase):
             for item in calls
         ))
 
+    def test_corrupted_clip_dispatches_unknown_caller(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+
+        handle_serial_runtime_line(
+            state,
+            '+CLIP: "(invalid)",129,,,,0',
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            runtime_callbacks(calls),
+            {},
+        )
+
+        self.assertEqual(state.call_state.last_clip_num, "未知号码")
+        self.assertIn(("call_popup", ("未知号码",)), calls)
+        self.assertTrue(any(
+            item[0] == "push"
+            and item[2].get("variables", {}).get("caller") == "未知号码"
+            for item in calls
+        ))
+
+    def test_whitelist_mode_hangs_up_hidden_caller(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+
+        result = handle_serial_runtime_line(
+            state,
+            '+CLIP: "",129',
+            10.0,
+            "COM5",
+            False,
+            runtime_config(
+                call_filter_mode="Whitelist",
+                call_whitelist=["10086", "未知号码"],
+            ),
+            runtime_callbacks(calls),
+            {},
+        )
+
+        self.assertTrue(result.continue_read)
+        self.assertIn(("hangup",), calls)
+        self.assertFalse(any(item[0] == "call_popup" for item in calls))
+
     def test_unhandled_call_hangup_creates_one_missed_call(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)

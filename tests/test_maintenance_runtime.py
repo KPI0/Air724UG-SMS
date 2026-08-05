@@ -44,8 +44,8 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         self.assertIn("14", message)
         self.assertIn("6", message)
 
-    def test_normalized_retention_days_clamps_negative_values(self):
-        self.assertEqual(normalized_retention_days(-1), 0)
+    def test_normalized_retention_days_uses_safe_default_for_negative_values(self):
+        self.assertEqual(normalized_retention_days(-1), 30)
         self.assertEqual(normalized_retention_days(7), 7)
 
     def test_open_log_dir_runtime_opens_existing_path(self):
@@ -173,7 +173,7 @@ class MaintenanceRuntimeTests(unittest.TestCase):
             ui_post=lambda callback: callback(),
         )
 
-        self.assertEqual(calls, [("cleanup", 0), ("after", 7200000, "tick")])
+        self.assertEqual(calls, [("cleanup", 30), ("after", 7200000, "tick")])
         self.assertEqual(state.after_id, "after-2")
         self.assertEqual(ui_messages[0][1], "normal")
         self.assertIn("4", ui_messages[0][0])

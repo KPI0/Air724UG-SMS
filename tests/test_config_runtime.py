@@ -298,6 +298,25 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(values.baud, 115200)
         self.assertTrue(any("must be positive" in message for message in logs))
 
+    def test_read_startup_config_values_rejects_unsafe_ui_numeric_ranges(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {
+            "log_retention_days": "-1",
+            "sms_font_size": "100000",
+        }
+        logs = []
+
+        values = read_startup_config_values(
+            config,
+            default_voice_text="default",
+            log_error=logs.append,
+        )
+
+        self.assertEqual(values.log_retention_days, 30)
+        self.assertEqual(values.sms_font_size, 30)
+        self.assertTrue(any("log_retention_days" in message for message in logs))
+        self.assertTrue(any("sms_font_size" in message for message in logs))
+
     def test_initialize_config_runtime_creates_defaults_when_missing(self):
         config = configparser.ConfigParser()
         calls = []

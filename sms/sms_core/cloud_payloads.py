@@ -130,6 +130,12 @@ def build_sms_event_payload(
         "raw": (callback_head + "\n" + body).strip() if callback_head and first_body != body else body,
     }
     meta = metadata if isinstance(metadata, dict) else {}
+    sms_time = str(meta.get("sms_time") or "").strip()
+    if sms_time:
+        payload["sms_time"] = sms_time
+    sms_time_identity = str(meta.get("sms_time_identity") or "").strip()
+    if sms_time_identity:
+        payload["sms_time_identity"] = sms_time_identity
     message_trace_id = str(meta.get("message_trace_id") or "").strip()
     if message_trace_id:
         payload["message_trace_id"] = message_trace_id

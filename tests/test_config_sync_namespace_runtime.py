@@ -1,5 +1,6 @@
 import configparser
 import threading
+import tkinter as tk
 import unittest
 
 from sms_ui.config_sync_namespace_runtime import (
@@ -23,6 +24,11 @@ class FakeVar:
 
 
 class FakeRoot:
+    def winfo_rgb(self, color):
+        if color == "not-a-color":
+            raise tk.TclError("unknown color name")
+        return (0, 0, 0)
+
     def after(self, *_args):
         return "after-id"
 
@@ -192,6 +198,56 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         ]
         self.assertEqual(failure_logs, ["Reload shared UI config failed (ValueError)"])
         self.assertNotIn("invalid config", failure_logs[0])
+
+    def test_reload_rejects_invalid_font_color_and_retains_valid_runtime_color(self):
+        namespace = self.make_namespace()
+        snapshot = self.disk_snapshot()
+        snapshot["ui"]["sms_font_size"] = "30"
+        snapshot["ui"]["sms_font_color"] = "not-a-color"
+
+        changed = reload_shared_ui_config_namespace_runtime(
+            namespace,
+            load_snapshot=lambda _path: snapshot,
+        )
+
+        self.assertNotIn("短信字体", changed)
+        self.assertEqual(namespace["SMS_FONT_COLOR"], "#ff0000")
+        self.assertEqual(namespace["config"].get("ui", "sms_font_color"), "#ff0000")
+        self.assertNotIn("font", namespace["calls"])
+        repair_logs = [
+            item[1]
+            for item in namespace["calls"]
+            if isinstance(item, tuple)
+            and item[0] == "log"
+            and "invalid synced SMS font color" in item[1]
+        ]
+        self.assertEqual(len(repair_logs), 1)
+        self.assertNotIn("not-a-color", repair_logs[0])
+
+    def test_reload_rejects_unsafe_font_size_and_log_retention_ranges(self):
+        namespace = self.make_namespace()
+        snapshot = self.disk_snapshot()
+        snapshot["ui"]["sms_font_color"] = "#ff0000"
+        snapshot["ui"]["auto_log_cleanup"] = "1"
+        snapshot["ui"]["sms_font_size"] = "100000"
+        snapshot["ui"]["log_retention_days"] = "-1"
+
+        changed = reload_shared_ui_config_namespace_runtime(
+            namespace,
+            load_snapshot=lambda _path: snapshot,
+        )
+
+        self.assertEqual(namespace["SMS_FONT_SIZE"], 30)
+        self.assertEqual(namespace["LOG_RETENTION_DAYS"], 30)
+        self.assertNotIn("短信字体", changed)
+        self.assertNotIn("日志清理", changed)
+        logs = [
+            item[1]
+            for item in namespace["calls"]
+            if isinstance(item, tuple) and item[0] == "log"
+        ]
+        self.assertTrue(any("sms_font_size" in message for message in logs))
+        self.assertTrue(any("log_retention_days" in message for message in logs))
 
     def test_reload_syncs_cloud_sensitive_command_setting(self):
         namespace = self.make_namespace()

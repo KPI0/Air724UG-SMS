@@ -19,6 +19,7 @@ from sms_ui.serial_debug_panel import (
     create_serial_debug_quick_actions,
     redraw_serial_debug_filter,
 )
+from sms_ui.serial_debug_dialogs import open_manual_operator_dialog
 from sms_ui.serial_debug_runtime import (
     SerialDebugPauseController,
     close_serial_debug_runtime,
@@ -188,6 +189,12 @@ def open_serial_debug_window_dialog(
     serial_text, quick_panel, quick_scroll_frame = create_serial_debug_body(
         win,
         quick_send,
+        lambda: open_manual_operator_dialog(
+            win,
+            enabled_var,
+            quick_send,
+            center_window,
+        ),
     )
 
     def dial_phone(phone):

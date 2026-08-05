@@ -54,6 +54,7 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_send_register": lambda ws: ("register", ws),
             "_cloud_wait_login_ack": lambda ws: ("ack", ws),
             "_handle_cloud_message": lambda ws, message: ("message", ws, message),
+            "_schedule_cloud_sms_event_drain": lambda: "schedule_sms",
             "_cloud_ws_main": lambda url, interval: ("main", url, interval),
         }
 
@@ -132,6 +133,7 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["connect"]("url"), ("connect", ("url",), {}))
         self.assertEqual(forwarded["monotonic"](), 10.0)
         self.assertTrue(forwarded["cloud_control_enabled"]())
+        self.assertEqual(forwarded["schedule_pending_sms_events"](), "schedule_sms")
         namespace["CLOUD_CONTROL_ENABLED"] = False
         self.assertFalse(forwarded["cloud_control_enabled"]())
 

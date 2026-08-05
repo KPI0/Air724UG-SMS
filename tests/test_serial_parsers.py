@@ -11,6 +11,7 @@ from sms_core.serial_parsers import (
     parse_lte_cell_messages,
     parse_serial_debug_insights,
     parse_clip_number,
+    is_clip_line,
     evaluate_call_filter,
     is_new_clip,
     is_ring_line,
@@ -76,6 +77,15 @@ class SerialParsersTests(unittest.TestCase):
         """Should return unknown carrier for unrecognized PLMN."""
         result = parse_operator_message('+COPS: 0,0,"99999"')
         self.assertIn("未知运营商", result)
+
+    def test_parse_operator_message_ignores_operator_scan_results(self):
+        line = (
+            '+COPS: (2,"China Mobile","CMCC","46000",7),'
+            '(1,"China Unicom","UNICOM","46001",7)'
+        )
+
+        self.assertIsNone(parse_operator_message(line))
+        self.assertEqual(parse_serial_debug_insights(line), [])
 
     def test_parse_sim_status_message_recognizes_ready(self):
         """Should recognize READY status."""
@@ -148,6 +158,22 @@ class SerialParsersTests(unittest.TestCase):
         number = parse_clip_number('+CLIP: "+8613123123123",145')
         self.assertEqual(number, "+8613123123123")
 
+    def test_parse_clip_number_treats_empty_or_corrupted_number_as_unknown(self):
+        for line in (
+            '+CLIP: "",129',
+            '+CLIP: "(invalid)",129,,,,0',
+            '+CLIP: "123abc",129',
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(is_clip_line(line))
+                self.assertEqual(parse_clip_number(line), "未知号码")
+
+    def test_is_clip_line_rejects_forwarded_json_and_unrelated_lines(self):
+        self.assertFalse(is_clip_line("RING"))
+        self.assertFalse(is_clip_line(
+            '[I]-[websocket] json: {"message":"+CLIP: \\"10086\\",129"}'
+        ))
+
     def test_parse_clip_number_returns_default_on_no_match(self):
         """Should return default when no CLIP found."""
         number = parse_clip_number("RING", default="未知号码")
@@ -171,6 +197,17 @@ class SerialParsersTests(unittest.TestCase):
             ["13123123123"],
             []
         )
+        self.assertTrue(blocked)
+        self.assertIn("白名单", reason)
+
+    def test_evaluate_call_filter_whitelist_never_allows_unknown_sentinel(self):
+        blocked, reason = evaluate_call_filter(
+            "未知号码",
+            "Whitelist",
+            ["未知号码"],
+            [],
+        )
+
         self.assertTrue(blocked)
         self.assertIn("白名单", reason)
 
@@ -275,11 +312,19 @@ class SerialParsersTests(unittest.TestCase):
         self.assertTrue(is_sms_collection_boundary("+CMTI: "))
         self.assertTrue(is_sms_collection_boundary("+CIEV: \"MESSAGE\",1"))
         self.assertTrue(is_sms_collection_boundary("+CME ERROR: 10"))
+        self.assertTrue(is_sms_collection_boundary("*CGEV: DEACT,6"))
 
     def test_is_sms_collection_boundary_keeps_numeric_plus_sms_content(self):
         """Should not treat SMS continuation lines starting with phone-like +digits as AT boundaries."""
         self.assertFalse(is_sms_collection_boundary("+8613123123123 可联系客服"))
         self.assertFalse(is_sms_collection_boundary("+100.00 元到账"))
+
+    def test_is_sms_collection_boundary_keeps_unrecognized_star_content(self):
+        self.assertFalse(is_sms_collection_boundary("*ABC: legitimate body"))
+        self.assertFalse(is_sms_collection_boundary("*NOTICE=hello"))
+        self.assertFalse(is_sms_collection_boundary("*CGEV"))
+        self.assertFalse(is_sms_collection_boundary("*CGEV=body"))
+        self.assertFalse(is_sms_collection_boundary("*cgev: body"))
 
     def test_is_sms_collection_boundary_recognizes_debug_marker(self):
         """Should recognize >>> as boundary."""

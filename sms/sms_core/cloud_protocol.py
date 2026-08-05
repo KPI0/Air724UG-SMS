@@ -23,12 +23,62 @@ def normalize_cloud_ws_url(url: str) -> str:
         parsed = urllib.parse.urlsplit(text)
         if parsed.scheme.lower() not in ("ws", "wss") or not parsed.netloc:
             return text
+        if "#" in text:
+            return text
         if parsed.path in ("", "/"):
             parsed = parsed._replace(path=CLOUD_WS_DEFAULT_PATH)
             return urllib.parse.urlunsplit(parsed)
     except Exception:
         return text
     return text
+
+
+def cloud_ws_url_has_host(url: str) -> bool:
+    """Return whether a WebSocket URL is syntactically safe to connect."""
+    try:
+        text = str(url or "").strip()
+        parsed = urllib.parse.urlsplit(text)
+        host = parsed.hostname
+    except (TypeError, ValueError):
+        return False
+    if any(char.isspace() for char in text):
+        return False
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    port_text = None
+    if authority.startswith("["):
+        closing = authority.find("]")
+        if closing <= 1:
+            return False
+        suffix = authority[closing + 1 :]
+        if suffix:
+            if not suffix.startswith(":"):
+                return False
+            port_text = suffix[1:]
+    else:
+        if authority.count(":") > 1:
+            return False
+        if ":" in authority:
+            _authority_host, port_text = authority.rsplit(":", 1)
+            if not _authority_host:
+                return False
+    if port_text is not None:
+        if not port_text.isdigit():
+            return False
+        try:
+            if not 1 <= int(port_text) <= 65535:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return (
+        parsed.scheme.lower() in ("ws", "wss")
+        and bool(host)
+        and bool(parsed.netloc)
+        and not parsed.fragment
+        and "#" not in text
+        and not any(ord(char) < 32 or ord(char) == 127 for char in text)
+        and not any(char.isspace() for char in host)
+        and not any(char in "/\\?#" for char in host)
+    )
 
 
 def normalize_imei(value: str) -> str:

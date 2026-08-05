@@ -1,3 +1,8 @@
+from sms_core.config_schema import (
+    DEFAULT_SMS_FONT_SIZE,
+    DEFAULT_UI_CONFIG,
+    normalize_sms_font_size,
+)
 from sms_ui.device_reset_runtime import send_reset_command_runtime
 from sms_ui.main_status_runtime import (
     apply_sms_font_style_runtime,
@@ -5,6 +10,7 @@ from sms_ui.main_status_runtime import (
     update_signal_status_runtime,
     update_temperature_status_runtime,
 )
+from sms_ui.sms_font_dialog import validated_tk_color
 from sms_ui.thread_runtime import ui_messagebox_runtime
 from sms_ui.tray_runtime import create_tray_icon_runtime, stop_tray_icon_runtime
 from sms_ui.ui_log_runtime import clear_text_widget_runtime
@@ -164,10 +170,47 @@ def set_status_namespace_runtime(namespace, text, color="black"):
 
 
 def apply_sms_font_style_namespace_runtime(namespace):
+    configured_size = namespace["SMS_FONT_SIZE"]
+    font_size = normalize_sms_font_size(configured_size)
+    if font_size != configured_size:
+        namespace["SMS_FONT_SIZE"] = font_size
+        config = namespace.get("config")
+        if config is not None:
+            try:
+                if not config.has_section("ui"):
+                    config["ui"] = {}
+                config.set("ui", "sms_font_size", str(font_size))
+            except Exception as exc:
+                _safe_log(namespace, f"Repair invalid SMS font size in config failed: {exc!r}")
+        _safe_log(
+            namespace,
+            f"Invalid SMS font size in config; using default size {DEFAULT_SMS_FONT_SIZE}",
+        )
+
+    configured_color = namespace["SMS_FONT_COLOR"]
+    font_color = validated_tk_color(namespace["text_area"], configured_color)
+    if font_color is None:
+        default_color = DEFAULT_UI_CONFIG["sms_font_color"]
+        font_color = validated_tk_color(namespace["text_area"], default_color)
+        if font_color is None:
+            _safe_log(namespace, "Default SMS font color could not be applied")
+            return False
+
+        namespace["SMS_FONT_COLOR"] = font_color
+        config = namespace.get("config")
+        if config is not None:
+            try:
+                if not config.has_section("ui"):
+                    config["ui"] = {}
+                config.set("ui", "sms_font_color", font_color)
+            except Exception as exc:
+                _safe_log(namespace, f"Repair invalid SMS font color in config failed: {exc!r}")
+        _safe_log(namespace, "Invalid SMS font color in config; using default color")
+
     return apply_sms_font_style_runtime(
         namespace["text_area"],
-        namespace["SMS_FONT_SIZE"],
-        namespace["SMS_FONT_COLOR"],
+        font_size,
+        font_color,
         log_error=namespace.get("log_file_only"),
     )
 

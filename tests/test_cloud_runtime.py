@@ -91,6 +91,37 @@ class CloudRuntimeTests(unittest.TestCase):
         self.assertEqual(result.url, "http://example.com/ws")
         self.assertEqual(result.status_text, "🌐 地址错误")
 
+    def test_validate_cloud_start_rejects_websocket_url_without_host(self):
+        for url in (
+            "ws://",
+            "ws:///ws/device",
+            "wss://?query=value",
+            "ws://:8765/ws/device",
+        ):
+            with self.subTest(url=url):
+                result = validate_cloud_start(True, url, "secret")
+
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status_text, "🌐 地址错误")
+                self.assertIn("主机名或 IP 地址", result.warning_message)
+
+    def test_validate_cloud_start_rejects_invalid_port_and_fragment(self):
+        for url in (
+            "ws://example.com:abc",
+            "ws://example.com:70000",
+            "ws://example.com:/ws/device",
+            "ws://example.com:+80/ws/device",
+            "ws://example.com:0/ws/device",
+            "ws://example.com/#fragment",
+            "ws://example.com/#",
+        ):
+            with self.subTest(url=url):
+                result = validate_cloud_start(True, url, "secret")
+
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status_text, "🌐 地址错误")
+                self.assertIn("端口和路径格式正确", result.warning_message)
+
     def test_validate_cloud_start_requires_secret(self):
         result = validate_cloud_start(True, "ws://127.0.0.1:8765", " ")
 
@@ -352,6 +383,7 @@ class CloudRuntimeTests(unittest.TestCase):
             set_connected=lambda value: calls.append(("connected", value)),
             set_authorized=lambda value: calls.append(("authorized", value)),
             reset_serial_log_state=lambda: calls.append(("reset_log",)),
+            clear_sms_event_state=lambda: calls.append(("clear_sms",)),
             get_loop=lambda: FakeLoop(),
             get_ws=lambda: "ws",
             schedule_unregister_then_close=unregister,
@@ -364,6 +396,7 @@ class CloudRuntimeTests(unittest.TestCase):
         self.assertIn(("connected", False), calls)
         self.assertIn(("authorized", False), calls)
         self.assertIn(("reset_log",), calls)
+        self.assertNotIn(("clear_sms",), calls)
         self.assertIn(("ws", None), calls)
         self.assertEqual(calls[-1][0], "status")
         self.assertEqual(calls[-1][2], "#666666")
@@ -382,6 +415,7 @@ class CloudRuntimeTests(unittest.TestCase):
             set_connected=lambda value: calls.append(("connected", value)),
             set_authorized=lambda value: calls.append(("authorized", value)),
             reset_serial_log_state=lambda: calls.append(("reset_log",)),
+            clear_sms_event_state=lambda: calls.append(("clear_sms",)),
             get_loop=lambda: None,
             get_ws=lambda: "ws",
             schedule_unregister_then_close=lambda ws: calls.append(("unregister", ws)),
@@ -391,6 +425,7 @@ class CloudRuntimeTests(unittest.TestCase):
         )
 
         self.assertIn(("ws", None), calls)
+        self.assertIn(("clear_sms",), calls)
         self.assertNotIn(("status", "unused", "unused"), calls)
         self.assertFalse(any(call[0] == "coro" for call in calls))
 

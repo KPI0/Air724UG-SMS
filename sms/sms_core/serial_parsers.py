@@ -1,11 +1,14 @@
 import re
 
-from sms_core.phone_numbers import normalize_call_number
+from sms_core.phone_numbers import is_valid_call_filter_number, normalize_call_number
 
 
 LOCAL_NUMBER_RE = re.compile(r"\+?\d{5,}")
 SERIAL_AT_PREFIX = r"(?:\[[IWE]\]-\[[^\]]+\]\s*)?"
-CLIP_NUMBER_RE = re.compile(rf'^\s*{SERIAL_AT_PREFIX}\+CLIP:\s*"?(\+?\d+)"?')
+CLIP_LINE_RE = re.compile(
+    rf'^\s*{SERIAL_AT_PREFIX}\+CLIP:\s*(?P<number>"[^"]*"|[^,]*)\s*,'
+)
+CLIP_NUMBER_RE = re.compile(r"^\+?\d+$")
 TEMPERATURE_RE = re.compile(
     rf"^\s*{SERIAL_AT_PREFIX}\+RFTEMPERATURE:\s*(-?\d+(?:\.\d+)?)\s*$"
 )
@@ -16,6 +19,7 @@ AT_RESPONSE_RE_TEMPLATE = r"^\s*" + SERIAL_AT_PREFIX + r"{command}:\s*(?P<body>.
 SERIAL_PREFIX_RE = re.compile(rf"^\s*{SERIAL_AT_PREFIX}(?P<body>.*?)\s*$")
 CIEV_CALL_RE = re.compile(r'^\+CIEV:\s*"CALL"\s*,\s*(?P<state>[01])$', re.IGNORECASE)
 AT_URC_BOUNDARY_RE = re.compile(r"^\+[A-Z][A-Z0-9 ]*(?:[:=]|$)")
+STAR_URC_BOUNDARY_RE = re.compile(r"^\*CGEV:")
 
 
 def _at_response_body(line: str, command: str):
@@ -55,7 +59,7 @@ def parse_local_number(line: str):
 
 def parse_operator_message(line: str):
     body = _at_response_body(line, "+COPS")
-    if body is None or '"' not in body:
+    if body is None or body.lstrip().startswith("(") or '"' not in body:
         return None
     try:
         plmn = body.split('"')[1]
@@ -164,8 +168,15 @@ def parse_serial_debug_insights(line: str):
 
 
 def parse_clip_number(line: str, default: str = "未知号码") -> str:
-    match = CLIP_NUMBER_RE.search(str(line or ""))
-    return match.group(1) if match else default
+    match = CLIP_LINE_RE.match(str(line or ""))
+    if not match:
+        return default
+    number = match.group("number").strip().strip('"').strip()
+    return number if CLIP_NUMBER_RE.fullmatch(number) else default
+
+
+def is_clip_line(line: str) -> bool:
+    return bool(CLIP_LINE_RE.match(str(line or "")))
 
 
 def evaluate_call_filter(caller_num: str, mode: str, whitelist, blacklist):
@@ -173,8 +184,13 @@ def evaluate_call_filter(caller_num: str, mode: str, whitelist, blacklist):
     mode = str(mode or "").strip()
 
     if mode == "Whitelist":
+        if not is_valid_call_filter_number(caller_num):
+            return True, "不在白名单"
         for number in whitelist or []:
-            if normalize_call_number(number) == normalized:
+            if (
+                is_valid_call_filter_number(number)
+                and normalize_call_number(number) == normalized
+            ):
                 return False, ""
         return True, "不在白名单"
 
@@ -219,4 +235,5 @@ def is_sms_collection_boundary(line: str) -> bool:
         or text.startswith(">>>")
         or text.startswith("AT+")
         or bool(AT_URC_BOUNDARY_RE.match(text))
+        or bool(STAR_URC_BOUNDARY_RE.match(text))
     )

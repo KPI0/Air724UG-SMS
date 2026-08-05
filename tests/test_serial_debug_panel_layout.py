@@ -122,6 +122,52 @@ class SerialDebugPanelLayoutTests(unittest.TestCase):
             "修改信息中心号码 ✉️",
         )
 
+    def test_manual_operator_action_follows_operator_scan(self):
+        buttons = []
+        actions = []
+
+        def make_button(parent=None, **kwargs):
+            widget = FakeWidget(parent, **kwargs)
+            buttons.append(widget)
+            return widget
+
+        with (
+            patch.object(serial_debug_panel.ttk, "Frame", FakeWidget),
+            patch.object(serial_debug_panel.ttk, "LabelFrame", FakeWidget),
+            patch.object(serial_debug_panel.ttk, "Scrollbar", FakeWidget),
+            patch.object(serial_debug_panel.ttk, "Button", side_effect=make_button),
+            patch.object(serial_debug_panel.tk, "Canvas", FakeWidget),
+            patch.object(serial_debug_panel.tk, "Text", FakeWidget),
+            patch.object(
+                serial_debug_panel,
+                "COMMON_SERIAL_COMMANDS",
+                [
+                    ("AT+COPS=?", "查询附近可用运营商"),
+                    ("AT+COPS=0", "自动选择运营商"),
+                    ("AT+CPIN?", "查看 PIN 码锁状态"),
+                ],
+            ),
+        ):
+            serial_debug_panel.create_serial_debug_body(
+                FakeWidget(),
+                lambda command: actions.append(command),
+                lambda: actions.append("manual"),
+            )
+
+        labels = [button.kwargs.get("text") for button in buttons]
+        scan_index = labels.index("AT+COPS=?  (查询附近可用运营商)")
+        self.assertEqual(
+            labels[scan_index + 1],
+            'AT+COPS=1,2,"PLMN"  (手动切换运营商)',
+        )
+        self.assertEqual(
+            labels[scan_index + 2],
+            "AT+COPS=0  (自动选择运营商)",
+        )
+        buttons[scan_index + 1].kwargs["command"]()
+        buttons[scan_index + 2].kwargs["command"]()
+        self.assertEqual(actions, ["manual", "AT+COPS=0"])
+
 
 if __name__ == "__main__":
     unittest.main()

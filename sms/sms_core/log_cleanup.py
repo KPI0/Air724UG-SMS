@@ -22,13 +22,16 @@ def cleanup_old_logs_in_dir(log_dir: str, days: int, now=None) -> int:
     """Delete sms_*.txt files older than the retention window and return the count."""
     try:
         days = int(days)
-    except Exception:
-        days = 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
     if days < 0:
-        days = 0
+        return 0
 
     now_dt = now or datetime.now()
-    cutoff = (now_dt - timedelta(days=days)).date()
+    try:
+        cutoff = (now_dt - timedelta(days=days)).date()
+    except (OverflowError, ValueError):
+        return 0
     deleted = 0
 
     if not os.path.isdir(log_dir):

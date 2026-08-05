@@ -4,6 +4,7 @@ from sms_core.cloud_command_security import (
     normalize_cloud_command_permissions,
     read_cloud_command_permissions,
 )
+from sms_core.config_schema import DEFAULT_UI_CONFIG
 from sms_core.config_runtime import (
     load_config_snapshot,
     read_startup_config_values,
@@ -16,6 +17,7 @@ from sms_ui.config_sync_runtime import (
     schedule_config_file_watch_runtime,
 )
 from sms_ui.call_popup_namespace_runtime import close_phone_popups_namespace_runtime
+from sms_ui.sms_font_dialog import validated_tk_color
 
 
 def _safe_log(namespace, message):
@@ -152,16 +154,42 @@ def reload_shared_ui_config_namespace_runtime(
         except Exception as exc:
             _safe_log(namespace, f"Regenerate synced voice alert failed: {exc!r}")
 
+    next_font_color = validated_tk_color(
+        namespace["root"],
+        values.sms_font_color,
+    )
+    if next_font_color is None:
+        next_font_color = validated_tk_color(
+            namespace["root"],
+            namespace["SMS_FONT_COLOR"],
+        )
+        if next_font_color is None:
+            next_font_color = validated_tk_color(
+                namespace["root"],
+                DEFAULT_UI_CONFIG["sms_font_color"],
+            )
+        if next_font_color is not None:
+            try:
+                namespace["config"].set("ui", "sms_font_color", next_font_color)
+            except Exception as exc:
+                _safe_log(namespace, f"Repair synced SMS font color failed: {exc!r}")
+            _safe_log(namespace, "Ignored invalid synced SMS font color; retained a valid color")
+
     font_changed = (
         namespace["SMS_FONT_SIZE"] != values.sms_font_size
-        or namespace["SMS_FONT_COLOR"] != values.sms_font_color
+        or (
+            next_font_color is not None
+            and namespace["SMS_FONT_COLOR"] != next_font_color
+        )
     )
     namespace["SMS_FONT_SIZE"] = values.sms_font_size
-    namespace["SMS_FONT_COLOR"] = values.sms_font_color
+    if next_font_color is not None:
+        namespace["SMS_FONT_COLOR"] = next_font_color
     if font_changed:
         changed_groups.append("短信字体")
         try:
-            namespace["apply_sms_font_style"]()
+            if namespace["apply_sms_font_style"]() is False:
+                _safe_log(namespace, "Apply synced SMS font failed")
         except Exception as exc:
             _safe_log(namespace, f"Apply synced SMS font failed: {exc!r}")
 

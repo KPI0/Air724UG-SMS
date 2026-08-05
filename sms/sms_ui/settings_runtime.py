@@ -7,6 +7,7 @@ from sms_core.cloud_command_security import (
     normalize_cloud_command_permissions,
 )
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_ui.sms_font_dialog import validated_tk_color
 from sms_ui.settings_dialogs import (
     open_call_filter_setting_dialog,
     open_keywords_setting_dialog,
@@ -301,6 +302,11 @@ def open_sms_font_dialog_runtime(
     log_error=None,
 ):
     def save_font(size, color):
+        color = validated_tk_color(parent, color)
+        if color is None:
+            system_ui("❌ 短信字体颜色无效，请输入有效颜色", "normal")
+            return False
+
         saved = save_ui_config_values(
             config,
             {

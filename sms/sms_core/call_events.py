@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from sms_core.serial_parsers import (
     evaluate_call_filter,
+    is_clip_line,
     is_call_connected_event,
     is_hangup_event,
     is_new_clip,
@@ -168,7 +169,7 @@ def handle_call_line(
     )
     decision = CallLineDecision(state=next_state)
 
-    if parse_clip_number(line, default=""):
+    if is_clip_line(line):
         clip = handle_clip_line(
             line,
             next_state.last_clip_num,

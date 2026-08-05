@@ -1,3 +1,4 @@
+import configparser
 import unittest
 from unittest.mock import patch
 
@@ -232,7 +233,8 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
     def test_font_clear_and_reset_namespace_runtimes_forward_state(self):
         namespace = self.make_namespace()
 
-        with patch.object(runtime, "apply_sms_font_style_runtime", return_value=True) as font_runtime:
+        with patch.object(runtime, "validated_tk_color", return_value="#123456"), \
+                patch.object(runtime, "apply_sms_font_style_runtime", return_value=True) as font_runtime:
             self.assertTrue(runtime.apply_sms_font_style_namespace_runtime(namespace))
         self.assertEqual(font_runtime.call_args.args, ("text_area", 18, "#123456"))
 
@@ -248,6 +250,51 @@ class AppUiNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["get_serial"](), "serial")
         kwargs["show_warning"]("T", "M")
         self.assertEqual(namespace["calls"][-1][0], "warning")
+
+    def test_invalid_startup_font_color_falls_back_and_repairs_config(self):
+        namespace = self.make_namespace()
+        namespace["SMS_FONT_COLOR"] = "not-a-color"
+        namespace["config"] = configparser.ConfigParser()
+        namespace["config"]["ui"] = {"sms_font_color": "not-a-color"}
+        logs = []
+        namespace["log_file_only"] = logs.append
+
+        with patch.object(
+            runtime,
+            "validated_tk_color",
+            side_effect=[None, "#ff0000"],
+        ), patch.object(
+            runtime,
+            "apply_sms_font_style_runtime",
+            return_value=True,
+        ) as font_runtime:
+            self.assertTrue(runtime.apply_sms_font_style_namespace_runtime(namespace))
+
+        self.assertEqual(namespace["SMS_FONT_COLOR"], "#ff0000")
+        self.assertEqual(namespace["config"].get("ui", "sms_font_color"), "#ff0000")
+        self.assertEqual(font_runtime.call_args.args, ("text_area", 18, "#ff0000"))
+        self.assertTrue(any("using default color" in message for message in logs))
+
+    def test_invalid_startup_font_size_falls_back_and_repairs_config(self):
+        namespace = self.make_namespace()
+        namespace["SMS_FONT_SIZE"] = 100000
+        namespace["config"] = configparser.ConfigParser()
+        namespace["config"]["ui"] = {"sms_font_size": "100000"}
+        logs = []
+        namespace["log_file_only"] = logs.append
+
+        with patch.object(runtime, "validated_tk_color", return_value="#123456"), \
+                patch.object(
+                    runtime,
+                    "apply_sms_font_style_runtime",
+                    return_value=True,
+                ) as font_runtime:
+            self.assertTrue(runtime.apply_sms_font_style_namespace_runtime(namespace))
+
+        self.assertEqual(namespace["SMS_FONT_SIZE"], 30)
+        self.assertEqual(namespace["config"].get("ui", "sms_font_size"), "30")
+        self.assertEqual(font_runtime.call_args.args, ("text_area", 30, "#123456"))
+        self.assertTrue(any("using default size 30" in message for message in logs))
 
 
 if __name__ == "__main__":

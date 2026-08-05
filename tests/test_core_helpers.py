@@ -18,6 +18,7 @@ from sms_core.serial_debug import (
     SERIAL_DEBUG_MAX_VISIBLE_LINES,
     build_dial_command,
     build_information_center_command,
+    build_manual_operator_command,
     build_own_number_commands,
     build_pin_change_command,
     build_pin_lock_command,
@@ -26,6 +27,7 @@ from sms_core.serial_debug import (
     build_serial_command_payload,
     build_sn_command,
     normalize_information_center_number,
+    normalize_operator_plmn,
     normalize_dial_number,
     normalize_own_number,
     quick_command_label,
@@ -152,6 +154,21 @@ class CoreHelperTests(unittest.TestCase):
             self.assertFalse(os.path.exists(old_path))
             self.assertTrue(os.path.exists(keep_path))
             self.assertTrue(os.path.exists(other_path))
+
+    def test_cleanup_old_logs_in_dir_rejects_negative_retention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = os.path.join(tmp, "sms_system_2026-06-07.txt")
+            with open(old_path, "w", encoding="utf-8") as file:
+                file.write("keep")
+
+            deleted = cleanup_old_logs_in_dir(
+                tmp,
+                -1,
+                now=datetime(2026, 6, 8),
+            )
+
+            self.assertEqual(deleted, 0)
+            self.assertTrue(os.path.exists(old_path))
 
     def test_safe_preview_masks_secret_fields(self):
         preview = safe_preview('{"secret":"abc","nested":{"token":"def","value":1}}')
@@ -437,7 +454,33 @@ class CoreHelperTests(unittest.TestCase):
     def test_serial_debug_helpers(self):
         self.assertGreater(SERIAL_DEBUG_MAX_STORE_LINES, SERIAL_DEBUG_MAX_VISIBLE_LINES)
         self.assertIn(("AT", "\u6d4b\u8bd5\u901a\u4fe1"), COMMON_SERIAL_COMMANDS)
-        self.assertIn(("AT+CSCA?", "查信息中心号码"), COMMON_SERIAL_COMMANDS)
+        self.assertIn(("AT+CSCA?", "查询信息中心号码"), COMMON_SERIAL_COMMANDS)
+        csca_index = COMMON_SERIAL_COMMANDS.index(("AT+CSCA?", "查询信息中心号码"))
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[csca_index + 1],
+            ("AT+CPBS?", "查看电话簿存储区"),
+        )
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[csca_index + 2],
+            ("AT+CPMS?", "查询短信存储状态"),
+        )
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[csca_index + 3],
+            ("AT+CEER", "查询最后一次呼叫错误"),
+        )
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[csca_index + 4],
+            ("AT+CCLK?", "查询模块时间"),
+        )
+        operator_index = COMMON_SERIAL_COMMANDS.index(("AT+COPS?", "查询当前运营商"))
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[operator_index + 1],
+            ("AT+COPS=?", "查询附近可用运营商"),
+        )
+        self.assertEqual(
+            COMMON_SERIAL_COMMANDS[operator_index + 2],
+            ("AT+COPS=0", "自动选择运营商"),
+        )
         self.assertEqual(quick_command_label("AT", "test"), "AT  (test)")
 
         payload, suffix = build_serial_command_payload("AT", append_crlf=True)
@@ -463,6 +506,15 @@ class CoreHelperTests(unittest.TestCase):
             build_information_center_command(" +8613800100500 "),
             'AT+CSCA="+8613800100500",145',
         )
+        self.assertEqual(normalize_operator_plmn(" 46000 "), "46000")
+        self.assertEqual(
+            build_manual_operator_command("460001"),
+            'AT+COPS=1,2,"460001"',
+        )
+        for invalid_plmn in ("", "4600", "4600000", "46A00", '46000"\r\nAT+RESET'):
+            with self.subTest(invalid_plmn=invalid_plmn):
+                with self.assertRaises(ValueError):
+                    build_manual_operator_command(invalid_plmn)
         self.assertEqual(
             normalize_information_center_number(" +86 (1380) 010-0500 "),
             "+8613800100500",

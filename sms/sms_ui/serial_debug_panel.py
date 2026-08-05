@@ -18,7 +18,7 @@ from sms_ui.serial_debug_dialogs import (
 )
 
 
-def create_serial_debug_body(parent, quick_send):
+def create_serial_debug_body(parent, quick_send, manual_operator_switch=None):
     body = ttk.Frame(parent)
     body.pack(fill="both", expand=True, padx=8, pady=6)
 
@@ -83,6 +83,12 @@ def create_serial_debug_body(parent, quick_send):
             text=quick_command_label(cmd, desc),
             command=lambda c=cmd: quick_send(c),
         ).pack(fill="x", padx=6, pady=3)
+        if cmd == "AT+COPS=?" and manual_operator_switch is not None:
+            ttk.Button(
+                quick_scroll_frame,
+                text=quick_command_label('AT+COPS=1,2,"PLMN"', "手动切换运营商"),
+                command=manual_operator_switch,
+            ).pack(fill="x", padx=6, pady=3)
 
     return serial_text, quick_panel, quick_scroll_frame
 

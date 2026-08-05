@@ -324,17 +324,28 @@ def send_cloud_sms_event_runtime(
     timestamp,
     identity_payload,
     run_coroutine_threadsafe,
+    enabled=True,
+    enqueue_payload=None,
 ):
     body = str(full_msg or "").strip()
     if not body:
         return "empty"
-    if not authorized:
+    if not enabled:
+        return "disabled"
+    if not authorized and enqueue_payload is None:
         return "unauthorized"
     send_coro = None
     try:
         loop = get_loop()
         ws = get_ws()
-        if loop is None or not loop.is_running() or ws is None or not is_connected():
+        can_send = bool(
+            authorized
+            and loop is not None
+            and loop.is_running()
+            and ws is not None
+            and is_connected()
+        )
+        if not can_send and enqueue_payload is None:
             return "not_connected"
         if not runtime_imei():
             return "missing_imei"
@@ -350,6 +361,8 @@ def send_cloud_sms_event_runtime(
             payload = build_payload(callback_head, body, timestamp(), identity_payload())
         if payload is None:
             return "empty_payload"
+        if enqueue_payload is not None:
+            return enqueue_payload(payload, loop, ws, can_send)
         send_coro = send_payload(ws, payload)
         run_coroutine_threadsafe(send_coro, loop)
         return "scheduled"

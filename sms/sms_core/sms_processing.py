@@ -7,7 +7,8 @@ from datetime import datetime
 SMS_CALLBACK_META_RE = re.compile(
     r"^\s*(?P<sender>[^\r\n]+?)\s+"
     r"(?P<year>\d{2})/(?P<month>\d{2})/(?P<day>\d{2}),"
-    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\+\d+"
+    r"(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"(?P<tz_sign>[+-])(?P<tz>\d+)"
 )
 SMS_CALLBACK_SENDER_RE = re.compile(r"^\s*(?P<sender>\+?\d+)\b")
 
@@ -71,6 +72,8 @@ def parse_sms_callback_metadata(callback_head: str, now=None):
             "local_number": "",
             "self_number": "",
             "sms_time": fallback_time,
+            "sms_time_identity": "",
+            "sms_time_valid": False,
         }
 
     sender = match.group("sender")
@@ -83,8 +86,14 @@ def parse_sms_callback_metadata(callback_head: str, now=None):
             int(match.group("minute")),
             int(match.group("second")),
         ).strftime("%Y-%m-%d %H:%M:%S")
+        sms_time_identity = (
+            f"{sms_time}{match.group('tz_sign')}{match.group('tz')}"
+        )
+        sms_time_valid = True
     except Exception:
         sms_time = fallback_time
+        sms_time_identity = ""
+        sms_time_valid = False
 
     return {
         "sender": sender,
@@ -93,6 +102,8 @@ def parse_sms_callback_metadata(callback_head: str, now=None):
         "local_number": "",
         "self_number": "",
         "sms_time": sms_time,
+        "sms_time_identity": sms_time_identity,
+        "sms_time_valid": sms_time_valid,
     }
 
 
@@ -211,18 +222,21 @@ def process_pending_sms(
 
     if full_msg:
         variables = parse_sms_callback_metadata(pending.callback_head)
+        message_trace_id = str(getattr(pending, "message_trace_id", "") or "").strip()
         message_id = sms_message_id(
             variables.get("sender"),
-            variables.get("sms_time"),
+            variables.get("sms_time_identity") or variables.get("sms_time"),
             full_msg,
             getattr(pending, "concat_reference", None),
             getattr(pending, "concat_reference_bits", None),
             getattr(pending, "concat_total", None),
         )
-        if _mark_sms_message_seen(repeat_state, message_id):
+        if message_trace_id and _mark_sms_message_seen(
+            repeat_state,
+            f"trace:{message_trace_id}:{message_id}",
+        ):
             return "duplicate"
         variables["message_id"] = message_id
-        message_trace_id = str(getattr(pending, "message_trace_id", "") or "").strip()
         if message_trace_id:
             variables["message_trace_id"] = message_trace_id
         enqueue_third_push_with_variables(
@@ -231,6 +245,9 @@ def process_pending_sms(
             variables,
         )
         cloud_metadata = {}
+        if variables.get("sms_time_valid"):
+            cloud_metadata["sms_time"] = variables.get("sms_time")
+            cloud_metadata["sms_time_identity"] = variables.get("sms_time_identity")
         if message_trace_id:
             cloud_metadata["message_trace_id"] = message_trace_id
         send_cloud_sms_event_with_metadata(

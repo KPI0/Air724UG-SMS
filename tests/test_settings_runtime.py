@@ -1,4 +1,5 @@
 import configparser
+import tkinter as tk
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +24,13 @@ from sms_ui.settings_runtime import (
     toggle_voice_broadcast_runtime,
 )
 from sms_core.cloud_command_security import CLOUD_COMMAND_PERMISSION_SPECS
+
+
+class FakeTkParent:
+    def winfo_rgb(self, color):
+        if color == "not-a-color":
+            raise tk.TclError("unknown color name")
+        return (0, 0, 0)
 
 
 class SettingsRuntimeTests(unittest.TestCase):
@@ -341,13 +349,14 @@ class SettingsRuntimeTests(unittest.TestCase):
     def test_open_sms_font_dialog_runtime_wires_save(self):
         config = configparser.ConfigParser()
         calls = []
+        parent = FakeTkParent()
 
         def open_dialog(parent, current_size, current_color, save_font, center_window):
             calls.append(("open", parent, current_size, current_color, center_window))
             save_font(26, "#123456")
 
         open_sms_font_dialog_runtime(
-            "root",
+            parent,
             30,
             "#ff0000",
             config=config,
@@ -359,7 +368,7 @@ class SettingsRuntimeTests(unittest.TestCase):
             open_dialog=open_dialog,
         )
 
-        self.assertEqual(calls[0], ("open", "root", 30, "#ff0000", "center"))
+        self.assertEqual(calls[0], ("open", parent, 30, "#ff0000", "center"))
         self.assertEqual(calls[1], ("save_config",))
         self.assertEqual(config.get("ui", "sms_font_size"), "26")
         self.assertEqual(config.get("ui", "sms_font_color"), "#123456")
@@ -371,12 +380,13 @@ class SettingsRuntimeTests(unittest.TestCase):
         config = configparser.ConfigParser()
         config["ui"] = {"sms_font_size": "30", "sms_font_color": "#ff0000"}
         calls = []
+        parent = FakeTkParent()
 
         def open_dialog(_parent, _size, _color, save_font, _center):
             self.assertFalse(save_font(26, "#123456"))
 
         open_sms_font_dialog_runtime(
-            "root",
+            parent,
             30,
             "#ff0000",
             config=config,
@@ -391,6 +401,33 @@ class SettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(config.get("ui", "sms_font_size"), "30")
         self.assertEqual(config.get("ui", "sms_font_color"), "#ff0000")
         self.assertFalse(any(item[0] in ("font", "apply") for item in calls))
+
+    def test_open_sms_font_dialog_runtime_rejects_invalid_color(self):
+        config = configparser.ConfigParser()
+        config["ui"] = {"sms_font_size": "30", "sms_font_color": "#ff0000"}
+        calls = []
+
+        def open_dialog(_parent, _size, _color, save_font, _center):
+            self.assertFalse(save_font(26, "not-a-color"))
+
+        open_sms_font_dialog_runtime(
+            FakeTkParent(),
+            30,
+            "#ff0000",
+            config=config,
+            safe_save=lambda: calls.append(("save_config",)),
+            set_font=lambda size, color: calls.append(("font", size, color)),
+            apply_font_style=lambda: calls.append(("apply",)),
+            system_ui=lambda *args: calls.append(("ui", args)),
+            center_window="center",
+            open_dialog=open_dialog,
+        )
+
+        self.assertEqual(config.get("ui", "sms_font_size"), "30")
+        self.assertEqual(config.get("ui", "sms_font_color"), "#ff0000")
+        self.assertNotIn(("save_config",), calls)
+        self.assertFalse(any(item[0] in ("font", "apply") for item in calls))
+        self.assertIn("字体颜色无效", calls[-1][1][0])
 
     def test_keywords_runtime_does_not_commit_log_state_on_save_failure(self):
         config = configparser.ConfigParser()

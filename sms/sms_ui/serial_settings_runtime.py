@@ -1,5 +1,5 @@
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
-from sms_ui.serial_settings_dialog import open_serial_setting_dialog
+from sms_ui.serial_settings_dialog import open_serial_setting_dialog, parse_positive_baud
 
 
 def serial_settings_status(mode, port, baud):
@@ -8,6 +8,10 @@ def serial_settings_status(mode, port, baud):
 
 def serial_settings_save_failed_status():
     return "❌ 串口设置保存失败，已保留原设置"
+
+
+def serial_settings_invalid_baud_status():
+    return "❌ 串口设置无效：波特率必须是大于 0 的整数"
 
 
 def apply_serial_setting_runtime(
@@ -23,6 +27,12 @@ def apply_serial_setting_runtime(
     wake_serial,
     system_ui,
 ):
+    try:
+        baud = parse_positive_baud(baud)
+    except ValueError:
+        system_ui(serial_settings_invalid_baud_status())
+        return False
+
     config_snapshot = snapshot_config_section(config, "serial")
     if not config.has_section("serial"):
         config["serial"] = {}

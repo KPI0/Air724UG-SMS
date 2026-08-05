@@ -62,6 +62,31 @@ class SerialSettingsRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, ["closed", "ui"])
 
+    def test_apply_serial_setting_runtime_rejects_non_positive_baud(self):
+        for baud in (0, -1):
+            with self.subTest(baud=baud):
+                calls = []
+                config = configparser.ConfigParser()
+                config["serial"] = {"mode": "Manual", "port": "COM3", "baud": "9600"}
+                before = dict(config.items("serial", raw=True))
+
+                result = apply_serial_setting_runtime(
+                    "Auto",
+                    "",
+                    baud,
+                    config=config,
+                    save_config=lambda: calls.append("save"),
+                    set_serial_state=lambda *_: calls.append("state"),
+                    set_status=lambda *_: calls.append("status"),
+                    safe_close_serial=lambda: calls.append("close"),
+                    wake_serial=lambda: calls.append("wake"),
+                    system_ui=lambda message: calls.append(message),
+                )
+
+                self.assertFalse(result)
+                self.assertEqual(dict(config.items("serial", raw=True)), before)
+                self.assertEqual(calls, ["❌ 串口设置无效：波特率必须是大于 0 的整数"])
+
     def test_apply_serial_setting_runtime_reports_false_save_result(self):
         calls = []
         config = configparser.ConfigParser()

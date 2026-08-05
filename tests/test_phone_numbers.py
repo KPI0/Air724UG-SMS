@@ -1,9 +1,18 @@
 ﻿import unittest
 
-from sms_core.phone_numbers import normalize_call_number
+from sms_core.phone_numbers import is_valid_call_filter_number, normalize_call_number
 
 
 class PhoneNumbersTests(unittest.TestCase):
+    def test_call_filter_number_validation(self):
+        for value in ("10086", "+8613800138000", " 10010 "):
+            with self.subTest(value=value):
+                self.assertTrue(is_valid_call_filter_number(value))
+
+        for value in ("", "+", "未知号码", "123abc", "123-456", "１２３"):
+            with self.subTest(value=value):
+                self.assertFalse(is_valid_call_filter_number(value))
+
     def test_normalize_call_number_removes_plus86_prefix(self):
         """Should remove +86 prefix from Chinese numbers."""
         self.assertEqual(normalize_call_number("+8613123123123"), "13123123123")

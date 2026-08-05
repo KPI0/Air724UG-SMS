@@ -122,7 +122,7 @@ GitHub Actions 会把 `sms.exe` 压缩为 `sms-vX.Y.Z-win64.zip`，并同时发�
 ```
 Air724UG-SMS/
 │
-├── sms.pyw             # 历史单文件版本，非当前构建入口，Release 不打包此文件
+├── sms.pyw             # 已停止维护的历史单文件整合版，仅供留档；不再分析、修复、测试或打包
 ├── sms/                # 重构版源码目录，GitHub Actions 和手动打包均使用此目录
 │   ├── sms.pyw         # 重构版主程序入口
 │   ├── sms_app/        # 启动装配层，负责 main/bootstrap 与跨层绑定

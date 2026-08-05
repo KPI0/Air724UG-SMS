@@ -1,6 +1,17 @@
 import tkinter as tk
 from tkinter import colorchooser, messagebox
 
+from sms_core.config_schema import SMS_FONT_SIZE_MAX, SMS_FONT_SIZE_MIN
+
+
+def validated_tk_color(widget, value, *, default="#ff0000"):
+    color = str(value).strip() or default
+    try:
+        widget.winfo_rgb(color)
+    except (AttributeError, TypeError, tk.TclError):
+        return None
+    return color
+
 
 def open_sms_font_dialog(parent, current_size, current_color, on_save, center_window):
     win = tk.Toplevel(parent)
@@ -20,7 +31,13 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
     tk.Label(frame, text="字号：", font=("微软雅黑", 10)).grid(row=0, column=0, sticky="w")
 
     size_var = tk.StringVar(value=str(current_size))
-    size_spin = tk.Spinbox(frame, from_=8, to=72, width=8, textvariable=size_var)
+    size_spin = tk.Spinbox(
+        frame,
+        from_=SMS_FONT_SIZE_MIN,
+        to=SMS_FONT_SIZE_MAX,
+        width=8,
+        textvariable=size_var,
+    )
     size_spin.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
     tk.Label(frame, text="颜色：", font=("微软雅黑", 10)).grid(row=1, column=0, sticky="w", pady=(10, 0))
@@ -73,7 +90,9 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
             )
 
     def pick_color():
-        color = color_var.get().strip() or current_color
+        color = validated_tk_color(win, color_var.get())
+        if color is None:
+            color = validated_tk_color(win, current_color) or "#ff0000"
         win.lift()
         win.after(0, lambda: win.lift())
 
@@ -101,13 +120,24 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
     def save():
         try:
             size = int(size_var.get().strip())
-            if size < 8 or size > 72:
+            if size < SMS_FONT_SIZE_MIN or size > SMS_FONT_SIZE_MAX:
                 raise ValueError
         except Exception:
-            messagebox.showerror("错误", "字号必须是 8~72 的整数", parent=win)
+            messagebox.showerror(
+                "错误",
+                f"字号必须是 {SMS_FONT_SIZE_MIN}~{SMS_FONT_SIZE_MAX} 的整数",
+                parent=win,
+            )
             return
 
-        color = color_var.get().strip() or "#ff0000"
+        color = validated_tk_color(win, color_var.get())
+        if color is None:
+            messagebox.showerror(
+                "错误",
+                "请输入有效的颜色，例如 #ff0000 或 red",
+                parent=win,
+            )
+            return
         if on_save(size, color) is False:
             return
         win.destroy()

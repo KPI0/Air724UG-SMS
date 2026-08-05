@@ -12,10 +12,13 @@ from sms_core.cloud_connection_runtime import (
     unregister_then_close_cloud_connection_runtime,
 )
 from sms_core.cloud_message_namespace_runtime import (
+    clear_cloud_sms_event_state_namespace_runtime,
+    drain_cloud_sms_event_queue_namespace_runtime,
     drain_cloud_serial_log_queue_namespace_runtime,
     handle_cloud_message_namespace_runtime,
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
+    schedule_cloud_sms_event_drain_namespace_runtime,
     send_cloud_serial_command_namespace_runtime,
     send_cloud_serial_log_namespace_runtime,
     send_cloud_sms_event_namespace_runtime,
@@ -94,7 +97,11 @@ def install_cloud_namespace_bindings(namespace):
         return cloud_log_namespace_runtime(namespace, message, show_main=show_main)
 
     async def cloud_send_payload(ws, payload):
-        return await send_cloud_payload_runtime(ws, payload)
+        kwargs = {}
+        log_error = namespace.get("log_file_only")
+        if log_error is not None:
+            kwargs["log_error"] = log_error
+        return await send_cloud_payload_runtime(ws, payload, **kwargs)
 
     def cloud_now_ts():
         return int(time.time())
@@ -140,6 +147,9 @@ def install_cloud_namespace_bindings(namespace):
         "save_cloud_control_setting": save_cloud_control_setting,
         "_cloud_log": cloud_log,
         "_cloud_send_payload": cloud_send_payload,
+        "_clear_cloud_sms_event_state": bind("clear_cloud_sms_event_state_namespace_runtime"),
+        "_cloud_drain_sms_event_queue": bind_async("drain_cloud_sms_event_queue_namespace_runtime"),
+        "_schedule_cloud_sms_event_drain": bind("schedule_cloud_sms_event_drain_namespace_runtime"),
         "_reset_cloud_serial_log_state": bind("reset_cloud_serial_log_state_namespace_runtime"),
         "_cloud_drain_serial_log_queue": bind_async("drain_cloud_serial_log_queue_namespace_runtime"),
         "_schedule_cloud_serial_log_drain": bind("schedule_cloud_serial_log_drain_namespace_runtime"),

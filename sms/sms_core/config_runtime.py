@@ -6,6 +6,14 @@ import json
 import time
 from dataclasses import dataclass
 
+from sms_core.config_schema import (
+    DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_SMS_FONT_SIZE,
+    SMS_FONT_SIZE_MAX,
+    SMS_FONT_SIZE_MIN,
+    normalize_log_retention_days,
+    normalize_sms_font_size,
+)
 from sms_core.windows_runtime import acquire_named_mutex_lock, release_named_mutex_lock
 
 
@@ -388,10 +396,22 @@ def read_startup_config_values(
     )
     log_retention_days = _read_config_value(
         "ui.log_retention_days",
-        30,
-        lambda: config.getint("ui", "log_retention_days", fallback=30),
+        DEFAULT_LOG_RETENTION_DAYS,
+        lambda: config.getint(
+            "ui",
+            "log_retention_days",
+            fallback=DEFAULT_LOG_RETENTION_DAYS,
+        ),
         log_error,
     )
+    normalized_retention_days = normalize_log_retention_days(log_retention_days)
+    if normalized_retention_days != log_retention_days:
+        _safe_log(
+            log_error,
+            "Config value ui.log_retention_days must be non-negative; "
+            f"using default {DEFAULT_LOG_RETENTION_DAYS}: {log_retention_days!r}",
+        )
+    log_retention_days = normalized_retention_days
     allow_multi_instance = _read_config_value(
         "ui.allow_multi_instance",
         False,
@@ -412,10 +432,23 @@ def read_startup_config_values(
     )
     sms_font_size = _read_config_value(
         "ui.sms_font_size",
-        30,
-        lambda: config.getint("ui", "sms_font_size", fallback=30),
+        DEFAULT_SMS_FONT_SIZE,
+        lambda: config.getint(
+            "ui",
+            "sms_font_size",
+            fallback=DEFAULT_SMS_FONT_SIZE,
+        ),
         log_error,
     )
+    normalized_font_size = normalize_sms_font_size(sms_font_size)
+    if normalized_font_size != sms_font_size:
+        _safe_log(
+            log_error,
+            f"Config value ui.sms_font_size must be {SMS_FONT_SIZE_MIN}.."
+            f"{SMS_FONT_SIZE_MAX}; using default {DEFAULT_SMS_FONT_SIZE}: "
+            f"{sms_font_size!r}",
+        )
+    sms_font_size = normalized_font_size
     sms_font_color = _read_config_value(
         "ui.sms_font_color",
         "#ff0000",

@@ -77,6 +77,7 @@ def stop_cloud_control_namespace_runtime(
         set_connected=lambda value: namespace.__setitem__("cloud_connected", bool(value)),
         set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
         reset_serial_log_state=namespace["_reset_cloud_serial_log_state"],
+        clear_sms_event_state=namespace.get("_clear_cloud_sms_event_state"),
         get_loop=lambda: namespace["cloud_ws_loop"],
         get_ws=lambda: namespace["cloud_ws_conn"],
         schedule_unregister_then_close=namespace["_cloud_unregister_then_close"],

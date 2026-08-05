@@ -95,6 +95,10 @@ async def cloud_ws_main_namespace_runtime(
         handle_message=namespace["_handle_cloud_message"],
         cloud_control_enabled=lambda: namespace["CLOUD_CONTROL_ENABLED"],
         monotonic=namespace.get("time", time).monotonic,
+        schedule_pending_sms_events=namespace.get(
+            "_schedule_cloud_sms_event_drain",
+            lambda: None,
+        ),
     )
 
 

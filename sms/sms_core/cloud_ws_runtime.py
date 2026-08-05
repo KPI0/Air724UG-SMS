@@ -157,7 +157,9 @@ async def cloud_ws_main_runtime(
     sleep=asyncio.sleep,
     wait_for=asyncio.wait_for,
     jitter=random.uniform,
+    schedule_pending_sms_events=None,
 ):
+    schedule_pending_sms_events = schedule_pending_sms_events or (lambda: None)
     last_imei_request = 0.0
     current_backoff = base_cloud_backoff(reconnect_interval)
 
@@ -191,6 +193,7 @@ async def cloud_ws_main_runtime(
                     await ws.close()
                     raise RuntimeError("设备登录未通过服务端确认")
                 current_backoff = base_cloud_backoff(reconnect_interval)
+                schedule_pending_sms_events()
 
                 while not stop_event.is_set():
                     try:
@@ -198,6 +201,7 @@ async def cloud_ws_main_runtime(
                     except asyncio.TimeoutError:
                         continue
                     message_result = await handle_message(ws, msg)
+                    schedule_pending_sms_events()
                     if message_result == "auth_failed":
                         set_connection_state(None, connected=False, authorized=False)
                         reset_serial_log_state()
@@ -254,6 +258,7 @@ async def cloud_ws_main_app_runtime(
     cloud_control_enabled,
     monotonic,
     run_ws_main=cloud_ws_main_runtime,
+    schedule_pending_sms_events=None,
 ):
     def set_connection_state(ws, connected, authorized):
         set_ws(ws)
@@ -276,4 +281,5 @@ async def cloud_ws_main_app_runtime(
         handle_message=handle_message,
         cloud_control_enabled=cloud_control_enabled,
         monotonic=monotonic,
+        schedule_pending_sms_events=schedule_pending_sms_events,
     )

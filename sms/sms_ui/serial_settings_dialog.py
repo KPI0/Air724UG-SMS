@@ -2,6 +2,16 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 
+def parse_positive_baud(value):
+    try:
+        baud = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("baud must be a positive integer") from exc
+    if baud <= 0:
+        raise ValueError("baud must be a positive integer")
+    return baud
+
+
 def open_serial_setting_dialog(
     parent,
     current_mode,
@@ -31,9 +41,9 @@ def open_serial_setting_dialog(
         mode = mode_var.get()
 
         try:
-            baud = int(baud_entry.get())
+            baud = parse_positive_baud(baud_entry.get())
         except ValueError:
-            messagebox.showerror("错误", "波特率必须是数字", parent=win)
+            messagebox.showerror("错误", "波特率必须是大于 0 的整数", parent=win)
             return
 
         if mode == "Manual":

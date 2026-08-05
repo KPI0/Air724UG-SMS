@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from sms_core.phone_numbers import is_valid_call_filter_number
+
 
 def open_call_filter_setting_dialog(
     parent,
@@ -105,6 +107,13 @@ def open_call_filter_setting_dialog(
             value = entry_var.get().strip()
             if not value:
                 return
+            if not is_valid_call_filter_number(value):
+                messagebox.showerror(
+                    "错误",
+                    "号码格式无效，只允许可选的 + 前缀和数字",
+                    parent=win,
+                )
+                return
             if value in target_list:
                 messagebox.showwarning("提示", "该号码已在名单中", parent=win)
                 return
@@ -147,6 +156,13 @@ def open_call_filter_setting_dialog(
 
             if not new_value:
                 messagebox.showerror("错误", "号码不能为空", parent=win)
+                return
+            if not is_valid_call_filter_number(new_value):
+                messagebox.showerror(
+                    "错误",
+                    "号码格式无效，只允许可选的 + 前缀和数字",
+                    parent=win,
+                )
                 return
             if new_value == old_value:
                 return

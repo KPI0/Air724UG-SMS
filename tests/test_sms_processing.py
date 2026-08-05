@@ -164,6 +164,15 @@ class SmsProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["from"], "123123123")
         self.assertEqual(metadata["phone"], "123123123")
         self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
+        self.assertEqual(metadata["sms_time_identity"], "2026-06-24 13:44:15+32")
+
+    def test_parse_sms_callback_metadata_keeps_negative_timezone_identity(self):
+        metadata = parse_sms_callback_metadata(
+            "10086 26/06/24,13:44:15-04 timezone message"
+        )
+
+        self.assertEqual(metadata["sms_time"], "2026-06-24 13:44:15")
+        self.assertEqual(metadata["sms_time_identity"], "2026-06-24 13:44:15-04")
 
     def test_parse_sms_callback_metadata_supports_spaced_alphanumeric_sender(self):
         callback = "Bank Alert 26/06/24,13:44:15+32 品牌短信"
@@ -274,7 +283,7 @@ class SmsProcessingTests(unittest.TestCase):
         variables = calls[0][1]["variables"]
         self.assertEqual(
             variables["message_id"],
-            sms_message_id("10086", "2026-06-28 12:00:00", "same body", 0x2A, 8, 2),
+            sms_message_id("10086", "2026-06-28 12:00:00+32", "same body", 0x2A, 8, 2),
         )
         self.assertEqual(variables["message_trace_id"], "abc123def456")
 
@@ -300,7 +309,66 @@ class SmsProcessingTests(unittest.TestCase):
             lambda x, y: None
         )
 
-        self.assertEqual(calls[0][2], {"message_trace_id": "abc123def456"})
+        self.assertEqual(calls[0][2]["message_trace_id"], "abc123def456")
+        self.assertEqual(calls[0][2]["sms_time"], "2026-06-28 12:00:00")
+        self.assertEqual(calls[0][2]["sms_time_identity"], "2026-06-28 12:00:00+32")
+
+    def test_process_pending_sms_keeps_distinct_identical_plain_callbacks(self):
+        calls = []
+        repeat_state = {}
+
+        class MockPending:
+            full_msg = "same body"
+            callback_head = "10086 26/06/28,12:00:00+32 same body"
+            display_lines = []
+
+        def process_once():
+            return process_pending_sms(
+                MockPending(),
+                [], False, "", "",
+                repeat_state, 5,
+                lambda msg, **kwargs: calls.append(("push", msg)),
+                lambda head, msg, metadata=None: calls.append(("cloud", msg)),
+                lambda *_args: None,
+                lambda: None,
+                lambda _msg: None,
+                lambda *_args: None,
+                lambda *_args: None,
+            )
+
+        self.assertEqual(process_once(), "shown")
+        self.assertEqual(process_once(), "shown")
+        self.assertEqual(calls.count(("push", "same body")), 2)
+        self.assertEqual(calls.count(("cloud", "same body")), 2)
+
+    def test_process_pending_sms_deduplicates_stable_multipart_trace(self):
+        repeat_state = {}
+
+        class MockPending:
+            full_msg = "multipart body"
+            callback_head = "10086 26/06/28,12:00:00+32 multipart body"
+            display_lines = []
+            concat_reference = 42
+            concat_reference_bits = 8
+            concat_total = 2
+            message_trace_id = "stable-trace"
+
+        def process_once():
+            return process_pending_sms(
+                MockPending(),
+                [], False, "", "",
+                repeat_state, 5,
+                lambda *_args, **_kwargs: None,
+                lambda *_args, **_kwargs: None,
+                lambda *_args: None,
+                lambda: None,
+                lambda _msg: None,
+                lambda *_args: None,
+                lambda *_args: None,
+            )
+
+        self.assertEqual(process_once(), "shown")
+        self.assertEqual(process_once(), "duplicate")
 
     def test_process_pending_sms_returns_empty_for_none(self):
         """Should return 'empty' when pending is None."""

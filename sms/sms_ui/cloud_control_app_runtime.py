@@ -117,6 +117,7 @@ def stop_cloud_control_app_runtime(
     set_ws,
     set_cloud_status,
     run_coroutine_threadsafe,
+    clear_sms_event_state=None,
     stop_runtime=stop_cloud_control_runtime,
 ):
     return stop_runtime(
@@ -132,6 +133,7 @@ def stop_cloud_control_app_runtime(
         set_ws=set_ws,
         set_cloud_status=set_cloud_status,
         run_coroutine_threadsafe=run_coroutine_threadsafe,
+        clear_sms_event_state=clear_sms_event_state,
     )
 
 

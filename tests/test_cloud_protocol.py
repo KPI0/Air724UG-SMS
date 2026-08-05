@@ -2,6 +2,7 @@
 
 from sms_core.cloud_protocol import (
     CLOUD_WS_DEFAULT_PATH,
+    cloud_ws_url_has_host,
     normalize_cloud_ws_url,
     normalize_imei,
     parse_sms_callback_head,
@@ -49,6 +50,42 @@ class CloudProtocolTests(unittest.TestCase):
         # The function tries to parse and may add default path
         result = normalize_cloud_ws_url("ws://:invalid")
         self.assertTrue(result.startswith("ws://"))
+
+    def test_cloud_ws_url_has_host_rejects_missing_or_blank_host(self):
+        for url in (
+            "ws://",
+            "ws:///ws/device",
+            "wss://?query=value",
+            "ws://:8765/ws/device",
+            "ws://bad host/ws/device",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(cloud_ws_url_has_host(url))
+
+    def test_cloud_ws_url_has_host_rejects_invalid_port_and_fragment(self):
+        for url in (
+            "ws://example.com:abc/ws/device",
+            "ws://example.com:70000/ws/device",
+            "ws://example.com:/ws/device",
+            "ws://example.com:+80/ws/device",
+            "ws://example.com: 80/ws/device",
+            "ws://example.com:0/ws/device",
+            "ws://example.com/ws/device#fragment",
+            "ws://example.com/ws/device#",
+            "ws://example.com\\bad",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(cloud_ws_url_has_host(url))
+
+    def test_cloud_ws_url_has_host_accepts_hostname_and_ip_addresses(self):
+        for url in (
+            "ws://localhost:8765/ws/device",
+            "wss://example.com/ws/device",
+            "ws://127.0.0.1:8765/ws/device",
+            "ws://[::1]:8765/ws/device",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(cloud_ws_url_has_host(url))
 
     def test_normalize_imei_removes_non_digits(self):
         """Should remove all non-digit characters from IMEI."""

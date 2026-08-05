@@ -67,6 +67,16 @@ class SerialLineEffectsTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertTrue(any("46011" in item for item in calls))
 
+    def test_push_serial_debug_insights_does_not_mislabel_operator_scan(self):
+        calls = []
+
+        push_serial_debug_insights(
+            '+COPS: (2,"China Mobile","CMCC","46000",7)',
+            calls.append,
+        )
+
+        self.assertEqual(calls, [])
+
 
 
 if __name__ == "__main__":

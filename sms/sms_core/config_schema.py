@@ -2,6 +2,40 @@ from sms_core.cloud_command_security import CLOUD_COMMAND_PERMISSION_DEFAULTS
 
 
 DEFAULT_VOICE_TEXT = "注意！四川安播中心预警短信，请及时查看。"
+DEFAULT_LOG_RETENTION_DAYS = 30
+DEFAULT_SMS_FONT_SIZE = 30
+SMS_FONT_SIZE_MIN = 8
+SMS_FONT_SIZE_MAX = 72
+
+
+def normalize_log_retention_days(value, default=DEFAULT_LOG_RETENTION_DAYS):
+    try:
+        days = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_LOG_RETENTION_DAYS
+    if days < 0:
+        try:
+            fallback = int(default)
+        except (TypeError, ValueError, OverflowError):
+            fallback = DEFAULT_LOG_RETENTION_DAYS
+        return fallback if fallback >= 0 else DEFAULT_LOG_RETENTION_DAYS
+    return days
+
+
+def normalize_sms_font_size(value, default=DEFAULT_SMS_FONT_SIZE):
+    try:
+        size = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_SMS_FONT_SIZE
+    if SMS_FONT_SIZE_MIN <= size <= SMS_FONT_SIZE_MAX:
+        return size
+    try:
+        fallback = int(default)
+    except (TypeError, ValueError, OverflowError):
+        fallback = DEFAULT_SMS_FONT_SIZE
+    if SMS_FONT_SIZE_MIN <= fallback <= SMS_FONT_SIZE_MAX:
+        return fallback
+    return DEFAULT_SMS_FONT_SIZE
 
 DEFAULT_SERIAL_CONFIG = {
     "port": "",
@@ -17,10 +51,10 @@ DEFAULT_UI_CONFIG = {
     "allow_multi_instance": "0",
     "auto_log_cleanup": "1",
     "log_unmatched_sms": "1",
-    "log_retention_days": "30",
+    "log_retention_days": str(DEFAULT_LOG_RETENTION_DAYS),
     "desktop_shortcut_name": "短信监听系统",
     "keywords": '["【四川安播中心】"]',
-    "sms_font_size": "30",
+    "sms_font_size": str(DEFAULT_SMS_FONT_SIZE),
     "sms_font_color": "#ff0000",
     "call_filter_mode": "Disabled",
     "call_whitelist": "[]",

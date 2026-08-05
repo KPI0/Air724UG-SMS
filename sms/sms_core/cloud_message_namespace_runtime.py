@@ -14,6 +14,12 @@ from sms_core.cloud_serial_log_runtime import (
     schedule_cloud_serial_log_drain,
     send_cloud_serial_log_runtime,
 )
+from sms_core.cloud_sms_event_runtime import (
+    clear_cloud_sms_event_state,
+    drain_cloud_sms_event_queue,
+    enqueue_cloud_sms_event_runtime,
+    schedule_cloud_sms_event_drain,
+)
 from sms_core.serial_debug import build_own_number_commands
 from sms_core.serial_sender import (
     AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
@@ -45,6 +51,56 @@ def reset_cloud_serial_log_state_namespace_runtime(namespace):
         reset_cloud_serial_log_state,
         namespace["CLOUD_SERIAL_LOG_Q"],
         namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
+        log_error=namespace.get("log_file_only"),
+    )
+
+
+def clear_cloud_sms_event_state_namespace_runtime(namespace):
+    return _call_with_optional_log_error(
+        clear_cloud_sms_event_state,
+        namespace["CLOUD_SMS_EVENT_Q"],
+        namespace["CLOUD_SMS_EVENT_DRAIN_STATE"],
+        log_error=namespace.get("log_file_only"),
+    )
+
+
+async def drain_cloud_sms_event_queue_namespace_runtime(namespace, ws, *, generation=None):
+    return await _call_with_optional_log_error(
+        drain_cloud_sms_event_queue,
+        ws,
+        event_queue=namespace["CLOUD_SMS_EVENT_Q"],
+        batch_size=namespace["CLOUD_SMS_EVENT_DRAIN_BATCH"],
+        state=namespace["CLOUD_SMS_EVENT_DRAIN_STATE"],
+        is_current_connection=lambda current_ws: current_ws is namespace["cloud_ws_conn"],
+        is_connected=lambda: namespace["cloud_connected"],
+        is_authorized=lambda: namespace["cloud_device_authorized"],
+        send_payload=namespace["_cloud_send_payload"],
+        log_error=namespace.get("log_file_only"),
+        generation=generation,
+    )
+
+
+def schedule_cloud_sms_event_drain_namespace_runtime(namespace, loop=None, ws=None):
+    loop = namespace["cloud_ws_loop"] if loop is None else loop
+    ws = namespace["cloud_ws_conn"] if ws is None else ws
+    if (
+        loop is None
+        or not loop.is_running()
+        or ws is None
+        or ws is not namespace["cloud_ws_conn"]
+        or not namespace["cloud_connected"]
+        or not namespace["cloud_device_authorized"]
+        or namespace["CLOUD_SMS_EVENT_Q"].empty()
+    ):
+        return False
+    return _call_with_optional_log_error(
+        schedule_cloud_sms_event_drain,
+        loop,
+        ws,
+        state=namespace["CLOUD_SMS_EVENT_DRAIN_STATE"],
+        drain_coro_factory=lambda current_ws, generation: namespace[
+            "_cloud_drain_sms_event_queue"
+        ](current_ws, generation=generation),
         log_error=namespace.get("log_file_only"),
     )
 
@@ -124,6 +180,21 @@ def send_cloud_sms_event_namespace_runtime(
         timestamp=namespace["_cloud_now_ts"],
         identity_payload=namespace["_cloud_identity_payload"],
         run_coroutine_threadsafe=namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        enabled=namespace.get("CLOUD_CONTROL_ENABLED", True),
+        enqueue_payload=lambda payload, loop, ws, can_send: enqueue_cloud_sms_event_runtime(
+            payload,
+            event_queue=namespace["CLOUD_SMS_EVENT_Q"],
+            can_send=can_send,
+            loop=loop,
+            ws=ws,
+            schedule_drain=lambda next_loop, next_ws: namespace["_schedule_cloud_sms_event_drain"](
+                next_loop,
+                next_ws,
+            ),
+            log_error=namespace.get("log_file_only"),
+            state=namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"),
+            is_enabled=lambda: namespace.get("CLOUD_CONTROL_ENABLED", True),
+        ),
     )
 
 

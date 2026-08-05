@@ -96,6 +96,9 @@ from sms_core.cloud_payloads import (
 from sms_core.cloud_serial_log_runtime import (
     CloudSerialLogDrainState,
 )
+from sms_core.cloud_sms_event_runtime import (
+    CloudSmsEventDrainState,
+)
 from sms_core.cloud_security import (
     check_replay_window as _cloud_check_replay_window_core,
     safe_preview as _cloud_safe_preview,
@@ -369,8 +372,10 @@ def _initialize_ui_state():
 def _initialize_cloud_runtime_state():
     global cloud_ws_loop, cloud_ws_conn, cloud_ws_thread
     global cloud_ws_lock, cloud_stop_event, cloud_restart_seq, CLOUD_SERIAL_LOG_Q
-    global CLOUD_SERIAL_LOG_DRAIN_BATCH, CLOUD_REPLAY_WINDOW_SECONDS, CLOUD_REPLAY_CACHE_MAX
+    global CLOUD_SERIAL_LOG_DRAIN_BATCH, CLOUD_SMS_EVENT_Q, CLOUD_SMS_EVENT_DRAIN_BATCH
+    global CLOUD_REPLAY_WINDOW_SECONDS, CLOUD_REPLAY_CACHE_MAX
     global cloud_replay_seen, CLOUD_SERIAL_LOG_DRAIN_STATE, cloud_connected
+    global CLOUD_SMS_EVENT_DRAIN_STATE
     global cloud_device_authorized, cloud_imei_verified, cloud_imei_query_deadline
 
     cloud_ws_loop = None
@@ -381,10 +386,13 @@ def _initialize_cloud_runtime_state():
     cloud_restart_seq = 0
     CLOUD_SERIAL_LOG_Q = queue.Queue(maxsize=1000)
     CLOUD_SERIAL_LOG_DRAIN_BATCH = 100
+    CLOUD_SMS_EVENT_Q = queue.Queue(maxsize=1000)
+    CLOUD_SMS_EVENT_DRAIN_BATCH = 100
     CLOUD_REPLAY_WINDOW_SECONDS = 60
     CLOUD_REPLAY_CACHE_MAX = 512
     cloud_replay_seen = {}
     CLOUD_SERIAL_LOG_DRAIN_STATE = CloudSerialLogDrainState()
+    CLOUD_SMS_EVENT_DRAIN_STATE = CloudSmsEventDrainState()
     cloud_connected = False
     cloud_device_authorized = False
     cloud_imei_verified = False
