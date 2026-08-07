@@ -3,7 +3,9 @@ import unittest
 
 from sms_core.cloud_ws_runtime import (
     base_cloud_backoff,
+    build_cloud_ssl_context,
     cloud_thread_main_runtime,
+    cloud_websocket_connect_kwargs,
     cloud_ws_main_app_runtime,
     cloud_ws_main_runtime,
     wait_cloud_login_ack_runtime,
@@ -87,6 +89,55 @@ async def _async_false():
 
 
 class CloudWsRuntimeTests(unittest.TestCase):
+    def test_build_cloud_ssl_context_skips_plain_websocket(self):
+        calls = []
+
+        result = build_cloud_ssl_context(
+            "ws://server/ws/device",
+            create_default_context=lambda: calls.append("context"),
+            certifi_where=lambda: calls.append("certifi"),
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+
+    def test_build_cloud_ssl_context_merges_system_and_certifi_roots(self):
+        calls = []
+
+        class FakeContext:
+            def load_verify_locations(self, *, cafile):
+                calls.append(("load", cafile))
+
+        context = FakeContext()
+        result = build_cloud_ssl_context(
+            "wss://server/ws/device",
+            create_default_context=lambda: calls.append(("context",)) or context,
+            certifi_where=lambda: "certifi-cacert.pem",
+        )
+
+        self.assertIs(result, context)
+        self.assertEqual(calls, [("context",), ("load", "certifi-cacert.pem")])
+
+    def test_cloud_websocket_connect_kwargs_adds_ssl_only_for_wss(self):
+        self.assertEqual(
+            cloud_websocket_connect_kwargs(
+                "ws://server/ws/device",
+                ssl_context_factory=lambda _url: None,
+            ),
+            {"ping_interval": 30, "ping_timeout": 30},
+        )
+        self.assertEqual(
+            cloud_websocket_connect_kwargs(
+                "wss://server/ws/device",
+                ssl_context_factory=lambda _url: "tls-context",
+            ),
+            {
+                "ping_interval": 30,
+                "ping_timeout": 30,
+                "ssl": "tls-context",
+            },
+        )
+
     def test_base_cloud_backoff_normalizes_bad_values(self):
         self.assertEqual(base_cloud_backoff(5), 5.0)
         self.assertEqual(base_cloud_backoff(0), 1.0)

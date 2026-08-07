@@ -101,6 +101,7 @@ py -m PyInstaller `
   --hidden-import "sms_ui" `
   --collect-submodules "win32com" `
   --collect-submodules "websockets" `
+  --collect-data "certifi" `
   --collect-submodules "sms_app" `
   --collect-submodules "sms_core" `
   --collect-submodules "sms_ui" `

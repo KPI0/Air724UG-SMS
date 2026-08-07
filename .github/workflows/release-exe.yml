@@ -72,7 +72,7 @@ jobs:
         run: |
           python -m pip check
           python -m compileall -q sms
-          python -c "import serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
+          python -c "import certifi, serial, pystray, pyttsx3, PIL, websockets, win32api, pythoncom, pywintypes, win32com.client"
 
       - name: Run tests
         shell: pwsh
@@ -110,6 +110,7 @@ jobs:
             --hidden-import "sms_ui" `
             --collect-submodules "win32com" `
             --collect-submodules "websockets" `
+            --collect-data "certifi" `
             --collect-submodules "sms_app" `
             --collect-submodules "sms_core" `
             --collect-submodules "sms_ui" `

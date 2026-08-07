@@ -1,7 +1,9 @@
 import asyncio
 import json
 import random
+import ssl
 import threading
+from urllib.parse import urlsplit
 
 from sms_core.cloud_messages import is_cloud_auth_ack_type, parse_cloud_message
 from sms_core.cloud_protocol import auth_status_from_ack
@@ -53,6 +55,42 @@ def base_cloud_backoff(reconnect_interval):
         return max(1.0, float(reconnect_interval))
     except Exception:
         return 1.0
+
+
+def build_cloud_ssl_context(
+    url,
+    *,
+    create_default_context=ssl.create_default_context,
+    certifi_where=None,
+):
+    """为 WSS 合并系统信任库和 certifi CA；普通 WS 不创建 TLS 上下文。"""
+    scheme = urlsplit(str(url or "").strip()).scheme.lower()
+    if scheme != "wss":
+        return None
+
+    if certifi_where is None:
+        try:
+            from certifi import where as certifi_where
+        except Exception as exc:
+            raise RuntimeError("WSS 连接缺少 certifi 根证书库，请重新安装客户端依赖") from exc
+
+    context = create_default_context()
+    try:
+        context.load_verify_locations(cafile=certifi_where())
+    except Exception as exc:
+        raise RuntimeError("WSS 根证书库加载失败，请重新安装客户端") from exc
+    return context
+
+
+def cloud_websocket_connect_kwargs(url, *, ssl_context_factory=build_cloud_ssl_context):
+    kwargs = {
+        "ping_interval": 30,
+        "ping_timeout": 30,
+    }
+    ssl_context = ssl_context_factory(url)
+    if ssl_context is not None:
+        kwargs["ssl"] = ssl_context
+    return kwargs
 
 
 def current_cloud_control_enabled(value):
@@ -181,7 +219,7 @@ async def cloud_ws_main_runtime(
             set_cloud_status("🌐 连接中", "#b26a00")
             log(f"正在连接：{url}", show_main=True)
 
-            async with connect(url, ping_interval=30, ping_timeout=30) as ws:
+            async with connect(url, **cloud_websocket_connect_kwargs(url)) as ws:
                 set_connection_state(ws, connected=True, authorized=False)
                 set_cloud_status("🌐 等待授权", "#b26a00")
                 log(f"已连接：{url}", show_main=True)

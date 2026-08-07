@@ -45,6 +45,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(tests_step.count("throw "), 2)
         self.assertNotIn("skipping tests", tests_step)
 
+    def test_release_bundles_certifi_ca_data_for_wss(self):
+        verify_start = self.workflow.index("      - name: Verify build inputs")
+        tests_start = self.workflow.index("      - name: Run tests")
+        verify_step = self.workflow[verify_start:tests_start]
+        build_start = self.workflow.index("      - name: Build EXE with PyInstaller")
+        package_start = self.workflow.index("      - name: Package release files")
+        build_step = self.workflow[build_start:package_start]
+
+        self.assertIn("import certifi", verify_step)
+        self.assertIn('--collect-data "certifi"', build_step)
+
 
 if __name__ == "__main__":
     unittest.main()
