@@ -13,6 +13,7 @@ from sms_core.cloud_command_security import (
 from sms_core.cloud_messages import (
     attach_cloud_task_ids,
     cloud_auth_failed_payload,
+    cloud_command_started_payload,
     cloud_unauthorized_payload,
     dispatch_cloud_action,
     is_cloud_auth_ack_type,
@@ -488,5 +489,6 @@ async def handle_cloud_message_runtime(
         show_window=show_window,
         hide_window=hide_window,
         log=log,
+        command_started=lambda: task_reply(cloud_command_started_payload()),
     )
     await task_reply(payload)

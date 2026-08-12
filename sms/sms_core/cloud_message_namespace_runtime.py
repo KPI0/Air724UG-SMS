@@ -223,7 +223,7 @@ def send_cloud_serial_command_namespace_runtime(
             response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
         )
 
-    return send_runtime(
+    result = send_runtime(
         command,
         command_meta=command_data,
         serial_lock=namespace["serial_lock"],
@@ -253,6 +253,29 @@ def send_cloud_serial_command_namespace_runtime(
             response_coordinator=command_coordinator,
         ),
     )
+    return result
+
+
+def apply_cloud_modem_health_namespace_runtime(namespace, result):
+    health = namespace.get("CLOUD_MODEM_HEALTH")
+    if health is None or not isinstance(result, tuple) or len(result) < 2:
+        return result
+    ok, info = bool(result[0]), str(result[1] or "")
+    health_snapshot = health.record(ok, info)
+    if health_snapshot.get("request_reconnect"):
+        namespace["_cloud_log"](
+            "连续 AT 响应超时，Modem 无响应，正在安全重连串口",
+            show_main=True,
+        )
+        try:
+            namespace["safe_close_serial"]()
+        finally:
+            namespace["serial_wakeup_event"].set()
+    metadata = {
+        "modem_unresponsive": bool(health_snapshot.get("modem_unresponsive")),
+        "consecutive_at_timeouts": int(health_snapshot.get("consecutive_at_timeouts") or 0),
+    }
+    return ok, info, metadata
 
 
 async def run_registered_cloud_serial_command_namespace_runtime(
@@ -267,7 +290,9 @@ async def run_registered_cloud_serial_command_namespace_runtime(
 
     def finish(result):
         if not result_future.done():
-            result_future.set_result(result)
+            result_future.set_result(
+                apply_cloud_modem_health_namespace_runtime(namespace, result)
+            )
 
     def worker():
         try:

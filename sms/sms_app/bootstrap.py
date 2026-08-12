@@ -93,6 +93,7 @@ from sms_core.cloud_payloads import (
     build_unregister_payload as _cloud_build_unregister_payload,
     identity_payload as _cloud_identity_payload_core,
 )
+from sms_core.cloud_modem_health import CloudModemHealthState
 from sms_core.cloud_serial_log_runtime import (
     CloudSerialLogDrainState,
 )
@@ -377,6 +378,7 @@ def _initialize_cloud_runtime_state():
     global cloud_replay_seen, CLOUD_SERIAL_LOG_DRAIN_STATE, cloud_connected
     global CLOUD_SMS_EVENT_DRAIN_STATE
     global cloud_device_authorized, cloud_imei_verified, cloud_imei_query_deadline
+    global CLOUD_MODEM_HEALTH
 
     cloud_ws_loop = None
     cloud_ws_conn = None
@@ -397,6 +399,7 @@ def _initialize_cloud_runtime_state():
     cloud_device_authorized = False
     cloud_imei_verified = False
     cloud_imei_query_deadline = 0.0
+    CLOUD_MODEM_HEALTH = CloudModemHealthState(reconnect_threshold=3)
 
 
 def _initialize_worker_state():

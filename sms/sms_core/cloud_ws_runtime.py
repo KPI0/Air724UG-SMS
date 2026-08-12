@@ -170,7 +170,55 @@ async def wait_cloud_login_ack_runtime(
             return True
 
         log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
-        return False
+        # 明确的密码/设备授权拒绝不是网络故障。返回专用结果，调用方
+        # 必须停止自动重连，避免错误密码形成无限重试和服务端限流。
+        return "auth_failed"
+
+    return False
+
+
+async def wait_for_cloud_auth_retry_runtime(
+    ws,
+    *,
+    stop_event,
+    send_register,
+    wait_login_ack,
+    set_connection_state,
+    set_cloud_status,
+    reset_serial_log_state,
+    log,
+    wait_for=asyncio.wait_for,
+):
+    """Hold a rejected socket until the web console asks for a retry.
+
+    This is deliberately event-driven: no password-error reconnect timer is
+    created.  A retry can only begin after the server has durably accepted a
+    web-side device-password update and sends ``device_auth_retry``.
+    """
+    while not stop_event.is_set():
+        try:
+            message = await wait_for(ws.recv(), timeout=0.5)
+        except asyncio.TimeoutError:
+            continue
+
+        incoming, _error = parse_cloud_message(message)
+        if incoming.msg_type != "device_auth_retry":
+            continue
+
+        set_connection_state(ws, connected=True, authorized=False)
+        set_cloud_status("🌐 等待授权", "#b26a00")
+        log("收到网页端控制密码更新通知，正在重新尝试设备授权", show_main=True)
+        await send_register(ws)
+        result = await wait_login_ack(ws)
+        if result is True:
+            return True
+
+        # Another explicit rejection keeps the same socket in the hold state;
+        # it never falls through to the normal reconnect backoff.
+        set_connection_state(ws, connected=False, authorized=False)
+        reset_serial_log_state()
+        set_cloud_status("🌐 授权失败", "#cc0000")
+        log("设备授权仍未通过，等待网页端再次更新控制密码", show_main=True)
 
     return False
 
@@ -200,6 +248,7 @@ async def cloud_ws_main_runtime(
     schedule_pending_sms_events = schedule_pending_sms_events or (lambda: None)
     last_imei_request = 0.0
     current_backoff = base_cloud_backoff(reconnect_interval)
+    auth_blocked = False
 
     while not stop_event.is_set():
         try:
@@ -224,12 +273,52 @@ async def cloud_ws_main_runtime(
                 set_cloud_status("🌐 等待授权", "#b26a00")
                 log(f"已连接：{url}", show_main=True)
                 await send_register(ws)
-                if not await wait_login_ack(ws):
+                login_result = await wait_login_ack(ws)
+                if login_result == "auth_failed":
+                    # 先设置终态，再执行清理。即使 websocket 已被服务端
+                    # 关闭、close() 抛出异常，也不能回到通用重连分支。
+                    auth_blocked = True
+                    # Keep the socket reference so the manual Disconnect or
+                    # the web-triggered restart can close the held channel.
+                    set_connection_state(ws, connected=False, authorized=False)
+                    reset_serial_log_state()
+                    set_cloud_status("🌐 授权失败", "#cc0000")
+                    try:
+                        retry_authorized = await wait_for_cloud_auth_retry_runtime(
+                            ws,
+                            stop_event=stop_event,
+                            send_register=send_register,
+                            wait_login_ack=wait_login_ack,
+                            set_connection_state=set_connection_state,
+                            set_cloud_status=set_cloud_status,
+                            reset_serial_log_state=reset_serial_log_state,
+                            log=log,
+                            wait_for=wait_for,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # The password rejection remains valid, but the held
+                        # transport has disappeared.  Reconnect with the normal
+                        # network backoff so a later web-side password update
+                        # can still reach this client.  The server keeps an
+                        # intact rejected connection in the event-driven hold,
+                        # so this does not restore password-error polling.
+                        auth_blocked = False
+                        raise
+                    if retry_authorized:
+                        auth_blocked = False
+                        login_result = True
+                        current_backoff = base_cloud_backoff(reconnect_interval)
+                        schedule_pending_sms_events()
+                    else:
+                        break
+                if not login_result:
                     set_connection_state(None, connected=False, authorized=False)
                     reset_serial_log_state()
                     set_cloud_status("🌐 授权失败", "#cc0000")
                     await ws.close()
-                    raise RuntimeError("设备登录未通过服务端确认")
+                    raise RuntimeError("设备登录确认超时，等待网络恢复后重试")
                 current_backoff = base_cloud_backoff(reconnect_interval)
                 schedule_pending_sms_events()
 
@@ -241,16 +330,23 @@ async def cloud_ws_main_runtime(
                     message_result = await handle_message(ws, msg)
                     schedule_pending_sms_events()
                     if message_result == "auth_failed":
+                        auth_blocked = True
                         set_connection_state(None, connected=False, authorized=False)
                         reset_serial_log_state()
                         set_cloud_status("🌐 授权失败", "#cc0000")
-                        await ws.close()
-                        raise RuntimeError("设备会话授权已失效")
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        break
+
+            if auth_blocked:
+                break
 
         except asyncio.CancelledError:
             break
         except Exception as e:
-            if stop_event.is_set():
+            if stop_event.is_set() or auth_blocked:
                 break
             set_connection_state(None, connected=False, authorized=False)
             reset_serial_log_state()
@@ -269,11 +365,18 @@ async def cloud_ws_main_runtime(
 
     set_connection_state(None, connected=False, authorized=False)
     reset_serial_log_state()
-    set_cloud_status(
-        cloud_stopped_status(current_cloud_control_enabled(cloud_control_enabled)),
-        "#666666",
-    )
-    log("连接已停止")
+    if auth_blocked:
+        # 保持“授权失败”可见。正常情况下服务端会在网页端保存新密码
+        # 后通知这个等待中的连接；只有服务端或客户端主动关闭连接时才
+        # 会走到这里，此时不应伪装成普通网络重连。
+        set_cloud_status("🌐 授权失败", "#cc0000")
+        log("授权失败，已停止自动重连；请在网页端更新控制密码后等待自动重试")
+    else:
+        set_cloud_status(
+            cloud_stopped_status(current_cloud_control_enabled(cloud_control_enabled)),
+            "#666666",
+        )
+        log("连接已停止")
 
 
 async def cloud_ws_main_app_runtime(

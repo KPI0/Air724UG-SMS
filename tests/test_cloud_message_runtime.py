@@ -208,7 +208,10 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertTrue(state["authorized"])
         self.assertEqual(replay_checks, [False, True])
         self.assertIn(("send", "ATI", {"cmd": "ATI", "task_id": "task-1"}), calls)
-        self.assertEqual(replies[0]["type"], "send_at_result")
+        self.assertEqual(replies[0]["type"], "command_task_status")
+        self.assertEqual(replies[0]["status"], "started")
+        self.assertEqual(replies[0]["task_id"], "task-1")
+        self.assertEqual(replies[1]["type"], "send_at_result")
         self.assertEqual(replies[0]["task_id"], "task-1")
         self.assertTrue(replies[0]["ok"])
 

@@ -126,6 +126,15 @@ def cloud_send_at_result_payload(ok, message):
     }
 
 
+def cloud_command_started_payload():
+    return {
+        "type": "command_task_status",
+        "status": "started",
+        "ok": True,
+        "message": "客户端已开始执行串口指令",
+    }
+
+
 def cloud_window_result_payload(action):
     kind = cloud_action_kind(action)
     if kind == "show_window":
@@ -172,6 +181,7 @@ async def dispatch_cloud_action(
     show_window,
     hide_window,
     log,
+    command_started=None,
 ):
     action_kind = cloud_action_kind(action)
 
@@ -184,8 +194,14 @@ async def dispatch_cloud_action(
     if action_kind == "send_at":
         command = command_text(data)
         log(f"云端下发指令：{cloud_command_log_text(command, data)}")
-        ok, info = await send_serial_command(command, data)
-        return cloud_send_at_result_payload(ok, info)
+        if callable(command_started):
+            await command_started()
+        result = await send_serial_command(command, data)
+        ok, info = result[:2]
+        payload = cloud_send_at_result_payload(ok, info)
+        if len(result) > 2 and isinstance(result[2], dict):
+            payload.update(result[2])
+        return payload
 
     if action_kind == "show_window":
         show_window()

@@ -9,6 +9,7 @@ from sms_core.cloud_ws_runtime import (
     cloud_ws_main_app_runtime,
     cloud_ws_main_runtime,
     wait_cloud_login_ack_runtime,
+    wait_for_cloud_auth_retry_runtime,
     wait_for_cloud_imei,
 )
 
@@ -229,7 +230,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
             monotonic=lambda: 0.0,
         ))
 
-        self.assertFalse(result)
+        self.assertEqual(result, "auth_failed")
         self.assertIn(("authorized", False), calls)
         self.assertIn(("ack", "auth_failed"), calls)
         self.assertTrue(any(item[0] == "log" and item[1][0] == "bad" for item in calls))
@@ -394,21 +395,23 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertTrue(any(item[0] == "log" and "down" in item[1][0] for item in calls))
         self.assertGreaterEqual(calls.count(("reset",)), 2)
 
-    def test_cloud_ws_main_auth_failure_closes_and_clears_connected(self):
+    def test_cloud_ws_main_auth_failure_waits_for_web_password_retry(self):
         stop_event = FakeStopEvent()
-        ws = FakeWebSocket(['{"type":"device_auth_result","status":"auth_failed","message":"bad"}'])
+        ws = FakeWebSocket([
+            '{"type":"device_auth_result","status":"auth_failed","message":"bad"}',
+            '{"type":"device_auth_retry"}',
+            '{"type":"device_login_ack","auth_status":"ok","message":"ok"}',
+        ])
         calls = []
-
-        async def sleep(delay):
-            calls.append(("sleep", delay))
-            if delay == 0.1:
-                stop_event.set()
 
         async def wait_for(awaitable, timeout):
             return await awaitable
 
+        login_attempts = [0]
+
         async def wait_login_ack(seen_ws):
-            return await wait_cloud_login_ack_runtime(
+            login_attempts[0] += 1
+            result = await wait_cloud_login_ack_runtime(
                 seen_ws,
                 stop_event=stop_event,
                 set_authorized=lambda value: calls.append(("authorized", value)),
@@ -419,12 +422,18 @@ class CloudWsRuntimeTests(unittest.TestCase):
                 monotonic=lambda: 0.0,
                 wait_for=wait_for,
             )
+            if login_attempts[0] == 2:
+                stop_event.set()
+            return result
 
         async def send_register(seen_ws):
             calls.append(("register", seen_ws))
 
         async def handle_message(*args):
             calls.append(("message", args))
+
+        async def sleep(_delay):
+            return None
 
         awaitable = cloud_ws_main_runtime(
             "ws://server",
@@ -447,14 +456,105 @@ class CloudWsRuntimeTests(unittest.TestCase):
         )
         asyncio.run(awaitable)
 
-        self.assertTrue(ws.closed)
+        self.assertFalse(ws.closed)
         self.assertFalse(any(item[0] == "message" for item in calls))
         state_indices = [index for index, item in enumerate(calls) if item[0] == "state"]
         self.assertGreaterEqual(len(state_indices), 2)
         self.assertEqual(calls[state_indices[0]][2], {"connected": True, "authorized": False})
         self.assertEqual(calls[state_indices[1]][2], {"connected": False, "authorized": False})
         self.assertIn(("reset",), calls)
-        self.assertTrue(any(item[0] == "status" and item[1][0] == "🌐 重连中" for item in calls))
+        self.assertEqual([item[0] for item in calls if item[0] == "register"], ["register", "register"])
+        self.assertTrue(any(
+            item[0] == "status"
+            and item[1][0] == "🌐 授权失败"
+            for item in calls
+        ))
+
+    def test_cloud_auth_retry_keeps_waiting_after_another_explicit_rejection(self):
+        stop_event = FakeStopEvent()
+        ws = FakeWebSocket([
+            '{"type":"device_auth_retry"}',
+            '{"type":"device_auth_retry"}',
+        ])
+        calls = []
+        login_results = iter(["auth_failed", True])
+
+        async def wait_login_ack(_ws):
+            return next(login_results)
+
+        async def send_register(_ws):
+            calls.append(("register",))
+
+        result = asyncio.run(wait_for_cloud_auth_retry_runtime(
+            ws,
+            stop_event=stop_event,
+            send_register=send_register,
+            wait_login_ack=wait_login_ack,
+            set_connection_state=lambda *args, **kwargs: calls.append(("state", args, kwargs)),
+            set_cloud_status=lambda *args: calls.append(("status", args)),
+            reset_serial_log_state=lambda: calls.append(("reset",)),
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            wait_for=lambda awaitable, timeout: awaitable,
+        ))
+
+        self.assertTrue(result)
+        self.assertEqual(calls.count(("register",)), 2)
+        self.assertIn(("reset",), calls)
+        self.assertTrue(any(
+            item[0] == "state"
+            and item[2] == {"connected": False, "authorized": False}
+            for item in calls
+        ))
+
+    def test_cloud_ws_main_reconnects_when_auth_hold_transport_drops(self):
+        stop_event = FakeStopEvent()
+        calls = []
+        sockets = []
+
+        class DroppedHoldWebSocket(FakeWebSocket):
+            async def recv(self):
+                raise ConnectionError("hold transport dropped")
+
+        def connect(*_args, **_kwargs):
+            ws = DroppedHoldWebSocket() if not sockets else FakeWebSocket()
+            sockets.append(ws)
+            return FakeConnectContext(ws)
+
+        async def wait_login_ack(_ws):
+            if len(sockets) == 1:
+                return "auth_failed"
+            stop_event.set()
+            return True
+
+        async def sleep(delay):
+            calls.append(("sleep", delay))
+
+        asyncio.run(cloud_ws_main_runtime(
+            "ws://server",
+            1,
+            stop_event=stop_event,
+            runtime_imei=lambda: "123456789012345",
+            request_cloud_device_imei=lambda: None,
+            set_cloud_status=lambda *args: calls.append(("status", args)),
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            connect=connect,
+            set_connection_state=lambda *args, **kwargs: calls.append(("state", args, kwargs)),
+            reset_serial_log_state=lambda: calls.append(("reset",)),
+            send_register=lambda _ws: _async_none(),
+            wait_login_ack=wait_login_ack,
+            handle_message=lambda *_args: _async_none(),
+            cloud_control_enabled=True,
+            monotonic=lambda: 0.0,
+            sleep=sleep,
+            jitter=lambda _start, _end: 0.0,
+        ))
+
+        self.assertEqual(len(sockets), 2)
+        self.assertIn(("sleep", 0.1), calls)
+        self.assertTrue(any(
+            item[0] == "log" and "hold transport dropped" in item[1][0]
+            for item in calls
+        ))
 
     def test_cloud_ws_main_clears_initial_auth_state_before_close(self):
         stop_event = FakeStopEvent()
@@ -495,7 +595,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertTrue(ws.closed)
         self.assertEqual(close_states, [(None, {"connected": False, "authorized": False})])
 
-    def test_cloud_ws_main_reauth_failure_disconnects_and_reconnects(self):
+    def test_cloud_ws_main_reauth_failure_disconnects_without_reconnect(self):
         stop_event = FakeStopEvent()
         states = []
         close_states = []
@@ -541,7 +641,50 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertIn(("message", "reauth-failed"), calls)
         self.assertTrue(ws.closed)
         self.assertEqual(close_states, [(None, {"connected": False, "authorized": False})])
-        self.assertTrue(any(item[0] == "status" and item[1][0] == "🌐 重连中" for item in calls))
+        self.assertFalse(any(item[0] == "sleep" for item in calls))
+        self.assertTrue(any(
+            item[0] == "status"
+            and item[1][0] == "🌐 授权失败"
+            for item in calls
+        ))
+
+    def test_cloud_ws_main_auth_failure_stops_when_hold_channel_is_stopped(self):
+        stop_event = FakeStopEvent()
+        calls = []
+
+        ws = FakeWebSocket()
+
+        async def sleep(_delay):
+            return None
+
+        async def wait_login_ack(_ws):
+            stop_event.set()
+            return "auth_failed"
+
+        asyncio.run(cloud_ws_main_runtime(
+            "ws://server",
+            1,
+            stop_event=stop_event,
+            runtime_imei=lambda: "123456789012345",
+            request_cloud_device_imei=lambda: None,
+            set_cloud_status=lambda *args: calls.append(("status", args)),
+            log=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
+            connect=lambda *_args, **_kwargs: FakeConnectContext(ws),
+            set_connection_state=lambda *_args, **_kwargs: None,
+            reset_serial_log_state=lambda: None,
+            send_register=lambda _ws: _async_none(),
+            wait_login_ack=wait_login_ack,
+            handle_message=lambda *_args: _async_none(),
+            cloud_control_enabled=True,
+            monotonic=lambda: 0.0,
+            sleep=sleep,
+        ))
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(any(
+            item[0] == "status" and item[1][0] == "🌐 授权失败"
+            for item in calls
+        ))
 
     def test_cloud_ws_main_auth_failures_increase_backoff_before_reset(self):
         stop_event = FakeStopEvent()

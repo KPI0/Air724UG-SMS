@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from sms_core.cloud_message_namespace_runtime import (
+    apply_cloud_modem_health_namespace_runtime,
     drain_cloud_serial_log_queue_namespace_runtime,
     handle_cloud_message_namespace_runtime,
     reset_cloud_serial_log_state_namespace_runtime,
@@ -14,6 +15,7 @@ from sms_core.cloud_message_namespace_runtime import (
     send_cloud_sms_event_namespace_runtime,
 )
 from sms_core.serial_sender import AtCommandResponseCoordinator, SerialCommandResult
+from sms_core.cloud_modem_health import CloudModemHealthState
 from sms_core.threading_runtime import WorkerThreadRegistry
 
 
@@ -256,6 +258,38 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("超时", info)
         self.assertEqual(serial_obj.writes, [b"ATI\r\n"])
+
+    def test_three_consecutive_timeouts_safely_close_and_wake_serial(self):
+        namespace = self.base_namespace()
+        calls = []
+        namespace.update({
+            "CLOUD_MODEM_HEALTH": CloudModemHealthState(reconnect_threshold=3),
+            "safe_close_serial": lambda: calls.append("close"),
+            "serial_wakeup_event": type(
+                "WakeEvent",
+                (),
+                {"set": lambda _self: calls.append("wake")},
+            )(),
+            "_cloud_log": lambda message, **kwargs: calls.append((message, kwargs)),
+        })
+
+        first = apply_cloud_modem_health_namespace_runtime(
+            namespace,
+            (False, "等待 Modem 指令响应超时"),
+        )
+        second = apply_cloud_modem_health_namespace_runtime(
+            namespace,
+            (False, "等待 Modem 指令响应超时"),
+        )
+        third = apply_cloud_modem_health_namespace_runtime(
+            namespace,
+            (False, "等待 Modem 指令响应超时"),
+        )
+
+        self.assertFalse(first[2]["modem_unresponsive"])
+        self.assertFalse(second[2]["modem_unresponsive"])
+        self.assertTrue(third[2]["modem_unresponsive"])
+        self.assertEqual(calls[-2:], ["close", "wake"])
 
     def test_handle_cloud_message_namespace_runtime_forwards_and_mutates_state(self):
         namespace = self.base_namespace()
