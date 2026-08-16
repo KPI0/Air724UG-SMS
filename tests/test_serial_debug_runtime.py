@@ -1,7 +1,10 @@
 import queue
 import unittest
 
-from sms_ui.serial_debug_panel import append_serial_debug_lines_once
+from sms_ui.serial_debug_panel import (
+    append_serial_debug_lines_once,
+    redraw_serial_debug_filter,
+)
 from sms_ui.serial_debug_runtime import SerialDebugPauseController
 
 
@@ -163,6 +166,34 @@ class SerialDebugRuntimeTests(unittest.TestCase):
         self.assertTrue(appended)
         self.assertIn(("see", "end"), text.calls)
         self.assertEqual(serial_queue.unfinished_tasks, 0)
+
+    def test_append_lines_escapes_control_characters_before_tk_insert(self):
+        serial_queue = queue.Queue()
+        raw_line = "before\x00after\x10tail"
+        serial_queue.put_nowait(raw_line)
+        all_lines = []
+        text = FakeText(bottom=0.99)
+
+        appended = append_serial_debug_lines_once(
+            text,
+            serial_queue,
+            all_lines,
+            "",
+            FakeFinder(),
+            max_store_lines=100,
+            max_visible_lines=100,
+        )
+
+        self.assertTrue(appended)
+        self.assertEqual(all_lines, [raw_line])
+        self.assertIn(("insert", "end", "before\\x00after\\x10tail\n"), text.calls)
+
+    def test_redraw_escapes_control_characters_before_tk_insert(self):
+        text = FakeText(bottom=0.99)
+
+        redraw_serial_debug_filter(text, ["before\x00after\x10tail"], "")
+
+        self.assertIn(("insert", "end", "before\\x00after\\x10tail\n"), text.calls)
 
 
 if __name__ == "__main__":

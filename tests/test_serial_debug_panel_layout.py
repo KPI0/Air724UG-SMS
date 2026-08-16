@@ -29,7 +29,8 @@ class FakeWidget:
     configure = config
 
     def bind(self, *_args, **_kwargs):
-        pass
+        self.bind_calls = getattr(self, "bind_calls", [])
+        self.bind_calls.append((_args, _kwargs))
 
     def bind_all(self, *_args, **_kwargs):
         pass
@@ -89,6 +90,45 @@ class SerialDebugPanelLayoutTests(unittest.TestCase):
         self.assertTrue(
             any(call.get("command") == serial_text.xview for call in horizontal.config_calls)
         )
+        bound_events = [call[0][0] for call in serial_text.bind_calls]
+        self.assertIn("<Control-a>", bound_events)
+        self.assertIn("<Control-c>", bound_events)
+
+    def test_clipboard_text_escapes_embedded_control_characters(self):
+        self.assertEqual(
+            serial_debug_panel.format_serial_debug_clipboard_text(
+                ">>> 发送: AT\\r\\n\nUSBS\x10bad\x00tail\tvalue"
+            ),
+            ">>> 发送: AT\\r\\n\nUSBS\\x10bad\\x00tail\tvalue",
+        )
+
+    def test_copy_selection_preserves_text_after_embedded_nul(self):
+        class ClipboardText:
+            def __init__(self):
+                self.clipboard = ""
+                self.updated = False
+
+            def get(self, start, end):
+                self.assert_indexes = (start, end)
+                return "before\x00after"
+
+            def clipboard_clear(self):
+                self.clipboard = ""
+
+            def clipboard_append(self, value):
+                self.clipboard += value
+
+            def update_idletasks(self):
+                self.updated = True
+
+        text = ClipboardText()
+
+        result = serial_debug_panel.copy_serial_debug_selection(text)
+
+        self.assertEqual(result, "break")
+        self.assertEqual(text.assert_indexes, ("sel.first", "sel.last"))
+        self.assertEqual(text.clipboard, "before\\x00after")
+        self.assertTrue(text.updated)
 
     def test_information_center_action_follows_own_number_action(self):
         buttons = []

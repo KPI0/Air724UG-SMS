@@ -18,6 +18,66 @@ from sms_ui.serial_debug_dialogs import (
 )
 
 
+def format_serial_debug_text(value):
+    formatted = []
+    for char in str(value or ""):
+        codepoint = ord(char)
+        if char in ("\r", "\n", "\t"):
+            formatted.append(char)
+        elif codepoint < 32 or codepoint == 127:
+            formatted.append(f"\\x{codepoint:02X}")
+        else:
+            formatted.append(char)
+    return "".join(formatted)
+
+
+def format_serial_debug_clipboard_text(value):
+    return format_serial_debug_text(value)
+
+
+def select_all_serial_debug_text(text_widget):
+    try:
+        text_widget.tag_add("sel", "1.0", "end-1c")
+        text_widget.mark_set("insert", "1.0")
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def copy_serial_debug_selection(text_widget):
+    try:
+        selected = text_widget.get("sel.first", "sel.last")
+    except tk.TclError:
+        return "break"
+
+    try:
+        text_widget.clipboard_clear()
+        text_widget.clipboard_append(format_serial_debug_clipboard_text(selected))
+        text_widget.update_idletasks()
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def bind_serial_debug_text_shortcuts(text_widget):
+    text_widget.bind(
+        "<Control-a>",
+        lambda _event: select_all_serial_debug_text(text_widget),
+    )
+    text_widget.bind(
+        "<Control-A>",
+        lambda _event: select_all_serial_debug_text(text_widget),
+    )
+    text_widget.bind(
+        "<Control-c>",
+        lambda _event: copy_serial_debug_selection(text_widget),
+    )
+    text_widget.bind(
+        "<Control-C>",
+        lambda _event: copy_serial_debug_selection(text_widget),
+    )
+
+
 def create_serial_debug_body(parent, quick_send, manual_operator_switch=None):
     body = ttk.Frame(parent)
     body.pack(fill="both", expand=True, padx=8, pady=6)
@@ -44,6 +104,7 @@ def create_serial_debug_body(parent, quick_send, manual_operator_switch=None):
     serial_text.pack(side="left", fill="both", expand=True)
     yscroll.config(command=serial_text.yview)
     xscroll.config(command=serial_text.xview)
+    bind_serial_debug_text_shortcuts(serial_text)
 
     quick_panel = ttk.LabelFrame(body, text="常用指令")
     quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=330)
@@ -204,9 +265,10 @@ def redraw_serial_debug_filter(text_widget, all_lines, filter_text: str):
     for line in all_lines:
         if filter_text and filter_text not in line:
             continue
-        if not line.endswith("\n"):
-            line += "\n"
-        text_widget.insert("end", line)
+        display_line = format_serial_debug_text(line)
+        if not display_line.endswith("\n"):
+            display_line += "\n"
+        text_widget.insert("end", display_line)
 
     text_widget.see("end")
     text_widget.config(state="disabled")
@@ -244,9 +306,10 @@ def append_serial_debug_lines_once(
     for line in lines:
         if filter_text and filter_text not in line:
             continue
-        if not line.endswith("\n"):
-            line += "\n"
-        text_widget.insert("end", line)
+        display_line = format_serial_debug_text(line)
+        if not display_line.endswith("\n"):
+            display_line += "\n"
+        text_widget.insert("end", display_line)
     insert_end = text_widget.index("end-1c")
 
     if finder.term:
