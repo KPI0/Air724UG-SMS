@@ -4,7 +4,12 @@ import re
 
 from .config_schema import THIRD_PUSH_DEFAULTS
 from sms_core.third_push_format import apply_vars, format_message, template_vars
-from sms_core.third_push_sender import send_channel
+from sms_core.third_push_sender import (
+    parse_email_addresses,
+    parse_smtp_port,
+    parse_wxpusher_uids,
+    send_channel,
+)
 
 
 THIRD_PUSH_TEST_MESSAGE = "这是一条短信监听系统的三方推送测试短信。"
@@ -21,6 +26,8 @@ THIRD_PUSH_CHANNELS = [
     ("next-smtp-proxy", "next-smtp-proxy"),
     ("gotify", "Gotify"),
     ("serverchan", "Server酱"),
+    ("wxpusher", "WxPusher"),
+    ("email", "邮箱"),
 ]
 THIRD_PUSH_CHANNEL_LABELS = dict(THIRD_PUSH_CHANNELS)
 THIRD_PUSH_SETTINGS_KEYS = [
@@ -47,6 +54,16 @@ THIRD_PUSH_REQUIRED_FIELDS = {
     ),
     "gotify": (("gotify_api", "GOTIFY_API"), ("gotify_token", "GOTIFY_TOKEN")),
     "serverchan": (("serverchan_api", "SERVERCHAN_API"), ("serverchan_title", "SERVERCHAN_TITLE")),
+    "wxpusher": (("wxpusher_app_token", "WXPUSHER_APP_TOKEN"), ("wxpusher_uids", "WXPUSHER_UIDS")),
+    "email": (
+        ("email_smtp_host", "EMAIL_SMTP_HOST"),
+        ("email_smtp_port", "EMAIL_SMTP_PORT"),
+        ("email_encryption", "EMAIL_ENCRYPTION"),
+        ("email_username", "EMAIL_USERNAME"),
+        ("email_password", "EMAIL_PASSWORD"),
+        ("email_from_address", "EMAIL_FROM_ADDRESS"),
+        ("email_to_addresses", "EMAIL_TO_ADDRESSES"),
+    ),
 }
 
 
@@ -118,6 +135,29 @@ def validate_push_settings(channels, settings):
         for key, label in THIRD_PUSH_REQUIRED_FIELDS.get(channel, ()):
             if not str(settings.get(key, "")).strip():
                 missing.append(f"{push_label(channel)}: {label}")
+        if channel == "wxpusher" and str(settings.get("wxpusher_uids", "")).strip():
+            try:
+                parse_wxpusher_uids(settings.get("wxpusher_uids"))
+            except ValueError as exc:
+                missing.append(f"{push_label(channel)}: {exc}")
+        elif channel == "email":
+            smtp_port = str(settings.get("email_smtp_port", "")).strip()
+            if smtp_port:
+                try:
+                    parse_smtp_port(smtp_port)
+                except ValueError as exc:
+                    missing.append(f"{push_label(channel)}: {exc}")
+            encryption = str(settings.get("email_encryption", "")).strip().lower()
+            if encryption and encryption not in ("ssl", "starttls"):
+                missing.append(f"{push_label(channel)}: EMAIL_ENCRYPTION 只能是 ssl 或 starttls")
+            from_address = str(settings.get("email_from_address", "")).strip()
+            to_addresses = str(settings.get("email_to_addresses", "")).strip()
+            if from_address and to_addresses:
+                try:
+                    parse_email_addresses(from_address, maximum=1)
+                    parse_email_addresses(to_addresses)
+                except ValueError as exc:
+                    missing.append(f"{push_label(channel)}: {exc}")
     return missing
 
 

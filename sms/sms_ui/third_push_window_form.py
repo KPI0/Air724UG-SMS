@@ -361,6 +361,14 @@ def render_channel_fields(param_box, entry_vars, spec, set_custom_text_widget):
                 lambda _e, k=key, w=text: entry_vars[k].set(w.get("1.0", "end-1c")),
             )
             set_custom_text_widget(text)
+        elif kind == "select":
+            ttk.Combobox(
+                param_box,
+                textvariable=entry_vars[key],
+                values=show or (),
+                state="readonly",
+                width=53,
+            ).grid(row=row, column=1, sticky="ew", pady=5, padx=(8, 0))
         else:
             ttk.Entry(param_box, textvariable=entry_vars[key], width=56, show=show).grid(
                 row=row,

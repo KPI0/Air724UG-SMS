@@ -4,6 +4,7 @@ import json
 import queue
 import unittest
 import urllib.error
+from unittest.mock import patch
 
 from sms_core.third_push import (
     PushDispatchResult,
@@ -434,6 +435,158 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(config.get("third_push", "call_enabled"), "0")
         self.assertEqual(json.loads(config.get("third_push", "notify_type")), ["wecom", "bark"])
         self.assertEqual(config.get("third_push", "wecom_webhook"), "https://example.test/wecom")
+
+
+    def test_wxpusher_and_email_channels_are_registered_and_persisted(self):
+        from sms_core.third_push import THIRD_PUSH_CHANNEL_LABELS, THIRD_PUSH_REQUIRED_FIELDS
+
+        self.assertEqual(THIRD_PUSH_CHANNEL_LABELS["wxpusher"], "WxPusher")
+        self.assertEqual(THIRD_PUSH_CHANNEL_LABELS["email"], "邮箱")
+        self.assertIn(("wxpusher_app_token", "WXPUSHER_APP_TOKEN"), THIRD_PUSH_REQUIRED_FIELDS["wxpusher"])
+        self.assertIn(("email_password", "EMAIL_PASSWORD"), THIRD_PUSH_REQUIRED_FIELDS["email"])
+
+        config = configparser.ConfigParser()
+        config["third_push"] = {
+            "notify_type": '["wxpusher", "email"]',
+            "wxpusher_app_token": "AT_test",
+            "wxpusher_uids": "UID_one UID_two",
+            "email_smtp_host": "smtp.example.com",
+            "email_smtp_port": "465",
+            "email_encryption": "ssl",
+            "email_username": "sender@example.com",
+            "email_password": "secret",
+            "email_from_address": "sender@example.com",
+            "email_to_addresses": "receiver@example.com",
+        }
+        settings = read_third_push_settings(config)
+        self.assertEqual(settings.channels, ["wxpusher", "email"])
+        self.assertEqual(settings.settings["wxpusher_uids"], "UID_one UID_two")
+        self.assertEqual(settings.settings["email_encryption"], "ssl")
+
+    def test_validate_new_channel_values(self):
+        from sms_core.third_push import validate_push_settings
+
+        self.assertEqual(
+            validate_push_settings(
+                ["wxpusher"],
+                {"wxpusher_app_token": "AT_test", "wxpusher_uids": "UID_one,UID_two"},
+            ),
+            [],
+        )
+        self.assertTrue(validate_push_settings(
+            ["wxpusher"],
+            {"wxpusher_app_token": "AT_test", "wxpusher_uids": "bad"},
+        ))
+        self.assertEqual(
+            validate_push_settings(
+                ["email"],
+                {
+                    "email_smtp_host": "smtp.example.com",
+                    "email_smtp_port": "465",
+                    "email_encryption": "ssl",
+                    "email_username": "sender@example.com",
+                    "email_password": "secret",
+                    "email_from_address": "sender@example.com",
+                    "email_to_addresses": "receiver@example.com",
+                },
+            ),
+            [],
+        )
+
+    def test_new_channel_lists_accept_chinese_separators(self):
+        self.assertEqual(
+            third_push_sender.parse_wxpusher_uids("UID_one，UID_two；UID_three"),
+            ["UID_one", "UID_two", "UID_three"],
+        )
+        self.assertEqual(
+            third_push_sender.parse_email_addresses("one@example.com，two@example.com；three@example.com"),
+            ["one@example.com", "two@example.com", "three@example.com"],
+        )
+
+    def test_send_wxpusher_builds_official_payload_and_checks_success_code(self):
+        requests = []
+
+        def fake_http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
+            requests.append((url, method, headers, json.loads(data)))
+            return True, 200, '{"code":1000,"msg":"ok"}'
+
+        original = third_push_sender.http_request
+        third_push_sender.http_request = fake_http_request
+        try:
+            ok, info = third_push_sender.send_wxpusher(
+                "短信内容",
+                {"wxpusher_app_token": "AT_test", "wxpusher_uids": "UID_one, UID_two"},
+            )
+        finally:
+            third_push_sender.http_request = original
+
+        self.assertTrue(ok)
+        self.assertIn("HTTP 200", info)
+        self.assertEqual(requests[0][0], "https://wxpusher.zjiecode.com/api/send/message")
+        self.assertEqual(requests[0][3]["appToken"], "AT_test")
+        self.assertEqual(requests[0][3]["uids"], ["UID_one", "UID_two"])
+        self.assertEqual(requests[0][3]["content"], "短信内容")
+
+    def test_send_email_supports_ssl_and_starttls_without_logging_password(self):
+        calls = []
+
+        class FakeSMTP:
+            def __init__(self, *args, **kwargs):
+                calls.append(("connect", args, kwargs))
+
+            def ehlo(self):
+                calls.append(("ehlo",))
+
+            def starttls(self, context=None):
+                calls.append(("starttls", context))
+
+            def login(self, username, password):
+                calls.append(("login", username, password))
+
+            def send_message(self, message):
+                calls.append(("send", message["To"], message.get_content()))
+
+            def quit(self):
+                calls.append(("quit",))
+
+        settings = {
+            "email_smtp_host": "smtp.example.com",
+            "email_smtp_port": "587",
+            "email_encryption": "starttls",
+            "email_username": "sender@example.com",
+            "email_password": "super-secret",
+            "email_from_address": "sender@example.com",
+            "email_to_addresses": "one@example.com;two@example.com",
+            "email_subject": "测试",
+        }
+        with patch.object(third_push_sender.smtplib, "SMTP", FakeSMTP), patch.object(
+            third_push_sender.ssl, "create_default_context", return_value="tls-context"
+        ):
+            ok, info = third_push_sender.send_email("邮件内容", settings)
+
+        self.assertTrue(ok)
+        self.assertEqual(info, "SMTP 邮件已发送")
+        self.assertIn(("starttls", "tls-context"), calls)
+        self.assertIn(("login", "sender@example.com", "super-secret"), calls)
+        self.assertEqual(calls[-1], ("quit",))
+
+    def test_send_email_rejects_invalid_smtp_host_before_connecting(self):
+        with patch.object(third_push_sender.smtplib, "SMTP_SSL") as smtp_ssl:
+            ok, info = third_push_sender.send_email(
+                "message",
+                {
+                    "email_smtp_host": "https://smtp.example.com",
+                    "email_smtp_port": "465",
+                    "email_encryption": "ssl",
+                    "email_username": "sender@example.com",
+                    "email_password": "secret",
+                    "email_from_address": "sender@example.com",
+                    "email_to_addresses": "receiver@example.com",
+                },
+            )
+        self.assertFalse(ok)
+        self.assertIn("SMTP 服务器格式无效", info)
+        smtp_ssl.assert_not_called()
 
 
 class HttpRequestSchemeTests(unittest.TestCase):

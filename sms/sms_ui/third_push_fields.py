@@ -63,6 +63,26 @@ THIRD_PUSH_CHANNEL_PARAM_DEFS = {
             ("SERVERCHAN_TITLE：", "serverchan_title", "entry", None),
         ],
     },
+    "wxpusher": {
+        "tip": "WxPusher UID 可填写多个，使用逗号、分号或空格分隔。",
+        "fields": [
+            ("WXPUSHER_APP_TOKEN：", "wxpusher_app_token", "entry", "*"),
+            ("WXPUSHER_UIDS：", "wxpusher_uids", "entry", None),
+        ],
+    },
+    "email": {
+        "tip": "支持 SSL（通常端口 465）或 STARTTLS（通常端口 587）。密码建议使用邮箱授权码。",
+        "fields": [
+            ("EMAIL_SMTP_HOST：", "email_smtp_host", "entry", None),
+            ("EMAIL_SMTP_PORT：", "email_smtp_port", "entry", None),
+            ("EMAIL_ENCRYPTION：", "email_encryption", "select", ("ssl", "starttls")),
+            ("EMAIL_USERNAME：", "email_username", "entry", None),
+            ("EMAIL_PASSWORD：", "email_password", "entry", "*"),
+            ("EMAIL_FROM_ADDRESS：", "email_from_address", "entry", None),
+            ("EMAIL_TO_ADDRESSES：", "email_to_addresses", "entry", None),
+            ("EMAIL_SUBJECT：", "email_subject", "entry", None),
+        ],
+    },
     "next-smtp-proxy": {
         "fields": [
             ("NEXT_SMTP_PROXY_API：", "next_smtp_proxy_api", "entry", None),
