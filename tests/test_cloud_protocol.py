@@ -203,6 +203,24 @@ class CloudProtocolTests(unittest.TestCase):
         self.assertEqual(auth_status_from_ack({"status": "AUTH_OK"}), "authorized")
         self.assertEqual(auth_status_from_ack({"auth_status": "FAILED"}), "failed")
 
+    def test_auth_status_from_ack_rejects_explicit_negative_ok_even_if_status_claims_success(self):
+        """An explicit ok=false must never authorize contradictory fields."""
+        self.assertEqual(
+            auth_status_from_ack(
+                {"ok": False, "status": "ok", "auth_status": "authorized"}
+            ),
+            "failed",
+        )
+
+    def test_auth_status_from_ack_requires_boolean_true_when_ok_is_present(self):
+        """String/truthy ok values are not accepted as an authorization proof."""
+        self.assertEqual(
+            auth_status_from_ack(
+                {"ok": "true", "status": "ok", "auth_status": "authorized"}
+            ),
+            "failed",
+        )
+
     def test_version_tuple_parses_semantic_version(self):
         """Should parse semantic version into tuple."""
         self.assertEqual(version_tuple("1.2.3"), (1, 2, 3))
