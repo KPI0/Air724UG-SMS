@@ -32,6 +32,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
             "_cloud_unregister_then_close",
             "save_cloud_control_setting",
             "_cloud_send_payload",
+            "_cloud_send_call_event",
             "_cloud_reply",
             "_handle_cloud_message",
             "start_cloud_control",

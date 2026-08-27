@@ -127,6 +127,33 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("popup", "+8613123123123"), calls)
         self.assertNotIn(("hangup",), calls)
 
+    def test_apply_call_decision_enqueues_structured_cloud_call_event_once(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            push_message="blocked",
+            blocked_number="10086",
+            block_reason="blacklist",
+            stop_processing=True,
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda: None,
+            send_cloud_call_event=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], ("10086", "blocked"))
+        self.assertTrue(calls[0][1]["blocked"])
+        self.assertEqual(calls[0][1]["block_reason"], "blacklist")
+
     def test_apply_call_decision_passes_call_template_variables(self):
         calls = []
         decision = CallLineDecision(

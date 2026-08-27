@@ -90,6 +90,7 @@ def apply_call_decision(
     start_incoming_call=lambda _caller_num: True,
     finish_incoming_call=lambda: None,
     show_missed_call_popup=lambda _missed_call: None,
+    send_cloud_call_event=lambda *_args, **_kwargs: None,
 ):
     incoming_started = True
     incoming_replaced = False
@@ -115,6 +116,15 @@ def apply_call_decision(
                 "phone": caller,
             },
         )
+        try:
+            send_cloud_call_event(
+                caller,
+                decision.push_message,
+                blocked=bool(decision.blocked_number),
+                block_reason=decision.block_reason,
+            )
+        except Exception:
+            pass
 
     if decision.blocked_number:
         port_ui(

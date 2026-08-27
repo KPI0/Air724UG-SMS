@@ -86,6 +86,7 @@ from sms_app.cloud_namespace_bindings import install_cloud_namespace_bindings
 from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
+    build_call_event_payload as _cloud_build_call_event_payload,
     build_register_payload as _cloud_build_register_payload,
     build_serial_log_payload as _cloud_build_serial_log_payload,
     build_sms_event_payload as _cloud_build_sms_event_payload,

@@ -27,6 +27,7 @@ def build_serial_runtime_callbacks(callbacks):
     return SerialRuntimeCallbacks(
         enqueue_third_push=callbacks["enqueue_third_push"],
         send_cloud_sms_event=callbacks["send_cloud_sms_event"],
+        send_cloud_call_event=callbacks.get("send_cloud_call_event", lambda *_args, **_kwargs: None),
         port_ui=callbacks["port_ui"],
         play_alert=callbacks["play_alert"],
         show_sms_popup=callbacks["show_sms_popup"],
@@ -146,6 +147,7 @@ def build_serial_app_wiring(
     runtime_callbacks = {
         "enqueue_third_push": callbacks["enqueue_third_push"],
         "send_cloud_sms_event": callbacks["send_cloud_sms_event"],
+        "send_cloud_call_event": callbacks.get("send_cloud_call_event", lambda *_args, **_kwargs: None),
         "port_ui": callbacks["port_ui"],
         "play_alert": callbacks["play_alert"],
         "show_sms_popup": callbacks["show_sms_popup"],
@@ -277,6 +279,10 @@ def run_serial_reader_namespace_runtime(
         callbacks={
             "enqueue_third_push": namespace["enqueue_third_push"],
             "send_cloud_sms_event": namespace["_cloud_send_sms_event"],
+            "send_cloud_call_event": namespace.get(
+                "_cloud_send_call_event",
+                lambda *_args, **_kwargs: None,
+            ),
             "port_ui": namespace["port_ui"],
             "play_alert": namespace["play_alert"],
             "show_sms_popup": namespace["show_sms_popup"],

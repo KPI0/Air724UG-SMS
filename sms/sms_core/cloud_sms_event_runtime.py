@@ -63,7 +63,7 @@ def clear_cloud_sms_event_state(event_queue, state, *, log_error=None):
             state.generation += 1
         return True
     except Exception as exc:
-        _safe_log(log_error, f"Clear cloud SMS event queue failed: {exc!r}")
+        _safe_log(log_error, f"Clear cloud device event queue failed: {exc!r}")
         return False
 
 
@@ -107,7 +107,7 @@ async def drain_cloud_sms_event_queue(
             try:
                 result = await send_payload(ws, payload)
             except Exception as exc:
-                _safe_log(log_error, f"Send queued cloud SMS event failed: {exc!r}")
+                _safe_log(log_error, f"Send queued cloud device event failed: {exc!r}")
                 result = "error"
 
             if result != "sent":
@@ -122,7 +122,7 @@ async def drain_cloud_sms_event_queue(
                         and put_sms_event_drop_oldest(event_queue, payload)
                     )
                 if state_is_current and not requeued:
-                    _safe_log(log_error, "Requeue cloud SMS event failed: queue full")
+                    _safe_log(log_error, "Requeue cloud device event failed: queue full")
                 _task_done_safely(event_queue)
                 send_failed = True
                 return "error"
@@ -161,7 +161,7 @@ async def drain_cloud_sms_event_queue(
                 )
                 create_task(coro)
             except Exception as exc:
-                _safe_log(log_error, f"Schedule next cloud SMS event drain failed: {exc!r}")
+                _safe_log(log_error, f"Schedule next cloud device event drain failed: {exc!r}")
                 if coro is not None:
                     _close_unawaited_coro(coro)
                 with state.lock:
@@ -193,7 +193,7 @@ def schedule_cloud_sms_event_drain(
         run_coroutine_threadsafe(coro, loop)
         return True
     except Exception as exc:
-        _safe_log(log_error, f"Schedule cloud SMS event drain failed: {exc!r}")
+        _safe_log(log_error, f"Schedule cloud device event drain failed: {exc!r}")
         if coro is not None:
             _close_unawaited_coro(coro)
         with state.lock:
@@ -222,7 +222,7 @@ def enqueue_cloud_sms_event_runtime(
                 return "disabled"
             queued = put_sms_event_drop_oldest(event_queue, payload)
     if not queued:
-        _safe_log(log_error, "Cloud SMS event queue is full; event was not queued")
+        _safe_log(log_error, "Cloud device event queue is full; event was not queued")
         return "queue_full"
     if can_send and loop is not None and ws is not None:
         schedule_drain(loop, ws)

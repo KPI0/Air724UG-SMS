@@ -84,6 +84,7 @@ class SerialRuntimeCallbacks:
     close_call_popup: object
     send_call_hangup: object
     show_call_popup: object
+    send_cloud_call_event: object = lambda *_args, **_kwargs: None
     set_local_number: object = lambda *_args: None
     observe_sms_send_line: object = lambda *_args: None
     start_incoming_call: object = lambda _caller_num: True
@@ -262,6 +263,7 @@ def handle_serial_runtime_line(
         callbacks.start_incoming_call,
         callbacks.finish_incoming_call,
         callbacks.show_missed_call_popup,
+        callbacks.send_cloud_call_event,
     )
     if call_effect.stop_processing:
         return SerialRuntimeResult(continue_read=True)

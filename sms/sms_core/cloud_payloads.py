@@ -143,6 +143,37 @@ def build_sms_event_payload(
     return payload
 
 
+def build_call_event_payload(
+    caller,
+    message,
+    timestamp,
+    identity,
+    time_text=None,
+    *,
+    blocked=False,
+    block_reason="",
+):
+    caller_text = str(caller or "").strip()
+    message_text = str(message or "").strip()
+    if not caller_text and not message_text:
+        return None
+    return {
+        "type": "call_event",
+        "event_type": "call",
+        "tag": "call",
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        **identity,
+        "phone": caller_text,
+        "caller": caller_text,
+        "phase": "incoming",
+        "blocked": bool(blocked),
+        "block_reason": str(block_reason or "").strip(),
+        "message": message_text or f"收到来电：来自 {caller_text or '未知号码'}",
+        "raw": message_text or f"收到来电：来自 {caller_text or '未知号码'}",
+    }
+
+
 def build_status_payload(
     timestamp,
     identity,

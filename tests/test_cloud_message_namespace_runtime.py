@@ -10,6 +10,7 @@ from sms_core.cloud_message_namespace_runtime import (
     handle_cloud_message_namespace_runtime,
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
+    send_cloud_call_event_namespace_runtime,
     send_cloud_serial_command_namespace_runtime,
     send_cloud_serial_log_namespace_runtime,
     send_cloud_sms_event_namespace_runtime,
@@ -71,6 +72,13 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
                 "body": body,
                 "ts": ts,
                 **identity,
+            },
+            "_cloud_build_call_event_payload": lambda caller, message, ts, identity, **metadata: {
+                "caller": caller,
+                "message": message,
+                "ts": ts,
+                **identity,
+                **metadata,
             },
             "_cloud_now_ts": lambda: 123,
             "_cloud_identity_payload": lambda: {"imei": "861"},
@@ -165,6 +173,30 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["timestamp"](), 123)
         self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
         self.assertEqual(forwarded["send_payload"]("ws", {"x": 1}), ("send_payload", "ws", {"x": 1}))
+
+    def test_send_cloud_call_event_namespace_runtime_forwards_shared_queue_context(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        result = send_cloud_call_event_namespace_runtime(
+            namespace,
+            "10086",
+            "incoming",
+            blocked=True,
+            block_reason="blacklist",
+            send_runtime=lambda caller, message, **kwargs: (
+                calls.append((caller, message, kwargs)) or "scheduled"
+            ),
+        )
+
+        self.assertEqual(result, "scheduled")
+        caller, message, forwarded = calls[0]
+        self.assertEqual((caller, message), ("10086", "incoming"))
+        self.assertTrue(forwarded["blocked"])
+        self.assertEqual(forwarded["block_reason"], "blacklist")
+        self.assertTrue(forwarded["authorized"])
+        self.assertEqual(forwarded["timestamp"](), 123)
+        self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
 
     def test_send_cloud_serial_command_namespace_runtime_forwards_serial_callbacks(self):
         namespace = self.base_namespace()

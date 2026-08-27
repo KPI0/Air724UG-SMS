@@ -377,6 +377,83 @@ def send_cloud_sms_event_runtime(
         return "error"
 
 
+def send_cloud_call_event_runtime(
+    caller,
+    message,
+    *,
+    blocked=False,
+    block_reason="",
+    authorized,
+    get_loop,
+    get_ws,
+    is_connected,
+    runtime_imei,
+    build_payload,
+    send_payload,
+    timestamp,
+    identity_payload,
+    run_coroutine_threadsafe,
+    enabled=True,
+    enqueue_payload=None,
+):
+    caller_text = str(caller or "").strip()
+    message_text = str(message or "").strip()
+    if not caller_text and not message_text:
+        return "empty"
+    if not enabled:
+        return "disabled"
+    if not authorized and enqueue_payload is None:
+        return "unauthorized"
+    send_coro = None
+    try:
+        loop = get_loop()
+        ws = get_ws()
+        can_send = bool(
+            authorized
+            and loop is not None
+            and loop.is_running()
+            and ws is not None
+            and is_connected()
+        )
+        if not can_send and enqueue_payload is None:
+            return "not_connected"
+        if not runtime_imei():
+            return "missing_imei"
+        try:
+            payload = build_payload(
+                caller_text,
+                message_text,
+                timestamp(),
+                identity_payload(),
+                blocked=blocked,
+                block_reason=block_reason,
+            )
+        except TypeError:
+            # Keep compatibility with injected/legacy payload builders that
+            # only accept the common four positional arguments.
+            payload = build_payload(
+                caller_text,
+                message_text,
+                timestamp(),
+                identity_payload(),
+            )
+        if payload is None:
+            return "empty_payload"
+        if enqueue_payload is not None:
+            return enqueue_payload(payload, loop, ws, can_send)
+        send_coro = send_payload(ws, payload)
+        run_coroutine_threadsafe(send_coro, loop)
+        return "scheduled"
+    except Exception:
+        close = getattr(send_coro, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+        return "error"
+
+
 def cloud_status_payload_runtime(
     *,
     serial_lock,

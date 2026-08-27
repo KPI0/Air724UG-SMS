@@ -8,6 +8,7 @@ from sms_core.cloud_auth import (
     target_match_result,
 )
 from sms_core.cloud_payloads import (
+    build_call_event_payload,
     build_register_payload,
     build_serial_log_payload,
     build_sms_event_payload,
@@ -109,7 +110,21 @@ class CloudHelperTests(unittest.TestCase):
         self.assertEqual(timed_sms["sms_time"], "2026-06-08 12:00:00")
         self.assertEqual(timed_sms["sms_time_identity"], "2026-06-08 12:00:00+32")
 
-        status = build_status_payload(104, identity, True, False, "COM5", 115200, "Auto", "now")
+        call = build_call_event_payload(
+            "+8613123123123",
+            "收到来电：来自 +8613123123123（已拦截：黑名单）",
+            104,
+            identity,
+            "now",
+            blocked=True,
+            block_reason="黑名单",
+        )
+        self.assertEqual(call["type"], "call_event")
+        self.assertEqual(call["caller"], "+8613123123123")
+        self.assertTrue(call["blocked"])
+        self.assertEqual(call["block_reason"], "黑名单")
+
+        status = build_status_payload(105, identity, True, False, "COM5", 115200, "Auto", "now")
         self.assertTrue(status["cloud_connected"])
         self.assertFalse(status["serial_connected"])
         self.assertEqual(status["serial_mode"], "Auto")

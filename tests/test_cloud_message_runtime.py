@@ -9,6 +9,7 @@ from sms_core.cloud_command_security import (
 from sms_core.cloud_message_runtime import (
     cloud_status_payload_runtime,
     handle_cloud_message_runtime,
+    send_cloud_call_event_runtime,
     send_cloud_register_runtime,
     send_cloud_serial_command_runtime,
     send_cloud_sms_event_runtime,
@@ -391,6 +392,68 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "error")
         self.assertEqual(len(created), 1)
         self.assertIsNone(created[0].cr_frame)
+
+    def test_send_cloud_call_event_runtime_uses_shared_event_queue_callback(self):
+        calls = []
+        loop = FakeLoop(True)
+        ws = object()
+
+        result = send_cloud_call_event_runtime(
+            "10086",
+            "incoming",
+            blocked=True,
+            block_reason="blacklist",
+            authorized=False,
+            get_loop=lambda: loop,
+            get_ws=lambda: ws,
+            is_connected=lambda: False,
+            runtime_imei=lambda: "imei",
+            build_payload=lambda caller, message, ts, identity, **metadata: {
+                "caller": caller,
+                "message": message,
+                "ts": ts,
+                **identity,
+                **metadata,
+            },
+            send_payload=lambda *_args: None,
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "imei"},
+            run_coroutine_threadsafe=lambda *_args: None,
+            enqueue_payload=lambda payload, next_loop, next_ws, can_send: (
+                calls.append((payload, next_loop, next_ws, can_send)) or "queued_offline"
+            ),
+        )
+
+        self.assertEqual(result, "queued_offline")
+        self.assertEqual(calls[0][0]["caller"], "10086")
+        self.assertTrue(calls[0][0]["blocked"])
+        self.assertEqual(calls[0][0]["block_reason"], "blacklist")
+        self.assertFalse(calls[0][3])
+
+    def test_send_cloud_call_event_runtime_supports_legacy_payload_builder(self):
+        calls = []
+        result = send_cloud_call_event_runtime(
+            "10086",
+            "incoming",
+            authorized=True,
+            get_loop=lambda: FakeLoop(True),
+            get_ws=lambda: object(),
+            is_connected=lambda: True,
+            runtime_imei=lambda: "imei",
+            build_payload=lambda caller, message, ts, identity: {
+                "caller": caller,
+                "message": message,
+                "ts": ts,
+                **identity,
+            },
+            send_payload=lambda ws, payload: ("send", ws, payload),
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "imei"},
+            run_coroutine_threadsafe=lambda coro, loop: calls.append((coro, loop)),
+        )
+
+        self.assertEqual(result, "scheduled")
+        self.assertEqual(calls[0][0][2]["caller"], "10086")
 
     def test_cloud_status_payload_runtime_reports_serial_connection(self):
         payload = cloud_status_payload_runtime(
