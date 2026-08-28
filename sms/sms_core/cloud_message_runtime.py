@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import re
 
@@ -31,6 +33,19 @@ from sms_core.cloud_security import (
 CLOUD_SMS_PHONE_RE = re.compile(r"(?:\+\d{7,15}|\d{3,20})\Z")
 CLOUD_OWN_NUMBER_RE = re.compile(r"\+[1-9]\d{6,14}\Z")
 CLOUD_SMS_MESSAGE_MAX_LENGTH = 70
+DEVICE_SESSION_REVOKE_PROOF_CONTEXT = b"air724ug-sms:device-session-revoke:v1"
+
+
+def cloud_session_revoke_proof(secret, imei):
+    secret_bytes = str(secret or "").strip().encode("utf-8")
+    imei_bytes = str(imei or "").strip().encode("ascii", "ignore")
+    if not secret_bytes or not imei_bytes:
+        return ""
+    return hmac.new(
+        secret_bytes,
+        DEVICE_SESSION_REVOKE_PROOF_CONTEXT + b":" + imei_bytes,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _cloud_transaction_parameters(command, command_meta):
@@ -72,6 +87,7 @@ async def send_cloud_register_runtime(
     runtime_imei,
     log,
     serialize_payload=None,
+    previous_session_secret="",
 ):
     payload = build_payload(
         auto_upload,
@@ -82,6 +98,13 @@ async def send_cloud_register_runtime(
         serial_baud,
         serial_mode,
     )
+    if isinstance(payload, dict):
+        previous_secret = str(previous_session_secret or "").strip()
+        current_secret = str(secret or "").strip()
+        if previous_secret and not hmac.compare_digest(previous_secret, current_secret):
+            proof = cloud_session_revoke_proof(previous_secret, runtime_imei())
+            if proof:
+                payload["previous_session_proof"] = proof
     serialize_payload = serialize_payload or (lambda payload: json.dumps(payload, ensure_ascii=False))
     try:
         await ws.send(serialize_payload(payload))
@@ -126,6 +149,30 @@ async def send_cloud_unregister_runtime(
         return "sent"
     except Exception as exc:
         log(f"通知云端设备离线失败：{exc}")
+        return "error"
+
+
+async def send_cloud_session_revoke_runtime(
+    ws,
+    *,
+    reason="disconnect",
+    build_payload,
+    timestamp,
+    identity_payload,
+    log,
+    serialize_payload=None,
+):
+    payload = build_payload(
+        reason,
+        timestamp(),
+        identity_payload(),
+    )
+    serialize_payload = serialize_payload or (lambda payload: json.dumps(payload, ensure_ascii=False))
+    try:
+        await ws.send(serialize_payload(payload))
+        return "sent"
+    except Exception as exc:
+        log(f"撤销云端设备会话失败：{exc}")
         return "error"
 
 

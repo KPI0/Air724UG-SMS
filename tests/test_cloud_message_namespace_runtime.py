@@ -52,6 +52,8 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "cloud_ws_conn": "ws",
             "cloud_connected": True,
             "cloud_device_authorized": True,
+            "CLOUD_DEVICE_SECRET": "current-secret",
+            "CLOUD_WS_URL": "wss://example.com/ws/device",
             "CLOUD_SENSITIVE_COMMAND_PERMISSIONS": {"sms": False},
             "cloud_ws_loop": FakeLoop(),
             "PORT": "COM5",
@@ -349,6 +351,29 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["show_window"](), "show")
         self.assertEqual(forwarded["hide_window"](), "hide")
         self.assertEqual(namespace["SERIAL_COMMAND_THREAD_REGISTRY"].snapshot(), ())
+
+    def test_handle_cloud_message_namespace_runtime_remembers_authorized_session(self):
+        namespace = self.base_namespace()
+        namespace["cloud_device_authorized"] = False
+
+        async def handle_runtime(_message, **kwargs):
+            kwargs["set_authorized"](True)
+            return "authorized"
+
+        result = asyncio.run(handle_cloud_message_namespace_runtime(
+            namespace,
+            "ws",
+            "message",
+            handle_runtime=handle_runtime,
+        ))
+
+        self.assertEqual(result, "authorized")
+        self.assertTrue(namespace["cloud_device_authorized"])
+        self.assertEqual(namespace["cloud_authenticated_secret"], "current-secret")
+        self.assertEqual(
+            namespace["cloud_authenticated_ws_url"],
+            "wss://example.com/ws/device",
+        )
 
 
 async def _async_value(value):

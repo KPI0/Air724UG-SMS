@@ -27,6 +27,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
         for name in (
             "_cloud_runtime_imei",
             "_cloud_send_register",
+            "_cloud_send_session_revoke",
             "_cloud_send_unregister",
             "_cloud_schedule_unregister",
             "_cloud_unregister_then_close",
@@ -93,6 +94,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
         self.assertEqual(result[0:2], ("closed", "ws2"))
         self.assertTrue(result[2]["auto_upload"])
         self.assertIs(result[2]["send_unregister"], namespace["_cloud_send_unregister"])
+        self.assertIs(result[2]["send_session_revoke"], namespace["_cloud_send_session_revoke"])
 
     def test_async_bindings_forward_to_underlying_runtimes(self):
         namespace = self.make_namespace()
@@ -104,18 +106,26 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
         async def payload_runtime(ws, payload):
             return ("payload", ws, payload)
 
+        async def revoke_runtime(ns, ws, reason):
+            return ("revoke", ns is namespace, ws, reason)
+
         async def reply_runtime(ws, payload, **kwargs):
             return ("reply", ws, payload, kwargs["identity_payload"]())
 
         with patch.object(bindings, "wait_cloud_login_ack_namespace_runtime", side_effect=wait_runtime), \
                 patch.object(bindings, "cloud_identity_payload_namespace_runtime", return_value={"imei": "861"}), \
+                patch.object(bindings, "send_cloud_session_revoke_namespace_runtime", side_effect=revoke_runtime), \
                 patch.object(bindings, "send_cloud_payload_runtime", side_effect=payload_runtime), \
                 patch.object(bindings, "reply_cloud_payload_runtime", side_effect=reply_runtime):
             ack = asyncio.run(namespace["_cloud_wait_login_ack"]("ws", timeout=3.0))
+            revoke = asyncio.run(
+                namespace["_cloud_send_session_revoke"]("ws", reason="password_changed")
+            )
             payload = asyncio.run(namespace["_cloud_send_payload"]("ws", {"type": "x"}))
             reply = asyncio.run(namespace["_cloud_reply"]("ws", {"ok": True}))
 
         self.assertEqual(ack, ("ack", True, "ws", 3.0))
+        self.assertEqual(revoke, ("revoke", True, "ws", "password_changed"))
         self.assertEqual(payload, ("payload", "ws", {"type": "x"}))
         self.assertEqual(reply, ("reply", "ws", {"ok": True}, {"imei": "861"}))
 

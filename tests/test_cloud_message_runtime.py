@@ -7,10 +7,12 @@ from sms_core.cloud_command_security import (
     CLOUD_SET_OWN_NUMBER_TRANSACTION_COMMAND,
 )
 from sms_core.cloud_message_runtime import (
+    cloud_session_revoke_proof,
     cloud_status_payload_runtime,
     handle_cloud_message_runtime,
     send_cloud_call_event_runtime,
     send_cloud_register_runtime,
+    send_cloud_session_revoke_runtime,
     send_cloud_serial_command_runtime,
     send_cloud_sms_event_runtime,
     send_cloud_unregister_runtime,
@@ -95,6 +97,33 @@ class CloudMessageRuntimeTests(unittest.TestCase):
             hide_window=lambda: calls.append(("hide",)),
         )
         return state, calls, replies, replay_checks
+
+    def test_send_session_revoke_uses_identity_without_secret(self):
+        ws = FakeWs()
+        logs = []
+
+        result = run(send_cloud_session_revoke_runtime(
+            ws,
+            reason="password_changed",
+            build_payload=lambda reason, timestamp, identity: {
+                "type": "device_session_revoke",
+                "reason": reason,
+                "timestamp": timestamp,
+                **identity,
+            },
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "861"},
+            log=logs.append,
+        ))
+
+        self.assertEqual(result, "sent")
+        self.assertEqual(json.loads(ws.sent[0]), {
+            "type": "device_session_revoke",
+            "reason": "password_changed",
+            "timestamp": 123,
+            "imei": "861",
+        })
+        self.assertEqual(logs, [])
 
     def test_authorized_ack_updates_state_without_reply(self):
         state, calls, replies, replay_checks = run(self._handle(json.dumps({
@@ -526,6 +555,36 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(ws.sent[0])["imei"], "imei")
         self.assertIn("IMEI", calls[0][0])
         self.assertTrue(calls[0][1].get("show_main"))
+
+    def test_send_cloud_register_runtime_adds_hmac_proof_without_old_secret(self):
+        ws = FakeWs()
+
+        result = run(send_cloud_register_runtime(
+            ws,
+            auto_upload=True,
+            build_payload=lambda *_args: {
+                "type": "device_login",
+                "secret": "new-secret",
+            },
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "123456789012345"},
+            secret="new-secret",
+            serial_port="COM5",
+            serial_baud=115200,
+            serial_mode="Auto",
+            runtime_imei=lambda: "123456789012345",
+            log=lambda *_args, **_kwargs: None,
+            previous_session_secret="old-secret",
+        ))
+
+        self.assertEqual(result, "sent")
+        payload = json.loads(ws.sent[0])
+        self.assertEqual(
+            payload["previous_session_proof"],
+            cloud_session_revoke_proof("old-secret", "123456789012345"),
+        )
+        self.assertNotEqual(payload["previous_session_proof"], "old-secret")
+        self.assertNotIn("previous_secret", payload)
 
     def test_send_cloud_register_runtime_logs_hidden_mode(self):
         calls = []

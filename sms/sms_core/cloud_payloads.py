@@ -64,11 +64,26 @@ def build_unregister_payload(
         "time": time_text or current_time_text(),
         "timestamp": timestamp,
         **identity,
-        "secret": secret,
         "serial_port": serial_port,
         "serial_baud": serial_baud,
         "serial_mode": serial_mode,
         "reason": reason,
+    }
+
+
+def build_session_revoke_payload(
+    reason,
+    timestamp,
+    identity,
+    time_text=None,
+):
+    return {
+        "type": "device_session_revoke",
+        "event": "authorization_revoke",
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        **identity,
+        "reason": str(reason or "disconnect").strip() or "disconnect",
     }
 
 

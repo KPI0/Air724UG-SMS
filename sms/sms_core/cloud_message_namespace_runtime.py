@@ -369,10 +369,18 @@ async def handle_cloud_message_namespace_runtime(
     handle_runtime=handle_cloud_message_runtime,
 ):
     loop = asyncio.get_running_loop()
+
+    def set_authorized(value):
+        authorized = bool(value)
+        namespace["cloud_device_authorized"] = authorized
+        if authorized:
+            namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
+            namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
+
     return await handle_runtime(
         message,
         is_authorized=lambda: namespace["cloud_device_authorized"],
-        set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
+        set_authorized=set_authorized,
         reply=lambda payload: namespace["_cloud_reply"](ws, payload),
         log=namespace["_cloud_log"],
         set_auth_status_from_ack=namespace["set_cloud_auth_status_from_ack"],

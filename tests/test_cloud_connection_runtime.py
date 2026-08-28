@@ -160,6 +160,28 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, [(ws, "disconnect")])
         self.assertTrue(ws.closed)
 
+    def test_unregister_then_close_revokes_session_even_when_device_is_hidden(self):
+        ws = FakeWebSocket()
+        calls = []
+
+        async def send_unregister(_seen_ws, _reason):
+            calls.append("unregister")
+
+        async def send_session_revoke(seen_ws, reason):
+            calls.append(("revoke", seen_ws, reason))
+
+        result = asyncio.run(unregister_then_close_cloud_connection_runtime(
+            ws,
+            reason="password_changed",
+            auto_upload=False,
+            send_unregister=send_unregister,
+            send_session_revoke=send_session_revoke,
+        ))
+
+        self.assertEqual(result, (False, True))
+        self.assertEqual(calls, [("revoke", ws, "password_changed")])
+        self.assertTrue(ws.closed)
+
     def test_unregister_then_close_cloud_connection_runtime_closes_even_after_errors(self):
         ws = FakeWebSocket()
         logs = []

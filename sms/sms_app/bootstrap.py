@@ -88,6 +88,7 @@ from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
     build_call_event_payload as _cloud_build_call_event_payload,
     build_register_payload as _cloud_build_register_payload,
+    build_session_revoke_payload as _cloud_build_session_revoke_payload,
     build_serial_log_payload as _cloud_build_serial_log_payload,
     build_sms_event_payload as _cloud_build_sms_event_payload,
     build_status_payload as _cloud_build_status_payload,
@@ -378,7 +379,8 @@ def _initialize_cloud_runtime_state():
     global CLOUD_REPLAY_WINDOW_SECONDS, CLOUD_REPLAY_CACHE_MAX
     global cloud_replay_seen, CLOUD_SERIAL_LOG_DRAIN_STATE, cloud_connected
     global CLOUD_SMS_EVENT_DRAIN_STATE
-    global cloud_device_authorized, cloud_imei_verified, cloud_imei_query_deadline
+    global cloud_device_authorized, cloud_authenticated_secret, cloud_authenticated_ws_url
+    global cloud_imei_verified, cloud_imei_query_deadline
     global CLOUD_MODEM_HEALTH
 
     cloud_ws_loop = None
@@ -398,6 +400,8 @@ def _initialize_cloud_runtime_state():
     CLOUD_SMS_EVENT_DRAIN_STATE = CloudSmsEventDrainState()
     cloud_connected = False
     cloud_device_authorized = False
+    cloud_authenticated_secret = ""
+    cloud_authenticated_ws_url = ""
     cloud_imei_verified = False
     cloud_imei_query_deadline = 0.0
     CLOUD_MODEM_HEALTH = CloudModemHealthState(reconnect_threshold=3)

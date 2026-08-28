@@ -5,6 +5,7 @@ from sms_core.cloud_ws_namespace_runtime import (
     cloud_thread_main_namespace_runtime,
     cloud_ws_main_namespace_runtime,
     send_cloud_register_namespace_runtime,
+    send_cloud_session_revoke_namespace_runtime,
     send_cloud_unregister_namespace_runtime,
     wait_cloud_login_ack_namespace_runtime,
 )
@@ -34,7 +35,10 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             "cloud_ws_lock": "lock",
             "CLOUD_AUTO_UPLOAD": True,
             "CLOUD_DEVICE_SECRET": "secret",
+            "CLOUD_WS_URL": "wss://example.com/ws/device",
             "CLOUD_CONTROL_ENABLED": True,
+            "cloud_authenticated_secret": "old-secret",
+            "cloud_authenticated_ws_url": "wss://example.com/ws/device",
             "PORT": "COM5",
             "BAUD": 115200,
             "MODE": "Manual",
@@ -44,6 +48,7 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_log": lambda *args, **kwargs: ("log", args, kwargs),
             "_cloud_safe_preview": lambda value: f"safe:{value}",
             "_cloud_build_register_payload": lambda *args: ("register_payload", args),
+            "_cloud_build_session_revoke_payload": lambda *args: ("revoke_payload", args),
             "_cloud_build_unregister_payload": lambda *args: ("unregister_payload", args),
             "_cloud_now_ts": lambda: 123,
             "_cloud_identity_payload": lambda: {"imei": "861"},
@@ -76,12 +81,17 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, "waited")
         self.assertTrue(namespace["cloud_device_authorized"])
+        self.assertEqual(namespace["cloud_authenticated_secret"], "secret")
+        self.assertEqual(
+            namespace["cloud_authenticated_ws_url"],
+            "wss://example.com/ws/device",
+        )
         forwarded = calls[0][1]
         self.assertEqual(forwarded["stop_event"], "stop")
         self.assertEqual(forwarded["timeout"], 3.5)
         self.assertEqual(forwarded["monotonic"](), 10.0)
 
-    def test_send_register_and_unregister_namespace_runtimes_forward_payload_context(self):
+    def test_send_register_unregister_and_revoke_namespace_runtimes_forward_payload_context(self):
         namespace = self.base_namespace()
         calls = []
 
@@ -100,12 +110,29 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             reason="disconnect",
             send_runtime=send_runtime,
         ))
+        revoke = asyncio.run(send_cloud_session_revoke_namespace_runtime(
+            namespace,
+            "ws",
+            reason="password_changed",
+            send_runtime=send_runtime,
+        ))
 
-        self.assertEqual((register, unregister), ("sent", "sent"))
+        self.assertEqual((register, unregister, revoke), ("sent", "sent", "sent"))
         self.assertTrue(calls[0][1]["auto_upload"])
+        self.assertEqual(calls[0][1]["previous_session_secret"], "old-secret")
         self.assertEqual(calls[0][1]["serial_port"], "COM5")
         self.assertEqual(calls[1][1]["reason"], "disconnect")
         self.assertEqual(calls[1][1]["runtime_imei"](), "861")
+        self.assertEqual(calls[2][1]["reason"], "password_changed")
+        self.assertEqual(calls[2][1]["identity_payload"](), {"imei": "861"})
+
+        namespace["cloud_authenticated_ws_url"] = "wss://old.example/ws/device"
+        asyncio.run(send_cloud_register_namespace_runtime(
+            namespace,
+            "ws",
+            send_runtime=send_runtime,
+        ))
+        self.assertEqual(calls[3][1]["previous_session_secret"], "")
 
     def test_cloud_ws_main_namespace_runtime_forwards_and_mutates_connection_state(self):
         namespace = self.base_namespace()

@@ -1,6 +1,10 @@
 import time
 
-from sms_core.cloud_message_runtime import send_cloud_register_runtime, send_cloud_unregister_runtime
+from sms_core.cloud_message_runtime import (
+    send_cloud_register_runtime,
+    send_cloud_session_revoke_runtime,
+    send_cloud_unregister_runtime,
+)
 from sms_core.cloud_ws_runtime import (
     cloud_thread_main_runtime,
     cloud_ws_main_app_runtime,
@@ -15,7 +19,7 @@ async def wait_cloud_login_ack_namespace_runtime(
     timeout=8.0,
     wait_runtime=wait_cloud_login_ack_runtime,
 ):
-    return await wait_runtime(
+    result = await wait_runtime(
         ws,
         stop_event=namespace["cloud_stop_event"],
         set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
@@ -25,6 +29,10 @@ async def wait_cloud_login_ack_namespace_runtime(
         timeout=timeout,
         monotonic=namespace.get("time", time).monotonic,
     )
+    if namespace.get("cloud_device_authorized"):
+        namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
+        namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
+    return result
 
 
 async def send_cloud_register_namespace_runtime(
@@ -33,6 +41,13 @@ async def send_cloud_register_namespace_runtime(
     *,
     send_runtime=send_cloud_register_runtime,
 ):
+    authenticated_url = str(namespace.get("cloud_authenticated_ws_url") or "").strip()
+    current_url = str(namespace.get("CLOUD_WS_URL") or "").strip()
+    previous_session_secret = (
+        namespace.get("cloud_authenticated_secret", "")
+        if authenticated_url and authenticated_url == current_url
+        else ""
+    )
     return await send_runtime(
         ws,
         auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
@@ -45,6 +60,7 @@ async def send_cloud_register_namespace_runtime(
         serial_mode=namespace["MODE"],
         runtime_imei=namespace["_cloud_runtime_imei"],
         log=namespace["_cloud_log"],
+        previous_session_secret=previous_session_secret,
     )
 
 
@@ -66,6 +82,23 @@ async def send_cloud_unregister_namespace_runtime(
         serial_baud=namespace["BAUD"],
         serial_mode=namespace["MODE"],
         runtime_imei=namespace["_cloud_runtime_imei"],
+        log=namespace["_cloud_log"],
+    )
+
+
+async def send_cloud_session_revoke_namespace_runtime(
+    namespace,
+    ws,
+    *,
+    reason="disconnect",
+    send_runtime=send_cloud_session_revoke_runtime,
+):
+    return await send_runtime(
+        ws,
+        reason=reason,
+        build_payload=namespace["_cloud_build_session_revoke_payload"],
+        timestamp=namespace["_cloud_now_ts"],
+        identity_payload=namespace["_cloud_identity_payload"],
         log=namespace["_cloud_log"],
     )
 

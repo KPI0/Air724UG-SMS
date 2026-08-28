@@ -10,6 +10,7 @@ from sms_core.cloud_auth import (
 from sms_core.cloud_payloads import (
     build_call_event_payload,
     build_register_payload,
+    build_session_revoke_payload,
     build_serial_log_payload,
     build_sms_event_payload,
     build_status_payload,
@@ -60,12 +61,22 @@ class CloudHelperTests(unittest.TestCase):
         register = build_register_payload(True, 100, identity, "s3", "COM5", 115200, "Auto", "now")
         self.assertEqual(register["event"], "register")
         self.assertTrue(register["public"])
+        self.assertEqual(register["secret"], "s3")
         self.assertEqual(register["serial_port"], "COM5")
 
         unregister = build_unregister_payload("hidden", 101, identity, "s3", "COM5", 115200, "Auto", "now")
         self.assertEqual(unregister["event"], "offline")
         self.assertFalse(unregister["online"])
         self.assertEqual(unregister["reason"], "hidden")
+        self.assertNotIn("secret", unregister)
+        self.assertNotIn("password", unregister)
+
+        revoke = build_session_revoke_payload("password_changed", 102, identity, "now")
+        self.assertEqual(revoke["type"], "device_session_revoke")
+        self.assertEqual(revoke["imei"], "123456789012345")
+        self.assertEqual(revoke["reason"], "password_changed")
+        self.assertNotIn("secret", revoke)
+        self.assertNotIn("password", revoke)
 
         self.assertEqual(truncate_serial_log_text("x" * 5, limit=3), "xxx...")
         serial_log = build_serial_log_payload("AT", 102, identity, "COM5", 115200, "now")

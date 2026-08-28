@@ -39,6 +39,7 @@ from sms_core.cloud_ws_namespace_runtime import (
     cloud_thread_main_namespace_runtime,
     cloud_ws_main_namespace_runtime,
     send_cloud_register_namespace_runtime,
+    send_cloud_session_revoke_namespace_runtime,
     send_cloud_unregister_namespace_runtime,
     wait_cloud_login_ack_namespace_runtime,
 )
@@ -75,6 +76,7 @@ def install_cloud_namespace_bindings(namespace):
             reason=reason,
             auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
             send_unregister=namespace["_cloud_send_unregister"],
+            send_session_revoke=namespace["_cloud_send_session_revoke"],
             log_error=namespace.get("_cloud_log"),
         )
 
@@ -132,6 +134,11 @@ def install_cloud_namespace_bindings(namespace):
             positional_prefix_count=1,
         ),
         "_cloud_send_register": bind_async("send_cloud_register_namespace_runtime"),
+        "_cloud_send_session_revoke": bind_async(
+            "send_cloud_session_revoke_namespace_runtime",
+            positional_keywords=("reason",),
+            positional_prefix_count=1,
+        ),
         "_cloud_send_unregister": bind_async(
             "send_cloud_unregister_namespace_runtime",
             positional_keywords=("reason",),

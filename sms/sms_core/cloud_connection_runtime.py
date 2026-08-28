@@ -66,6 +66,7 @@ async def unregister_then_close_cloud_connection_runtime(
     reason,
     auto_upload,
     send_unregister,
+    send_session_revoke=None,
     log_error=None,
 ):
     unregistered = False
@@ -76,6 +77,12 @@ async def unregister_then_close_cloud_connection_runtime(
             unregistered = True
     except Exception as exc:
         _safe_log(log_error, f"Send cloud unregister failed: {exc!r}")
+
+    if send_session_revoke is not None:
+        try:
+            await send_session_revoke(ws, reason)
+        except Exception as exc:
+            _safe_log(log_error, f"Revoke cloud device session failed: {exc!r}")
 
     try:
         await ws.close()
