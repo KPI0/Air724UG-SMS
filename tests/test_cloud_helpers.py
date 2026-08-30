@@ -14,6 +14,7 @@ from sms_core.cloud_payloads import (
     build_serial_log_payload,
     build_sms_event_payload,
     build_status_payload,
+    build_channel_status_payload,
     build_unregister_payload,
     identity_payload,
     truncate_serial_log_text,
@@ -29,6 +30,18 @@ class CloudHelperTests(unittest.TestCase):
         self.assertEqual(auth_status_from_ack({"status": "auth_failed"}), "failed")
         self.assertEqual(auth_status_from_ack({"message": "密码错误"}), "failed")
         self.assertEqual(auth_status_from_ack({"status": "pending"}), "waiting")
+        self.assertEqual(
+            auth_status_from_ack(
+                {"ok": False, "status": "waiting", "auth_status": "waiting"}
+            ),
+            "waiting",
+        )
+        self.assertEqual(
+            auth_status_from_ack(
+                {"ok": False, "status": "failed", "auth_status": "failed"}
+            ),
+            "failed",
+        )
 
     def test_cloud_command_auth_helpers(self):
         self.assertEqual(command_action({"cmd": "AT"}), "cmd")
@@ -63,6 +76,18 @@ class CloudHelperTests(unittest.TestCase):
         self.assertTrue(register["public"])
         self.assertEqual(register["secret"], "s3")
         self.assertEqual(register["serial_port"], "COM5")
+        self.assertEqual(register["channel_type"], "desktop")
+        channel_status = build_channel_status_payload(
+            106,
+            identity,
+            False,
+            False,
+            4,
+            "now",
+        )
+        self.assertEqual(channel_status["type"], "device_channel_status")
+        self.assertFalse(channel_status["control_available"])
+        self.assertEqual(channel_status["serial_connection_generation"], 4)
 
         unregister = build_unregister_payload("hidden", 101, identity, "s3", "COM5", 115200, "Auto", "now")
         self.assertEqual(unregister["event"], "offline")

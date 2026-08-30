@@ -88,6 +88,9 @@ async def send_cloud_register_runtime(
     log,
     serialize_payload=None,
     previous_session_secret="",
+    serial_connected=None,
+    control_available=None,
+    serial_connection_generation=None,
 ):
     payload = build_payload(
         auto_upload,
@@ -99,6 +102,15 @@ async def send_cloud_register_runtime(
         serial_mode,
     )
     if isinstance(payload, dict):
+        if serial_connected is not None:
+            payload["serial_connected"] = bool(serial_connected)
+        if control_available is not None:
+            payload["control_available"] = bool(control_available)
+        if serial_connection_generation is not None:
+            try:
+                payload["serial_connection_generation"] = max(0, int(serial_connection_generation))
+            except (TypeError, ValueError):
+                payload["serial_connection_generation"] = 0
         previous_secret = str(previous_session_secret or "").strip()
         current_secret = str(secret or "").strip()
         if previous_secret and not hmac.compare_digest(previous_secret, current_secret):

@@ -10,6 +10,7 @@ from sms_core.cloud_state_namespace_runtime import (
     cloud_runtime_imei_namespace_runtime,
     cloud_status_payload_namespace_runtime,
     maybe_capture_cloud_device_imei_namespace_runtime,
+    notify_cloud_channel_status_namespace_runtime,
     notify_cloud_identity_changed_namespace_runtime,
     request_cloud_device_imei_namespace_runtime,
     set_cloud_device_imei_namespace_runtime,
@@ -171,6 +172,21 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["timestamp"](), 123)
         self.assertEqual(forwarded["identity_payload"](), {"imei": "123456789012345"})
         self.assertEqual(forwarded["serial_port"], "COM5")
+
+    def test_notify_cloud_channel_status_schedules_only_once_per_state(self):
+        namespace = self.base_namespace()
+        namespace["cloud_device_authorized"] = True
+        namespace["cloud_last_channel_status"] = None
+        namespace["cloud_ws_loop"] = SimpleNamespace(is_running=lambda: True)
+        calls = []
+        namespace["_cloud_send_payload"] = lambda ws, payload: calls.append((ws, payload)) or ("send", payload)
+        namespace["asyncio"] = SimpleNamespace(run_coroutine_threadsafe=lambda coro, loop: calls.append(("scheduled", coro, loop)))
+
+        self.assertTrue(notify_cloud_channel_status_namespace_runtime(namespace, False))
+        self.assertFalse(notify_cloud_channel_status_namespace_runtime(namespace, False))
+        scheduled = [item for item in calls if item[0] == "scheduled"]
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0][1][1]["type"], "device_channel_status")
 
     def test_check_replay_window_namespace_runtime_replies_on_rejection(self):
         namespace = self.base_namespace()

@@ -1,3 +1,4 @@
+import inspect
 import time
 
 from sms_core.cloud_message_runtime import (
@@ -41,6 +42,17 @@ async def send_cloud_register_namespace_runtime(
     *,
     send_runtime=send_cloud_register_runtime,
 ):
+    serial_connected = False
+    try:
+        with namespace["serial_lock"]:
+            serial_obj = namespace.get("serial_obj")
+            serial_connected = bool(serial_obj is not None and serial_obj.is_open)
+    except Exception:
+        serial_connected = False
+    try:
+        serial_generation = max(0, int(namespace.get("serial_connection_generation", 0)))
+    except (TypeError, ValueError):
+        serial_generation = 0
     authenticated_url = str(namespace.get("cloud_authenticated_ws_url") or "").strip()
     current_url = str(namespace.get("CLOUD_WS_URL") or "").strip()
     previous_session_secret = (
@@ -48,8 +60,7 @@ async def send_cloud_register_namespace_runtime(
         if authenticated_url and authenticated_url == current_url
         else ""
     )
-    return await send_runtime(
-        ws,
+    send_kwargs = dict(
         auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
         build_payload=namespace["_cloud_build_register_payload"],
         timestamp=namespace["_cloud_now_ts"],
@@ -61,7 +72,29 @@ async def send_cloud_register_namespace_runtime(
         runtime_imei=namespace["_cloud_runtime_imei"],
         log=namespace["_cloud_log"],
         previous_session_secret=previous_session_secret,
+        serial_connected=serial_connected,
+        control_available=serial_connected,
+        serial_connection_generation=serial_generation,
     )
+    try:
+        signature = inspect.signature(send_runtime)
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if not accepts_kwargs:
+            for key in ("serial_connected", "control_available", "serial_connection_generation"):
+                if key not in signature.parameters:
+                    send_kwargs.pop(key, None)
+    except (TypeError, ValueError):
+        pass
+    result = await send_runtime(
+        ws,
+        **send_kwargs,
+    )
+    if result in (True, "sent"):
+        namespace["cloud_last_channel_status"] = (ws, serial_generation, serial_connected)
+    return result
 
 
 async def send_cloud_unregister_namespace_runtime(

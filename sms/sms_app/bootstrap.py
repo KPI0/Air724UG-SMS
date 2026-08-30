@@ -87,6 +87,7 @@ from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
     build_call_event_payload as _cloud_build_call_event_payload,
+    build_channel_status_payload as _cloud_build_channel_status_payload,
     build_register_payload as _cloud_build_register_payload,
     build_session_revoke_payload as _cloud_build_session_revoke_payload,
     build_serial_log_payload as _cloud_build_serial_log_payload,
@@ -380,6 +381,7 @@ def _initialize_cloud_runtime_state():
     global cloud_replay_seen, CLOUD_SERIAL_LOG_DRAIN_STATE, cloud_connected
     global CLOUD_SMS_EVENT_DRAIN_STATE
     global cloud_device_authorized, cloud_authenticated_secret, cloud_authenticated_ws_url
+    global cloud_last_channel_status
     global cloud_imei_verified, cloud_imei_query_deadline
     global CLOUD_MODEM_HEALTH
 
@@ -402,6 +404,7 @@ def _initialize_cloud_runtime_state():
     cloud_device_authorized = False
     cloud_authenticated_secret = ""
     cloud_authenticated_ws_url = ""
+    cloud_last_channel_status = None
     cloud_imei_verified = False
     cloud_imei_query_deadline = 0.0
     CLOUD_MODEM_HEALTH = CloudModemHealthState(reconnect_threshold=3)

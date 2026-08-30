@@ -94,13 +94,15 @@ def parse_sms_callback_head(text: str):
 
 def auth_status_from_ack(data: dict):
     data = data or {}
+    auth_status = str(data.get("auth_status") or "").strip().lower()
+    status = str(data.get("status") or "").strip().lower()
+    if auth_status in ("waiting", "pending") or status in ("waiting", "pending"):
+        return "waiting"
     # When the server includes an explicit result flag, it is authoritative.
     # Do not let contradictory status/auth_status fields turn an explicit
     # rejection (or a non-boolean value) into an authorized session.
     if "ok" in data and data.get("ok") is not True:
         return "failed"
-    auth_status = str(data.get("auth_status") or "").strip().lower()
-    status = str(data.get("status") or "").strip().lower()
     label = str(data.get("auth_label") or "").strip()
     message = str((data or {}).get("message") or "")
     if auth_status in ("authorized", "ok") or status in ("authorized", "auth_ok") or label == "已授权":

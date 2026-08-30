@@ -80,6 +80,21 @@ def install_serial_namespace_bindings(namespace):
             apply_disconnect_effects=apply_serial_disconnect_effects,
         )
 
+    def notify_cloud_channel_status(serial_connected):
+        callback = namespace.get("_notify_cloud_channel_status")
+        if callback is None:
+            return False
+        try:
+            return callback(serial_connected)
+        except Exception as exc:
+            try:
+                namespace["log_file_only"](
+                    f"Cloud channel status notification failed: {type(exc).__name__}"
+                )
+            except Exception:
+                pass
+            return False
+
     namespace.update({
         "scan_com_ports_all": bind("scan_com_ports_all_namespace_runtime"),
         "find_luat_best_port": bind("find_luat_best_port_namespace_runtime"),
@@ -107,5 +122,6 @@ def install_serial_namespace_bindings(namespace):
         "set_serial_call_state": bind("set_serial_call_state_namespace_runtime"),
         "set_serial_log_prefix": set_serial_log_prefix,
         "read_serial": read_serial,
+        "notify_cloud_channel_status": notify_cloud_channel_status,
     })
     return namespace

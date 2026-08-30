@@ -46,12 +46,19 @@ def safe_close_serial_namespace_runtime(namespace):
             command_coordinator.cancel_active("串口连接已关闭，AT 指令事务已取消")
         except Exception as exc:
             _safe_log(namespace, f"Cancel active AT transaction before serial close failed: {exc!r}")
-    return safe_close_serial_runtime(
+    result = safe_close_serial_runtime(
         namespace["serial_lock"],
         lambda: namespace["serial_obj"],
         lambda value: namespace.__setitem__("serial_obj", value),
         namespace["unlock_port_mutex"],
     )
+    notify = namespace.get("_notify_cloud_channel_status")
+    if notify is not None:
+        try:
+            notify(False)
+        except Exception as exc:
+            _safe_log(namespace, f"Notify cloud channel status after serial close failed: {exc!r}")
+    return result
 
 
 def schedule_delayed_ui_namespace_runtime(namespace, callback):

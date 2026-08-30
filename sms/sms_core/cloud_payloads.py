@@ -28,9 +28,14 @@ def build_register_payload(
     serial_baud,
     serial_mode,
     time_text=None,
+    channel_type="desktop",
+    serial_connected=None,
+    control_available=None,
+    serial_connection_generation=None,
 ):
-    return {
+    payload = {
         "type": "device_login",
+        "channel_type": str(channel_type or "desktop").strip().lower() or "desktop",
         "event": "register" if auto_upload else "hidden",
         "public": bool(auto_upload),
         "auto_upload": bool(auto_upload),
@@ -42,6 +47,40 @@ def build_register_payload(
         "serial_port": serial_port,
         "serial_baud": serial_baud,
         "serial_mode": serial_mode,
+    }
+    if serial_connected is not None:
+        payload["serial_connected"] = bool(serial_connected)
+    if control_available is not None:
+        payload["control_available"] = bool(control_available)
+    if serial_connection_generation is not None:
+        try:
+            payload["serial_connection_generation"] = max(0, int(serial_connection_generation))
+        except (TypeError, ValueError):
+            payload["serial_connection_generation"] = 0
+    return payload
+
+
+def build_channel_status_payload(
+    timestamp,
+    identity,
+    serial_connected,
+    control_available,
+    serial_connection_generation,
+    time_text=None,
+):
+    try:
+        generation = max(0, int(serial_connection_generation))
+    except (TypeError, ValueError):
+        generation = 0
+    return {
+        "type": "device_channel_status",
+        "channel_type": "desktop",
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        **identity,
+        "serial_connected": bool(serial_connected),
+        "control_available": bool(control_available),
+        "serial_connection_generation": generation,
     }
 
 

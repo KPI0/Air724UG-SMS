@@ -125,6 +125,34 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         })
         self.assertEqual(logs, [])
 
+    def test_send_register_adds_channel_health_fields_without_changing_builder_signature(self):
+        ws = FakeWs()
+        result = run(send_cloud_register_runtime(
+            ws,
+            auto_upload=True,
+            build_payload=lambda *args: {
+                "type": "device_login",
+                "args_count": len(args),
+            },
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "861"},
+            secret="secret",
+            serial_port="COM5",
+            serial_baud=115200,
+            serial_mode="Manual",
+            runtime_imei=lambda: "861",
+            log=lambda *args, **kwargs: None,
+            serial_connected=False,
+            control_available=False,
+            serial_connection_generation=7,
+        ))
+        self.assertEqual(result, "sent")
+        payload = json.loads(ws.sent[0])
+        self.assertEqual(payload["args_count"], 7)
+        self.assertFalse(payload["serial_connected"])
+        self.assertFalse(payload["control_available"])
+        self.assertEqual(payload["serial_connection_generation"], 7)
+
     def test_authorized_ack_updates_state_without_reply(self):
         state, calls, replies, replay_checks = run(self._handle(json.dumps({
             "type": "device_login_ack",

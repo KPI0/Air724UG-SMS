@@ -35,6 +35,40 @@ async def send_cloud_payload_runtime(
         return "error"
 
 
+def schedule_cloud_payload_runtime(
+    payload,
+    *,
+    get_loop,
+    get_ws,
+    is_connected,
+    send_payload,
+    run_coroutine_threadsafe,
+    log_error=None,
+):
+    """Schedule one payload from a non-async worker onto the cloud loop.
+
+    The coroutine is closed when submission fails so a transient shutdown does
+    not leave an un-awaited coroutine warning behind.
+    """
+    coro = None
+    try:
+        loop = get_loop()
+        ws = get_ws()
+        if loop is None or not loop.is_running() or ws is None or not is_connected():
+            return False
+        coro = send_payload(ws, payload)
+        run_coroutine_threadsafe(coro, loop)
+        return True
+    except Exception as exc:
+        _safe_log(log_error, f"Schedule cloud payload failed: {exc!r}")
+        if coro is not None:
+            try:
+                _close_unawaited_coro(coro)
+            except Exception:
+                pass
+        return False
+
+
 def schedule_cloud_unregister_runtime(
     *,
     reason,

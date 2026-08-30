@@ -32,6 +32,7 @@ from sms_core.cloud_state_namespace_runtime import (
     cloud_status_payload_namespace_runtime,
     maybe_capture_cloud_device_imei_namespace_runtime,
     notify_cloud_identity_changed_namespace_runtime,
+    notify_cloud_channel_status_namespace_runtime,
     request_cloud_device_imei_namespace_runtime,
     set_cloud_device_imei_namespace_runtime,
 )
@@ -147,6 +148,7 @@ def install_cloud_namespace_bindings(namespace):
         "_cloud_schedule_unregister": cloud_schedule_unregister,
         "_cloud_unregister_then_close": cloud_unregister_then_close,
         "_notify_cloud_identity_changed": bind("notify_cloud_identity_changed_namespace_runtime"),
+        "_notify_cloud_channel_status": bind("notify_cloud_channel_status_namespace_runtime"),
         "_set_cloud_device_imei": bind(
             "set_cloud_device_imei_namespace_runtime",
             positional_keywords=("source",),

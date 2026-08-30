@@ -197,6 +197,7 @@ class SerialAppRuntimeTests(unittest.TestCase):
             "system_ui": lambda *args: calls.append(("system", args)),
             "_push_serial_debug": lambda *args: calls.append(("debug", args)),
             "_cloud_send_serial_log": lambda *args: calls.append(("cloud_log", args)),
+            "notify_cloud_channel_status": lambda *args: calls.append(("channel_status", args)),
             "_maybe_capture_cloud_device_imei": lambda *args: calls.append(("imei", args)),
             "set_temperature": lambda *args: calls.append(("temp", args)),
             "set_signal": lambda *args: calls.append(("signal", args)),
@@ -232,6 +233,7 @@ class SerialAppRuntimeTests(unittest.TestCase):
             kwargs["callbacks"]["file_log"]("line")
             kwargs["callbacks"]["observe_sms_send_line"]("OK")
             kwargs["callbacks"]["cancel_sms_send"]("gone")
+            kwargs["callbacks"]["notify_cloud_channel_status"](True)
             self.assertFalse(kwargs["state_access"]["popup_active"]())
             self.assertFalse(kwargs["reconnect_callbacks"]["stop_requested"]())
             return "ran"
@@ -249,6 +251,7 @@ class SerialAppRuntimeTests(unittest.TestCase):
         self.assertIn(("file", "line"), calls)
         self.assertIn(("sms_line", "OK", serial_obj), calls)
         self.assertIn(("sms_cancel", "gone"), calls)
+        self.assertIn(("channel_status", (True,)), calls)
 
     def test_run_serial_app_runtime_wires_loop_callbacks(self):
         calls = []

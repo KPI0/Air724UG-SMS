@@ -9,6 +9,8 @@ from sms_core.cloud_imei_runtime import (
     set_cloud_device_imei_runtime,
 )
 from sms_core.cloud_message_runtime import cloud_status_payload_runtime
+from sms_core.cloud_connection_runtime import schedule_cloud_payload_runtime
+from sms_core.cloud_payloads import build_channel_status_payload
 
 
 def cloud_runtime_imei_namespace_runtime(namespace):
@@ -116,6 +118,48 @@ def cloud_status_payload_namespace_runtime(
         serial_baud=namespace["BAUD"],
         serial_mode=namespace["MODE"],
     )
+
+
+def notify_cloud_channel_status_namespace_runtime(namespace, serial_connected=None):
+    """Publish the desktop transport's serial availability to the server."""
+    if serial_connected is None:
+        try:
+            with namespace["serial_lock"]:
+                serial_obj = namespace.get("serial_obj")
+                serial_connected = bool(serial_obj is not None and serial_obj.is_open)
+        except Exception:
+            serial_connected = False
+    serial_connected = bool(serial_connected)
+    try:
+        generation = max(0, int(namespace.get("serial_connection_generation", 0)))
+    except (TypeError, ValueError):
+        generation = 0
+    ws = namespace.get("cloud_ws_conn")
+    state_key = (ws, generation, serial_connected)
+    if namespace.get("cloud_last_channel_status") == state_key:
+        return False
+    if not namespace.get("cloud_connected") or not namespace.get("cloud_device_authorized"):
+        return False
+    build_payload = namespace.get("_cloud_build_channel_status_payload", build_channel_status_payload)
+    payload = build_payload(
+        namespace["_cloud_now_ts"](),
+        namespace["_cloud_identity_payload"](),
+        serial_connected,
+        serial_connected,
+        generation,
+    )
+    scheduled = schedule_cloud_payload_runtime(
+        payload,
+        get_loop=lambda: namespace.get("cloud_ws_loop"),
+        get_ws=lambda: namespace.get("cloud_ws_conn"),
+        is_connected=lambda: namespace.get("cloud_connected") and namespace.get("cloud_device_authorized"),
+        send_payload=namespace["_cloud_send_payload"],
+        run_coroutine_threadsafe=namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        log_error=namespace.get("log_file_only"),
+    )
+    if scheduled:
+        namespace["cloud_last_channel_status"] = state_key
+    return scheduled
 
 
 async def cloud_check_replay_window_namespace_runtime(namespace, ws, data, *, mark_seen=True):

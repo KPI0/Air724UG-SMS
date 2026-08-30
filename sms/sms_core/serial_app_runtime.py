@@ -77,6 +77,7 @@ def run_serial_app_runtime(
         state["set_log_prefix"](target_port.replace(":", "_"))
         callbacks.get("set_local_number", lambda *_args: None)("")
         callbacks["schedule_connected_log"](state["port"](), state["baud"]())
+        callbacks.get("notify_cloud_channel_status", lambda *_args: None)(True)
 
     def handle_disconnect(error, target_port):
         state["set_log_prefix"]("system")
@@ -96,6 +97,7 @@ def run_serial_app_runtime(
             callbacks["set_signal"],
             io["safe_close_serial"],
         )
+        callbacks.get("notify_cloud_channel_status", lambda *_args: None)(False)
         return reconnect["try_manual_rebind_after_error"](error)
 
     def wait_before_retry():
@@ -155,6 +157,10 @@ def build_serial_app_wiring(
         "system_ui": callbacks["system_ui"],
         "push_serial_debug": callbacks["push_serial_debug"],
         "send_cloud_serial_log": callbacks["send_cloud_serial_log"],
+        "notify_cloud_channel_status": callbacks.get(
+            "notify_cloud_channel_status",
+            lambda *_args: None,
+        ),
         "capture_cloud_device_imei": callbacks["capture_cloud_device_imei"],
         "set_temperature": callbacks["set_temperature"],
         "set_signal": callbacks["set_signal"],
@@ -315,6 +321,10 @@ def run_serial_reader_namespace_runtime(
             "show_missed_call_popup": namespace.get(
                 "show_missed_call_popup",
                 lambda _missed_call: None,
+            ),
+            "notify_cloud_channel_status": namespace.get(
+                "notify_cloud_channel_status",
+                lambda *_args: None,
             ),
             "schedule_connected_log": namespace["schedule_delayed_connected_log"],
             "serial_error_ui": namespace["serial_error_ui"],

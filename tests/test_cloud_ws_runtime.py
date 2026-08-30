@@ -238,7 +238,8 @@ class CloudWsRuntimeTests(unittest.TestCase):
     def test_wait_cloud_login_ack_runtime_keeps_waiting_device_connected(self):
         stop_event = FakeStopEvent()
         ws = FakeWebSocket([
-            '{"type":"device_login_ack","auth_status":"waiting","message":"waiting"}'
+            '{"type":"device_login_ack","ok":false,"status":"waiting",'
+            '"auth_status":"waiting","message":"waiting"}'
         ])
         calls = []
 
