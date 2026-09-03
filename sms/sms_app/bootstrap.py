@@ -87,6 +87,7 @@ from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
     build_call_event_payload as _cloud_build_call_event_payload,
+    build_call_recording_status_payload as _cloud_build_call_recording_status_payload,
     build_channel_status_payload as _cloud_build_channel_status_payload,
     build_register_payload as _cloud_build_register_payload,
     build_session_revoke_payload as _cloud_build_session_revoke_payload,
@@ -108,6 +109,11 @@ from sms_core.cloud_security import (
     safe_preview as _cloud_safe_preview,
 )
 from sms_core.call_session import IncomingCallSessionTracker
+from sms_core.call_recordings import (
+    CallRecordingRepository,
+    CloudCallRecordingUploader,
+    SerialCallRecordingReceiver,
+)
 from sms_core.config_schema import (
     DEFAULT_CLOUD_CONTROL_CONFIG,
     DEFAULT_SERIAL_CONFIG,
@@ -194,7 +200,7 @@ from sms_ui.window_utils import sync_and_focus_existing_window
 
 
 def _initialize_paths_and_constants():
-    global APP_DIR, CONFIG_FILE, LOG_DIR, TTS_DIR, TTS_FILE, APP_WINDOW_TITLE
+    global APP_DIR, CONFIG_FILE, LOG_DIR, RECORDINGS_DIR, TTS_DIR, TTS_FILE, APP_WINDOW_TITLE
     global APP_DISPLAY_TITLE, SERIAL_DEBUG_WINDOW_TITLE, APP_INSTANCE_NUMBER
     global RECONNECT_INTERVAL, APP_VERSION, GITHUB_OWNER, GITHUB_REPO
     global AUTOSTART_FLAG, RESTART_HELPER_FLAG, START_MINIMIZED
@@ -206,6 +212,7 @@ def _initialize_paths_and_constants():
     APP_DIR = get_app_dir()
     CONFIG_FILE = os.path.join(APP_DIR, "config.ini")
     LOG_DIR = os.path.join(APP_DIR, "sms_logs")
+    RECORDINGS_DIR = os.path.join(APP_DIR, "recordings")
     TTS_DIR = os.path.join(APP_DIR, "tts")
     TTS_FILE = os.path.join(TTS_DIR, "alert.wav")
     APP_WINDOW_TITLE = "短信监听系统"
@@ -229,6 +236,7 @@ def _initialize_paths_and_constants():
     START_UI_DELAY = 2.0
     VOICE_ENABLED = True
     os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
     os.makedirs(TTS_DIR, exist_ok=True)
 
 
@@ -451,12 +459,59 @@ def _initialize_worker_state():
     UPDATE_CHECK_TASK_STATE = SingleFlightTaskState()
 
 
+def _initialize_call_recording_state():
+    global CALL_RECORDING_REPOSITORY, CALL_RECORDING_RECEIVER, CALL_RECORDING_UPLOADER
+
+    def recording_log(message):
+        logger = globals().get("log_file_only")
+        if callable(logger):
+            logger(message)
+
+    def recording_saved(recording):
+        system_logger = globals().get("system_ui")
+        if callable(system_logger):
+            system_logger("📞 通话录音已保存到 recordings 目录", "normal")
+        schedule_upload = globals().get("_schedule_cloud_call_recording_upload")
+        if callable(schedule_upload):
+            schedule_upload()
+
+    def recording_started(metadata):
+        send_status = globals().get("_send_cloud_call_recording_status")
+        if callable(send_status):
+            send_status("uploading", metadata)
+
+    def recording_aborted(metadata, reason):
+        send_status = globals().get("_send_cloud_call_recording_status")
+        if callable(send_status):
+            payload = dict(metadata or {})
+            payload["reason"] = str(reason or "aborted")[:64]
+            send_status("failed", payload)
+
+    CALL_RECORDING_REPOSITORY = CallRecordingRepository(
+        RECORDINGS_DIR,
+        log_error=recording_log,
+    )
+    CALL_RECORDING_UPLOADER = CloudCallRecordingUploader(
+        CALL_RECORDING_REPOSITORY,
+        log_error=recording_log,
+    )
+    CALL_RECORDING_RECEIVER = SerialCallRecordingReceiver(
+        CALL_RECORDING_REPOSITORY,
+        on_saved=recording_saved,
+        on_started=recording_started,
+        on_aborted=recording_aborted,
+        log_error=recording_log,
+        source_imei=lambda: globals().get("CLOUD_DEVICE_IMEI", ""),
+    )
+
+
 def _initialize_runtime_state():
     _initialize_serial_state()
     _initialize_notice_state()
     _initialize_ui_state()
     _initialize_cloud_runtime_state()
     _initialize_worker_state()
+    _initialize_call_recording_state()
 
 
 def _install_runtime_bindings():
@@ -587,10 +642,20 @@ def _install_cloud_and_serial_bindings():
         log_error=log_file_only,
     )
     install_cloud_namespace_bindings(globals())
+    globals()["consume_call_recording_line"] = CALL_RECORDING_RECEIVER.consume_line
+    globals()["abort_call_recording_transfer"] = CALL_RECORDING_RECEIVER.abort
     current_call_popup = None
     current_missed_call_popup = None
     INCOMING_CALL_SESSION = IncomingCallSessionTracker()
     install_serial_namespace_bindings(globals())
+
+    def maintain_call_recording_transfer():
+        if TK_SHUTDOWN.is_set():
+            return
+        CALL_RECORDING_RECEIVER.expire_stale()
+        root.after(5000, maintain_call_recording_transfer)
+
+    root.after(5000, maintain_call_recording_transfer)
 
 
 def _build_main_menu():

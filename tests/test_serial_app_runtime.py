@@ -314,6 +314,9 @@ class SerialAppRuntimeTests(unittest.TestCase):
         log_prefixes = []
         callbacks = app_callbacks(calls)
         callbacks["cancel_sms_send"] = lambda error: calls.append(("cancel_sms", error))
+        callbacks["abort_call_recording_transfer"] = lambda reason: calls.append(
+            ("abort_recording", reason)
+        )
 
         def fake_run_serial_runtime_thread(**kwargs):
             return kwargs["handle_disconnect"](RuntimeError("gone"), "COM7")
@@ -351,9 +354,10 @@ class SerialAppRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(log_prefixes, ["system"])
-        self.assertEqual(calls[0], ("close_popup",))
-        self.assertEqual(calls[1], ("cancel_sms", "串口连接已断开：gone"))
-        self.assertEqual(calls[2][0], "disconnect")
+        self.assertEqual(calls[0], ("abort_recording", "serial_disconnect"))
+        self.assertEqual(calls[1], ("close_popup",))
+        self.assertEqual(calls[2], ("cancel_sms", "串口连接已断开：gone"))
+        self.assertEqual(calls[3][0], "disconnect")
         self.assertEqual(calls[-1], ("rebind", "gone"))
 
 

@@ -22,6 +22,12 @@ def popup_exists(window, *, log_error=None):
 
 def close_call_popup_runtime(current_popup, set_popup, *, log_error=None):
     try:
+        cleanup = getattr(current_popup, "_call_popup_cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception as exc:
+                _safe_log(log_error, f"Stop call popup timer failed: {exc!r}")
         if popup_exists(current_popup, log_error=log_error):
             try:
                 current_popup.destroy()

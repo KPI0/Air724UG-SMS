@@ -91,6 +91,7 @@ class SerialRuntimeCallbacks:
     finish_incoming_call: object = lambda: None
     reset_incoming_call: object = lambda: None
     show_missed_call_popup: object = lambda _missed_call: None
+    consume_call_recording_line: object = lambda _line: False
 
 
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
@@ -188,6 +189,12 @@ def handle_serial_runtime_line(
     callbacks,
     ignore_repeat_state,
 ):
+    try:
+        if callbacks.consume_call_recording_line(line):
+            return SerialRuntimeResult(continue_read=True)
+    except Exception:
+        return SerialRuntimeResult(continue_read=True)
+
     if ring_timeout_expired(state.call_state.ring_timeout_target, now):
         state.call_state.ring_timeout_target = 0.0
         state.call_state.last_clip_num = ""

@@ -14,6 +14,10 @@ class FakePopup:
     def __init__(self, exists=True):
         self.exists = exists
         self.destroyed = False
+        self.cleaned_up = 0
+
+    def _call_popup_cleanup(self):
+        self.cleaned_up += 1
 
     def winfo_exists(self):
         return self.exists
@@ -56,6 +60,7 @@ class CallPopupRuntimeTests(unittest.TestCase):
         close_call_popup_runtime(popup, values.append)
 
         self.assertTrue(popup.destroyed)
+        self.assertEqual(popup.cleaned_up, 1)
         self.assertEqual(values, [None])
 
     def test_close_call_popup_runtime_logs_destroy_failure_and_clears_state(self):

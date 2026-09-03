@@ -98,6 +98,37 @@ def flush_settled_sms(state, calls, now, *, config=None, port="COM5"):
 
 
 class SerialRuntimeTests(unittest.TestCase):
+    def test_call_recording_frames_are_consumed_before_other_serial_handlers(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **callbacks.__dict__,
+                "consume_call_recording_line": lambda line: calls.append(
+                    ("recording", line)
+                )
+                or True,
+            }
+        )
+
+        result = handle_serial_runtime_line(
+            state,
+            "@@CALL_RECORD_CHUNK|recording-a|1|IyFBTVIK",
+            1.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertTrue(result.continue_read)
+        self.assertEqual(
+            calls,
+            [("recording", "@@CALL_RECORD_CHUNK|recording-a|1|IyFBTVIK")],
+        )
+
     def test_serial_line_decoder_keeps_split_utf8_character(self):
         decoder = SerialLineDecoder()
         text = "[I]-[handler_sms.smsCallback] +10086 您正在中国电信APP\r\n"

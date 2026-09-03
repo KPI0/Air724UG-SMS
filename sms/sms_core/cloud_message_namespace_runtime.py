@@ -9,6 +9,7 @@ from sms_core.cloud_message_runtime import (
     send_cloud_serial_command_runtime,
     send_cloud_sms_event_runtime,
 )
+from sms_core.cloud_connection_runtime import schedule_cloud_payload_runtime
 from sms_core.cloud_serial_log_runtime import (
     drain_cloud_serial_log_queue,
     reset_cloud_serial_log_state,
@@ -157,6 +158,58 @@ def send_cloud_serial_log_namespace_runtime(
         schedule_drain=lambda loop, ws: namespace["_schedule_cloud_serial_log_drain"](loop, ws),
         log_error=namespace.get("log_file_only"),
     )
+
+
+def schedule_cloud_call_recording_upload_namespace_runtime(namespace):
+    uploader = namespace.get("CALL_RECORDING_UPLOADER")
+    if uploader is None:
+        return False
+    return uploader.schedule(
+        namespace.get("cloud_ws_loop"),
+        namespace.get("cloud_ws_conn"),
+        send_payload=namespace["_cloud_send_payload"],
+        identity_payload=namespace["_cloud_identity_payload"],
+        is_current=lambda ws: ws is namespace.get("cloud_ws_conn") and namespace.get("cloud_connected"),
+        is_authorized=lambda: bool(namespace.get("cloud_device_authorized")),
+    )
+
+
+def send_cloud_call_recording_status_namespace_runtime(namespace, status, metadata):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    build_payload = namespace.get(
+        "_cloud_build_call_recording_status_payload"
+    )
+    if not callable(build_payload):
+        return False
+    payload = build_payload(
+        status,
+        metadata.get("recording_id"),
+        metadata.get("phone"),
+        metadata.get("started_at"),
+        metadata.get("duration_ms"),
+        metadata.get("size"),
+        namespace["_cloud_now_ts"](),
+        namespace["_cloud_identity_payload"](),
+    )
+    if payload is None:
+        return False
+    return schedule_cloud_payload_runtime(
+        payload,
+        get_loop=lambda: namespace.get("cloud_ws_loop"),
+        get_ws=lambda: namespace.get("cloud_ws_conn"),
+        is_connected=lambda: bool(
+            namespace.get("cloud_connected")
+            and namespace.get("cloud_device_authorized")
+        ),
+        send_payload=namespace["_cloud_send_payload"],
+        run_coroutine_threadsafe=namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        log_error=namespace.get("log_file_only"),
+    )
+
+
+def handle_cloud_call_recording_message_namespace_runtime(namespace, data):
+    uploader = namespace.get("CALL_RECORDING_UPLOADER")
+    return bool(uploader is not None and uploader.handle_server_message(data))
 
 
 def send_cloud_sms_event_namespace_runtime(
@@ -402,4 +455,8 @@ async def handle_cloud_message_namespace_runtime(
         ),
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],
+        handle_call_recording_message=namespace.get(
+            "_handle_cloud_call_recording_message",
+            lambda _data: False,
+        ),
     )

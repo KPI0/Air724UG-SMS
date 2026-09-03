@@ -143,6 +143,11 @@ async def cloud_ws_main_namespace_runtime(
     *,
     ws_main_runtime=cloud_ws_main_app_runtime,
 ):
+    def schedule_pending_uploads():
+        sms_result = namespace.get("_schedule_cloud_sms_event_drain", lambda: None)()
+        namespace.get("_schedule_cloud_call_recording_upload", lambda: None)()
+        return sms_result
+
     return await ws_main_runtime(
         url,
         reconnect_interval,
@@ -161,10 +166,7 @@ async def cloud_ws_main_namespace_runtime(
         handle_message=namespace["_handle_cloud_message"],
         cloud_control_enabled=lambda: namespace["CLOUD_CONTROL_ENABLED"],
         monotonic=namespace.get("time", time).monotonic,
-        schedule_pending_sms_events=namespace.get(
-            "_schedule_cloud_sms_event_drain",
-            lambda: None,
-        ),
+        schedule_pending_sms_events=schedule_pending_uploads,
     )
 
 

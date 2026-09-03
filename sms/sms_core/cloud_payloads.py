@@ -228,6 +228,48 @@ def build_call_event_payload(
     }
 
 
+def build_call_recording_status_payload(
+    status,
+    recording_id,
+    phone,
+    started_at,
+    duration_ms,
+    size,
+    timestamp,
+    identity,
+    time_text=None,
+):
+    status_text = str(status or "").strip().lower()
+    recording_id = str(recording_id or "").strip()
+    if status_text not in ("uploading", "failed") or not recording_id:
+        return None
+    try:
+        started_at = max(0, int(started_at or 0))
+    except (TypeError, ValueError, OverflowError):
+        started_at = 0
+    try:
+        duration_ms = max(0, min(int(duration_ms or 0), 3600000))
+    except (TypeError, ValueError, OverflowError):
+        duration_ms = 0
+    try:
+        size = max(0, min(int(size or 0), 512 * 1024))
+    except (TypeError, ValueError, OverflowError):
+        size = 0
+    payload = {
+        "type": "call_recording_status",
+        "status": status_text,
+        "recording_id": recording_id,
+        "phone": str(phone or "unknown").strip()[:64] or "unknown",
+        "started_at": started_at,
+        "duration_ms": duration_ms,
+        "size": size,
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        **identity,
+    }
+    return payload
+
+
 def build_status_payload(
     timestamp,
     identity,

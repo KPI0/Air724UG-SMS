@@ -54,6 +54,10 @@ def build_serial_runtime_callbacks(callbacks):
             "show_missed_call_popup",
             lambda _missed_call: None,
         ),
+        consume_call_recording_line=callbacks.get(
+            "consume_call_recording_line",
+            lambda _line: False,
+        ),
     )
 
 
@@ -82,6 +86,9 @@ def run_serial_app_runtime(
     def handle_disconnect(error, target_port):
         state["set_log_prefix"]("system")
         callbacks.get("set_local_number", lambda *_args: None)("")
+        callbacks.get("abort_call_recording_transfer", lambda *_args: None)(
+            "serial_disconnect"
+        )
         callbacks["close_call_popup"]()
         callbacks.get(
             "cancel_sms_send",
@@ -179,6 +186,14 @@ def build_serial_app_wiring(
         "show_missed_call_popup": callbacks.get(
             "show_missed_call_popup",
             lambda _missed_call: None,
+        ),
+        "consume_call_recording_line": callbacks.get(
+            "consume_call_recording_line",
+            lambda _line: False,
+        ),
+        "abort_call_recording_transfer": callbacks.get(
+            "abort_call_recording_transfer",
+            lambda _reason="": False,
         ),
         "schedule_connected_log": callbacks["schedule_connected_log"],
         "serial_error_ui": callbacks["serial_error_ui"],
@@ -321,6 +336,14 @@ def run_serial_reader_namespace_runtime(
             "show_missed_call_popup": namespace.get(
                 "show_missed_call_popup",
                 lambda _missed_call: None,
+            ),
+            "consume_call_recording_line": namespace.get(
+                "consume_call_recording_line",
+                lambda _line: False,
+            ),
+            "abort_call_recording_transfer": namespace.get(
+                "abort_call_recording_transfer",
+                lambda _reason="": False,
             ),
             "notify_cloud_channel_status": namespace.get(
                 "notify_cloud_channel_status",

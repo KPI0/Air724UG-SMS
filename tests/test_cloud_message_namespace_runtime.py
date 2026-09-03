@@ -11,6 +11,7 @@ from sms_core.cloud_message_namespace_runtime import (
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
     send_cloud_call_event_namespace_runtime,
+    send_cloud_call_recording_status_namespace_runtime,
     send_cloud_serial_command_namespace_runtime,
     send_cloud_serial_log_namespace_runtime,
     send_cloud_sms_event_namespace_runtime,
@@ -199,6 +200,43 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertTrue(forwarded["authorized"])
         self.assertEqual(forwarded["timestamp"](), 123)
         self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
+
+    def test_send_cloud_call_recording_status_namespace_runtime_schedules_payload(self):
+        namespace = self.base_namespace()
+        namespace["_cloud_build_call_recording_status_payload"] = (
+            lambda status, recording_id, phone, started_at, duration_ms, size, ts, identity: {
+                "type": "call_recording_status",
+                "status": status,
+                "recording_id": recording_id,
+                "phone": phone,
+                "started_at": started_at,
+                "duration_ms": duration_ms,
+                "size": size,
+                "timestamp": ts,
+                **identity,
+            }
+        )
+        with patch(
+            "sms_core.cloud_message_namespace_runtime.schedule_cloud_payload_runtime",
+            return_value=True,
+        ) as schedule:
+            self.assertTrue(
+                send_cloud_call_recording_status_namespace_runtime(
+                    namespace,
+                    "uploading",
+                    {
+                        "recording_id": "recording-a",
+                        "phone": "10086",
+                        "started_at": 1788048000,
+                        "duration_ms": 3200,
+                        "size": 100,
+                    },
+                )
+            )
+        payload = schedule.call_args.args[0]
+        self.assertEqual(payload["type"], "call_recording_status")
+        self.assertEqual(payload["status"], "uploading")
+        self.assertEqual(payload["recording_id"], "recording-a")
 
     def test_send_cloud_serial_command_namespace_runtime_forwards_serial_callbacks(self):
         namespace = self.base_namespace()

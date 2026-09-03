@@ -16,9 +16,12 @@ from sms_core.cloud_message_namespace_runtime import (
     drain_cloud_sms_event_queue_namespace_runtime,
     drain_cloud_serial_log_queue_namespace_runtime,
     handle_cloud_message_namespace_runtime,
+    handle_cloud_call_recording_message_namespace_runtime,
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
     schedule_cloud_sms_event_drain_namespace_runtime,
+    schedule_cloud_call_recording_upload_namespace_runtime,
+    send_cloud_call_recording_status_namespace_runtime,
     send_cloud_call_event_namespace_runtime,
     send_cloud_serial_command_namespace_runtime,
     send_cloud_serial_log_namespace_runtime,
@@ -160,6 +163,12 @@ def install_cloud_namespace_bindings(namespace):
         "_clear_cloud_sms_event_state": bind("clear_cloud_sms_event_state_namespace_runtime"),
         "_cloud_drain_sms_event_queue": bind_async("drain_cloud_sms_event_queue_namespace_runtime"),
         "_schedule_cloud_sms_event_drain": bind("schedule_cloud_sms_event_drain_namespace_runtime"),
+        "_schedule_cloud_call_recording_upload": bind(
+            "schedule_cloud_call_recording_upload_namespace_runtime"
+        ),
+        "_send_cloud_call_recording_status": bind(
+            "send_cloud_call_recording_status_namespace_runtime"
+        ),
         "_reset_cloud_serial_log_state": bind("reset_cloud_serial_log_state_namespace_runtime"),
         "_cloud_drain_serial_log_queue": bind_async("drain_cloud_serial_log_queue_namespace_runtime"),
         "_schedule_cloud_serial_log_drain": bind("schedule_cloud_serial_log_drain_namespace_runtime"),
@@ -174,6 +183,9 @@ def install_cloud_namespace_bindings(namespace):
         "_cloud_check_replay_window": cloud_check_replay_window,
         "_cloud_send_serial_command": bind("send_cloud_serial_command_namespace_runtime"),
         "_cloud_reply": cloud_reply,
+        "_handle_cloud_call_recording_message": bind(
+            "handle_cloud_call_recording_message_namespace_runtime"
+        ),
         "_handle_cloud_message": bind_async("handle_cloud_message_namespace_runtime"),
         "_cloud_ws_main": bind_async("cloud_ws_main_namespace_runtime"),
         "_cloud_thread_main": bind("cloud_thread_main_namespace_runtime"),

@@ -561,6 +561,7 @@ async def handle_cloud_message_runtime(
     send_serial_command,
     show_window,
     hide_window,
+    handle_call_recording_message=None,
 ):
     incoming, error_payload = parse_cloud_message(message)
     log(f"收到：{cloud_incoming_preview(incoming)}")
@@ -595,6 +596,12 @@ async def handle_cloud_message_runtime(
         set_cloud_status("🌐 授权失败", "#cc0000")
         log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
         return "auth_failed"
+
+    if (
+        handle_call_recording_message is not None
+        and handle_call_recording_message(data)
+    ):
+        return "call_recording"
 
     if not is_authorized():
         log("已拒绝云端指令：设备尚未获得服务端授权")
