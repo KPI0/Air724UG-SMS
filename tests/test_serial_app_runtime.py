@@ -43,6 +43,7 @@ def app_callbacks(calls):
         "close_call_popup": lambda: calls.append(("close_popup",)),
         "send_call_hangup": lambda: calls.append(("hangup",)),
         "show_call_popup": lambda *args: calls.append(("call_popup", args)),
+        "mark_call_connected": lambda: calls.append(("call_connected",)),
         "schedule_connected_log": lambda *args: calls.append(("connected_log", args)),
         "serial_error_ui": lambda *args: calls.append(("serial_error", args)),
     }
@@ -64,8 +65,9 @@ class SerialAppRuntimeTests(unittest.TestCase):
 
         callbacks.set_status("ready", "green")
         callbacks.close_call_popup()
+        callbacks.mark_call_connected()
 
-        self.assertEqual(calls, [("status", ("ready", "green")), ("close_popup",)])
+        self.assertEqual(calls, [("status", ("ready", "green")), ("close_popup",), ("call_connected",)])
 
     def test_build_serial_app_wiring_maps_grouped_dependencies(self):
         calls = []
@@ -99,10 +101,12 @@ class SerialAppRuntimeTests(unittest.TestCase):
 
         self.assertEqual(settings["log_prefix"](), "COM5")
         callbacks["set_status"]("ready", "green")
+        callbacks["mark_call_connected"]()
         self.assertEqual(state["ignore_repeat_state"], {"seen": True})
         self.assertEqual(io["resolve_target_port"](), "COM5")
         self.assertFalse(reconnect["stop_requested"]())
         self.assertIn(("status", ("ready", "green")), calls)
+        self.assertIn(("call_connected",), calls)
 
     def test_run_serial_app_from_wiring_builds_and_runs(self):
         calls = []

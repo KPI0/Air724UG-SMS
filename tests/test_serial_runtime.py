@@ -236,6 +236,15 @@ class SerialRuntimeTests(unittest.TestCase):
         state = SerialRuntimeState.create(parse_head)
         state.call_state.ring_timeout_target = 5.0
         state.call_state.last_clip_num = "10086"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "send_cloud_call_state": lambda *args, **kwargs: calls.append(
+                    ("cloud_call_state", args, kwargs)
+                ),
+            }
+        )
 
         handle_serial_runtime_line(
             state,
@@ -244,7 +253,7 @@ class SerialRuntimeTests(unittest.TestCase):
             "COM5",
             True,
             runtime_config(),
-            runtime_callbacks(calls),
+            callbacks,
             {},
         )
 
@@ -252,6 +261,74 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(state.call_state.last_clip_num, "")
         self.assertIn(("close_popup",), calls)
         self.assertTrue(any(item[0] == "status" for item in calls))
+        self.assertIn(
+            (
+                "cloud_call_state",
+                ("10086", "no_answer", "RING TIMEOUT"),
+                {"direction": "incoming"},
+            ),
+            calls,
+        )
+
+    def test_live_ring_line_refreshes_expired_deadline_before_timeout(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.ring_timeout_target = 5.0
+        state.call_state.last_clip_num = "10086"
+        callbacks = runtime_callbacks(calls)
+
+        handle_serial_runtime_line(
+            state,
+            "RING",
+            10.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertEqual(state.call_state.ring_timeout_target, 22.0)
+        self.assertEqual(state.call_state.last_clip_num, "10086")
+        self.assertNotIn(("close_popup",), calls)
+        self.assertFalse(any(item[0] == "cloud_call_state" for item in calls))
+
+    def test_connected_line_wins_over_expired_ring_deadline(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.ring_timeout_target = 5.0
+        state.call_state.last_clip_num = "10086"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "send_cloud_call_state": lambda *args, **kwargs: calls.append(
+                    ("cloud_call_state", args, kwargs)
+                ),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CIEV: "CALL",1',
+            10.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertEqual(state.call_state.ring_timeout_target, -1.0)
+        self.assertNotIn(("close_popup",), calls)
+        self.assertIn(
+            (
+                "cloud_call_state",
+                ("10086", "connected", ""),
+                {"direction": "incoming"},
+            ),
+            calls,
+        )
 
     def test_timeout_and_hangup_on_same_line_only_apply_one_terminal_effect(self):
         calls = []
@@ -311,6 +388,109 @@ class SerialRuntimeTests(unittest.TestCase):
             and item[2].get("variables", {}).get("caller") == "+8613123123123"
             for item in calls
         ))
+
+    def test_outgoing_call_connected_notifies_dial_popup(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.current_dial_num = "10086"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "mark_dial_connected": lambda: calls.append(("dial_connected",)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            "CONNECT",
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("dial_connected",), calls)
+
+    def test_incoming_call_connected_notifies_incoming_popup(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.ring_timeout_target = 20.0
+        state.call_state.last_clip_num = "10086"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "mark_call_connected": lambda: calls.append(("call_connected",)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CIEV: "CALL",1',
+            10.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("call_connected",), calls)
+
+    def test_outgoing_call_hangup_finishes_dial_popup_with_reason(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.current_dial_num = "10086"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "finish_dial_call": lambda message: calls.append(("dial_ended", message)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CIEV: "CALL",0',
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("dial_ended", "📞 对方已挂断"), calls)
+        self.assertNotIn(("close_popup",), calls)
+
+    def test_outgoing_call_modem_error_finishes_dial_popup(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.current_dial_num = "15923240141"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "finish_dial_call": lambda message: calls.append(("dial_ended", message)),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            "+CME ERROR: 3",
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("dial_ended", "📞 拨号失败：+CME ERROR: 3"), calls)
+        self.assertEqual(state.call_state.current_dial_num, "")
 
     def test_corrupted_clip_dispatches_unknown_caller(self):
         calls = []

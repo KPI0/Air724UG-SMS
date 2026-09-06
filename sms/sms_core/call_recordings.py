@@ -25,6 +25,7 @@ CLOUD_RECORDING_CHUNK_BYTES = 3072
 CLOUD_RECORDING_OFFER_TIMEOUT_SECONDS = 8.0
 CLOUD_RECORDING_RESULT_TIMEOUT_SECONDS = 15.0
 CLOUD_RECORDING_RETRY_SECONDS = 30.0
+TERMINAL_UPLOAD_FAILURE_REASONS = {"recording_deleted"}
 
 
 def _safe_log(log_error, message):
@@ -595,7 +596,7 @@ class CloudCallRecordingUploader:
         self._offer_waiters = {}
         self._result_waiters = {}
 
-    def handle_server_message(self, data):
+    def handle_server_message(self, data, websocket=None):
         data = data if isinstance(data, dict) else {}
         msg_type = str(data.get("type") or "")
         if msg_type not in ("call_recording_offer_ack", "call_recording_result"):
@@ -604,23 +605,72 @@ class CloudCallRecordingUploader:
         if not recording_id:
             return True
         waiters = self._offer_waiters if msg_type == "call_recording_offer_ack" else self._result_waiters
-        future = waiters.pop(recording_id, None)
+        entry = waiters.get(recording_id)
+        if isinstance(entry, tuple):
+            expected_websocket, future = entry
+            if websocket is not None and expected_websocket is not websocket:
+                # A late response from a replaced connection must never
+                # satisfy the waiter belonging to the current connection.
+                return True
+            waiters.pop(recording_id, None)
+        else:
+            future = waiters.pop(recording_id, None)
         if future is not None and not future.done():
             future.set_result(dict(data))
         return True
 
     @staticmethod
+    def _remove_waiter(waiters, recording_id, websocket, future):
+        entry = waiters.get(recording_id)
+        if isinstance(entry, tuple):
+            if entry[0] is websocket and entry[1] is future:
+                waiters.pop(recording_id, None)
+        elif entry is future:
+            waiters.pop(recording_id, None)
+
+    @staticmethod
     def _send_succeeded(result):
         return result is True or result == "sent"
 
-    async def _send_recording(self, recording, ws, send_payload, identity_payload):
+    async def _wait_for_response(self, future, ws, is_current, timeout_seconds):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, float(timeout_seconds))
+        while True:
+            try:
+                if not is_current(ws):
+                    return None, "connection_changed"
+            except Exception:
+                return None, "connection_changed"
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None, "timeout"
+            try:
+                # ``wait_for`` cancels its awaitable when the short polling
+                # timeout expires.  Shield the shared response future so a
+                # delayed ACK/Result can still satisfy the waiter on the next
+                # polling iteration.
+                return await asyncio.wait_for(
+                    asyncio.shield(future),
+                    min(0.5, remaining),
+                ), ""
+            except asyncio.TimeoutError:
+                continue
+
+    async def _send_recording(
+        self,
+        recording,
+        ws,
+        send_payload,
+        identity_payload,
+        is_current=lambda _ws: True,
+    ):
         loop = asyncio.get_running_loop()
         identity = dict(identity_payload() or {})
         current_imei = _valid_imei(identity.get("imei") or identity.get("device_imei"))
         if not current_imei or recording.imei != current_imei:
             return False, "source_imei_mismatch"
         offer_future = loop.create_future()
-        self._offer_waiters[recording.recording_id] = offer_future
+        self._offer_waiters[recording.recording_id] = (ws, offer_future)
         offer = {
             "type": "call_recording_offer",
             "recording_id": recording.recording_id,
@@ -637,11 +687,23 @@ class CloudCallRecordingUploader:
         try:
             if not self._send_succeeded(await send_payload(ws, offer)):
                 return False, "offer_send_failed"
-            ack = await asyncio.wait_for(offer_future, CLOUD_RECORDING_OFFER_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            return False, "offer_timeout"
+            ack, wait_reason = await self._wait_for_response(
+                offer_future,
+                ws,
+                is_current,
+                CLOUD_RECORDING_OFFER_TIMEOUT_SECONDS,
+            )
+            if wait_reason == "connection_changed":
+                return False, "connection_changed"
+            if wait_reason:
+                return False, "offer_timeout"
         finally:
-            self._offer_waiters.pop(recording.recording_id, None)
+            self._remove_waiter(
+                self._offer_waiters,
+                recording.recording_id,
+                ws,
+                offer_future,
+            )
         if ack.get("already_uploaded") is True:
             return True, "already_uploaded"
         if ack.get("ok") is not True or ack.get("accepted") is not True:
@@ -663,13 +725,18 @@ class CloudCallRecordingUploader:
                         "source_imei": recording.imei,
                         **identity,
                     }
+                    try:
+                        if not is_current(ws):
+                            return False, "connection_changed"
+                    except Exception:
+                        return False, "connection_changed"
                     if not self._send_succeeded(await send_payload(ws, payload)):
                         return False, "chunk_send_failed"
         except OSError:
             return False, "recording_file_unavailable"
 
         result_future = loop.create_future()
-        self._result_waiters[recording.recording_id] = result_future
+        self._result_waiters[recording.recording_id] = (ws, result_future)
         try:
             end_payload = {
                 "type": "call_recording_end",
@@ -682,15 +749,43 @@ class CloudCallRecordingUploader:
             }
             if not self._send_succeeded(await send_payload(ws, end_payload)):
                 return False, "end_send_failed"
-            result = await asyncio.wait_for(result_future, CLOUD_RECORDING_RESULT_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            return False, "result_timeout"
+            result, wait_reason = await self._wait_for_response(
+                result_future,
+                ws,
+                is_current,
+                CLOUD_RECORDING_RESULT_TIMEOUT_SECONDS,
+            )
+            if wait_reason == "connection_changed":
+                return False, "connection_changed"
+            if wait_reason:
+                return False, "result_timeout"
         finally:
-            self._result_waiters.pop(recording.recording_id, None)
+            self._remove_waiter(
+                self._result_waiters,
+                recording.recording_id,
+                ws,
+                result_future,
+            )
         return (
             result.get("ok") is True,
             str(result.get("reason") or result.get("message") or "upload_failed"),
         )
+
+    def _restore_pending(self, recording, reason):
+        try:
+            restored = self.repository.mark_pending(recording, reason)
+        except Exception as exc:
+            restored = False
+            _safe_log(
+                self.log_error,
+                "Unable to persist pending call recording state: {!r}".format(exc),
+            )
+        if not restored:
+            _safe_log(
+                self.log_error,
+                "Unable to persist pending call recording state",
+            )
+        return restored
 
     async def _drain(self, ws, send_payload, identity_payload, is_current, is_authorized):
         try:
@@ -701,31 +796,71 @@ class CloudCallRecordingUploader:
             for recording in self.repository.pending(current_imei):
                 if not is_current(ws) or not is_authorized():
                     break
-                if not self.repository.mark_uploading(recording):
+                try:
+                    if not self.repository.mark_uploading(recording):
+                        _safe_log(
+                            self.log_error,
+                            "Unable to persist call recording upload state",
+                        )
+                        break
+                    ok, reason = await self._send_recording(
+                        recording,
+                        ws,
+                        send_payload,
+                        identity_payload,
+                        is_current,
+                    )
+                except Exception as exc:
+                    reason = "unexpected_upload_error"
                     _safe_log(
                         self.log_error,
-                        "Unable to persist call recording upload state",
+                        "Upload call recording failed for {}: {!r}".format(
+                            recording.recording_id,
+                            exc,
+                        ),
                     )
+                    self._restore_pending(recording, reason)
                     break
-                ok, reason = await self._send_recording(
-                    recording,
-                    ws,
-                    send_payload,
-                    identity_payload,
-                )
                 if ok:
-                    if not self.repository.mark_uploaded(recording):
+                    try:
+                        uploaded = self.repository.mark_uploaded(recording)
+                    except Exception as exc:
+                        _safe_log(
+                            self.log_error,
+                            "Persist uploaded call recording state failed for {}: {!r}".format(
+                                recording.recording_id,
+                                exc,
+                            ),
+                        )
+                        self._restore_pending(
+                            recording,
+                            "upload_state_persist_error",
+                        )
+                        break
+                    if not uploaded:
                         _safe_log(
                             self.log_error,
                             "Unable to persist uploaded call recording state",
                         )
                         break
                 else:
-                    if not self.repository.mark_pending(recording, reason):
-                        _safe_log(
-                            self.log_error,
-                            "Unable to persist pending call recording state",
-                        )
+                    if reason in TERMINAL_UPLOAD_FAILURE_REASONS:
+                        try:
+                            if not self.repository.mark_uploaded(recording):
+                                self._restore_pending(recording, reason)
+                                break
+                        except Exception as exc:
+                            _safe_log(
+                                self.log_error,
+                                "Persist terminal call recording state failed for {}: {!r}".format(
+                                    recording.recording_id,
+                                    exc,
+                                ),
+                            )
+                            self._restore_pending(recording, reason)
+                            break
+                        continue
+                    self._restore_pending(recording, reason)
                     break
         except Exception as exc:
             _safe_log(self.log_error, "Upload call recording failed: {!r}".format(exc))

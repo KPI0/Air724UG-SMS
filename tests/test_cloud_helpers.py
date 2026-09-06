@@ -9,6 +9,7 @@ from sms_core.cloud_auth import (
 )
 from sms_core.cloud_payloads import (
     build_call_event_payload,
+    build_call_state_payload,
     build_call_recording_status_payload,
     build_register_payload,
     build_session_revoke_payload,
@@ -160,6 +161,21 @@ class CloudHelperTests(unittest.TestCase):
         self.assertEqual(call["caller"], "+8613123123123")
         self.assertTrue(call["blocked"])
         self.assertEqual(call["block_reason"], "黑名单")
+
+        call_state = build_call_state_payload(
+            "10086",
+            "no_answer",
+            104,
+            identity,
+            "now",
+            direction="incoming",
+            reason="NO ANSWER",
+        )
+        self.assertEqual(call_state["type"], "call_state")
+        self.assertEqual(call_state["direction"], "incoming")
+        self.assertEqual(call_state["phase"], "no_answer")
+        self.assertEqual(call_state["phone"], "10086")
+        self.assertNotIn("secret", call_state)
 
         recording_status = build_call_recording_status_payload(
             "uploading",

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from sms_ui.call_popup import open_call_popup
+from sms_ui.call_popup import open_call_popup, open_dial_call_popup
 
 
 class FakeWidget:
@@ -95,6 +95,127 @@ class FakeWindow(FakeWidget):
 
 
 class CallPopupTests(unittest.TestCase):
+    def test_dial_popup_shows_duration_and_hangup_callback(self):
+        events = []
+        buttons = []
+        labels = []
+        window = TimerWindow(events)
+        clock = iter((100.0, 101.2))
+        callbacks = {}
+
+        class FakeLabel(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.configured = []
+                self.pack_calls = []
+                labels.append(self)
+
+            def config(self, *args, **kwargs):
+                self.configured.append(kwargs)
+
+            def pack(self, *args, **kwargs):
+                self.pack_calls.append((args, kwargs))
+
+        class FakeButton(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                buttons.append(self)
+
+        with patch("sms_ui.call_popup.time.monotonic", side_effect=lambda: next(clock)), \
+                patch("sms_ui.call_popup.tk.Toplevel", return_value=window), \
+                patch("sms_ui.call_popup.ttk.Frame", FakeWidget), \
+                patch("sms_ui.call_popup.tk.Label", FakeLabel), \
+                patch("sms_ui.call_popup.ttk.Button", FakeButton):
+            result = open_dial_call_popup(
+                object(),
+                "15923240141",
+                lambda *_args: None,
+                lambda: (callbacks.__setitem__("hangup", True), window._call_popup_cleanup()),
+                lambda: events.append("closed"),
+            )
+
+            self.assertIs(result, window)
+            self.assertEqual(labels[2].kwargs["text"], "00:00")
+            self.assertEqual(labels[2].pack_calls, [])
+            window._call_popup_mark_connected()
+            self.assertEqual(labels[0].configured[0]["text"], "📞 通话中...")
+            self.assertEqual(labels[2].configured[0]["text"], "00:00")
+            self.assertEqual(labels[2].configured[1]["text"], "00:01")
+            self.assertEqual(len(labels[2].pack_calls), 1)
+            self.assertEqual(len(buttons), 1)
+            self.assertIn("挂断", buttons[0].kwargs["text"])
+            buttons[0].kwargs["command"]()
+
+        self.assertTrue(callbacks.get("hangup", False))
+        self.assertTrue(window.cancelled)
+
+    def test_dial_popup_hangup_uses_no_argument_callback(self):
+        events = []
+        buttons = []
+        window = FakeWindow(events)
+
+        class FakeButton(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                buttons.append(self)
+
+        with patch("sms_ui.call_popup.tk.Toplevel", return_value=window), \
+                patch("sms_ui.call_popup.ttk.Frame", FakeWidget), \
+                patch("sms_ui.call_popup.tk.Label", FakeWidget), \
+                patch("sms_ui.call_popup.ttk.Button", FakeButton):
+            open_dial_call_popup(
+                object(),
+                "15923240141",
+                lambda *_args: None,
+                lambda: events.append("hangup"),
+                lambda: events.append("closed"),
+            )
+
+        events.clear()
+        buttons[0].kwargs["command"]()
+        self.assertEqual(events, ["hangup"])
+
+    def test_dial_popup_shows_terminal_status_and_can_be_closed(self):
+        events = []
+        buttons = []
+        window = TimerWindow(events)
+
+        class FakeButton(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                buttons.append(self)
+
+            def config(self, *args, **kwargs):
+                self.kwargs.update(kwargs)
+
+        class FakeLabel(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.configured = []
+
+            def config(self, *args, **kwargs):
+                self.configured.append(kwargs)
+
+        with patch("sms_ui.call_popup.tk.Toplevel", return_value=window), \
+                patch("sms_ui.call_popup.ttk.Frame", FakeWidget), \
+                patch("sms_ui.call_popup.tk.Label", FakeLabel), \
+                patch("sms_ui.call_popup.ttk.Button", FakeButton):
+            open_dial_call_popup(
+                object(),
+                "15923240141",
+                lambda *_args: None,
+                lambda: events.append("hangup"),
+                lambda: events.append("closed"),
+            )
+            window._call_popup_mark_ended("📞 对方已挂断")
+
+        events.clear()
+        self.assertEqual(buttons[0].kwargs["text"], "关闭")
+        self.assertEqual(buttons[0].kwargs["state"], "normal")
+        self.assertIn("command", buttons[0].kwargs)
+        buttons[0].kwargs["command"]()
+        self.assertEqual(events, ["closed"])
+
     def test_popup_is_centered_while_hidden_before_it_is_shown(self):
         events = []
         parent = object()

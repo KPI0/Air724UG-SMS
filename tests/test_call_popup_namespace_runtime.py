@@ -8,9 +8,13 @@ from sms_ui.call_popup_namespace_runtime import (
     close_phone_popups_namespace_runtime,
     finish_incoming_call_session_namespace_runtime,
     get_serial_call_state_namespace_runtime,
+    mark_call_popup_connected_namespace_runtime,
+    mark_dial_popup_connected_namespace_runtime,
+    finish_dial_popup_namespace_runtime,
     mark_incoming_call_handled_namespace_runtime,
     reset_incoming_call_session_namespace_runtime,
     set_call_popup_namespace_runtime,
+    set_dial_popup_namespace_runtime,
     set_missed_call_popup_namespace_runtime,
     set_serial_call_state_namespace_runtime,
     show_call_popup_namespace_runtime,
@@ -30,6 +34,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         return {
             "root": "root",
             "current_call_popup": "popup",
+            "current_dial_popup": None,
             "current_missed_call_popup": "missed_popup",
             "INCOMING_CALL_SESSION": tracker,
             "CALL_POPUP_ENABLED": True,
@@ -56,6 +61,56 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(namespace["current_call_popup"], "next")
 
+    def test_set_dial_popup_namespace_runtime_updates_window(self):
+        namespace = self.base_namespace()
+
+        result = set_dial_popup_namespace_runtime(namespace, "dial_popup")
+
+        self.assertIsNone(result)
+        self.assertEqual(namespace["current_dial_popup"], "dial_popup")
+
+    def test_mark_dial_popup_connected_runs_marker_on_ui_thread(self):
+        namespace = self.base_namespace()
+        calls = []
+        popup = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+        )
+        namespace["current_dial_popup"] = popup
+
+        result = mark_dial_popup_connected_namespace_runtime(namespace)
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["connected"])
+
+    def test_mark_call_popup_connected_runs_marker_on_ui_thread(self):
+        namespace = self.base_namespace()
+        calls = []
+        popup = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+        )
+        namespace["current_call_popup"] = popup
+
+        result = mark_call_popup_connected_namespace_runtime(namespace)
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["connected"])
+
+    def test_finish_dial_popup_runs_terminal_marker_on_ui_thread(self):
+        namespace = self.base_namespace()
+        calls = []
+        popup = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_mark_ended=lambda message: calls.append(message),
+        )
+        namespace["current_dial_popup"] = popup
+
+        result = finish_dial_popup_namespace_runtime(namespace, "📞 对方已挂断")
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["📞 对方已挂断"])
+
     def test_close_call_popup_namespace_runtime_forwards_state_callbacks(self):
         namespace = self.base_namespace()
         calls = []
@@ -72,6 +127,22 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         self.assertIsNone(namespace["current_call_popup"])
         self.assertEqual(forwarded["ui_post"], "post")
         self.assertEqual(forwarded["log_error"]("close log"), ("log", "close log"))
+
+    def test_close_call_popup_namespace_runtime_also_closes_dial_popup(self):
+        namespace = self.base_namespace()
+        namespace["current_dial_popup"] = "dial_popup"
+        calls = []
+
+        result = close_call_popup_namespace_runtime(
+            namespace,
+            close_app_runtime=lambda **kwargs: calls.append(kwargs) or "closed",
+        )
+
+        self.assertEqual(result, "closed")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["get_popup"](), "dial_popup")
+        calls[1]["set_popup"](None)
+        self.assertIsNone(namespace["current_dial_popup"])
 
     def test_close_missed_call_popup_namespace_runtime_forwards_state_callbacks(self):
         namespace = self.base_namespace()

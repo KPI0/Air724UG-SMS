@@ -1,3 +1,5 @@
+import inspect
+
 from sms_ui.serial_debug_window import open_serial_debug_window_dialog
 
 
@@ -17,6 +19,8 @@ def open_serial_debug_window_runtime(
     center_window,
     window_title="串口调试",
     log_error=None,
+    get_dial_popup=lambda: None,
+    set_dial_popup=lambda _window: None,
     open_dialog=open_serial_debug_window_dialog,
 ):
     current_window, current_text = get_state("window_refs")
@@ -43,6 +47,20 @@ def open_serial_debug_window_runtime(
     kwargs = {"window_title": window_title}
     if log_error is not None:
         kwargs["log_error"] = log_error
+    try:
+        dialog_parameters = inspect.signature(open_dialog).parameters.values()
+        supports_optional_popup_callbacks = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in dialog_parameters
+        ) or all(
+            name in inspect.signature(open_dialog).parameters
+            for name in ("get_dial_popup", "set_dial_popup")
+        )
+    except (TypeError, ValueError):
+        supports_optional_popup_callbacks = True
+    if supports_optional_popup_callbacks:
+        kwargs["get_dial_popup"] = get_dial_popup
+        kwargs["set_dial_popup"] = set_dial_popup
     window, text = open_dialog(*args, **kwargs)
     set_state("window_refs", window, text)
     return window, text

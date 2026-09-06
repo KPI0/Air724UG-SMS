@@ -13,6 +13,8 @@ from sms_core.serial_sender import (
     send_command_sequence_async,
     send_text_sms_pdu_async,
 )
+from sms_ui.call_popup import open_dial_call_popup
+from sms_ui.call_popup_runtime import close_call_popup_runtime, popup_exists
 from sms_ui.serial_debug_panel import (
     SerialDebugFinder,
     create_serial_debug_body,
@@ -48,6 +50,8 @@ def open_serial_debug_window_dialog(
     center_window,
     window_title="串口调试",
     log_error=None,
+    get_dial_popup=lambda: None,
+    set_dial_popup=lambda _window: None,
 ):
     if current_window is not None and current_window.winfo_exists():
         current_window.deiconify()
@@ -197,21 +201,52 @@ def open_serial_debug_window_dialog(
         ),
     )
 
+    def close_dial_popup():
+        popup = get_dial_popup()
+        if log_error is None:
+            return close_call_popup_runtime(popup, set_dial_popup)
+        return close_call_popup_runtime(popup, set_dial_popup, log_error=log_error)
+
+    def send_dial_hangup():
+        send_command_async(
+            serial_lock,
+            get_serial_obj,
+            HANGUP_COMMAND,
+            push_debug=push_serial_debug,
+            log_error=log_error,
+        )
+
     def dial_phone(phone):
         phone = normalize_dial_number(phone)
         set_current_dial_num(phone)
         port_ui(f"📞 主动呼叫：拨打号码 {phone}", "normal")
         set_status(f"📞 呼叫中：{phone}", "blue")
         quick_send(build_dial_command(phone))
+        if popup_exists(get_dial_popup(), log_error=log_error):
+            close_dial_popup()
+        set_dial_popup(
+            open_dial_call_popup(
+                win,
+                phone,
+                center_window,
+                close_active_dial_call,
+                close_dial_popup,
+            )
+        )
 
     def hangup_dialed_phone():
         port_ui("📞 已发送挂机指令 (ATH)", "normal")
         set_status(format_connected_status(get_port()), "green")
-        quick_send(HANGUP_COMMAND)
+        set_current_dial_num("")
+        send_dial_hangup()
+        close_dial_popup()
 
     def close_active_dial_call():
+        port_ui("📞 已发送挂机指令 (ATH)", "normal")
         set_status(format_connected_status(get_port()), "green")
-        quick_send(HANGUP_COMMAND)
+        set_current_dial_num("")
+        send_dial_hangup()
+        close_dial_popup()
 
     create_serial_debug_quick_actions(
         win,
@@ -249,6 +284,8 @@ def open_serial_debug_window_dialog(
     win.bind("<Control-F>", lambda _e: (finder.open(), "break"))
 
     def on_close():
+        if popup_exists(get_dial_popup(), log_error=log_error):
+            close_active_dial_call()
         close_serial_debug_runtime(
             win,
             serial_text,

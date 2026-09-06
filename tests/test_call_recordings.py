@@ -306,6 +306,55 @@ class CloudCallRecordingUploaderTests(unittest.IsolatedAsyncioTestCase):
         metadata = json.loads(Path(self.recording.metadata_path).read_text(encoding="utf-8"))
         self.assertEqual(metadata["upload_status"], "uploaded")
 
+    async def test_delayed_ack_after_poll_timeout_still_completes_upload(self):
+        uploader = CloudCallRecordingUploader(self.repository)
+        ws = object()
+        delayed_tasks = []
+
+        async def send_payload(_ws, payload):
+            if payload["type"] == "call_recording_offer":
+                async def send_delayed_offer_ack():
+                    await asyncio.sleep(0.65)
+                    uploader.handle_server_message(
+                        {
+                            "type": "call_recording_offer_ack",
+                            "ok": True,
+                            "accepted": True,
+                            "recording_id": payload["recording_id"],
+                        },
+                        websocket=ws,
+                    )
+
+                delayed_tasks.append(asyncio.create_task(send_delayed_offer_ack()))
+            elif payload["type"] == "call_recording_end":
+                async def send_delayed_result():
+                    await asyncio.sleep(0.65)
+                    uploader.handle_server_message(
+                        {
+                            "type": "call_recording_result",
+                            "ok": True,
+                            "recording_id": payload["recording_id"],
+                        },
+                        websocket=ws,
+                    )
+
+                delayed_tasks.append(asyncio.create_task(send_delayed_result()))
+            return True
+
+        try:
+            ok, reason = await uploader._send_recording(
+                self.recording,
+                ws,
+                send_payload,
+                lambda: {"imei": IMEI_A},
+                is_current=lambda current_ws: current_ws is ws,
+            )
+        finally:
+            if delayed_tasks:
+                await asyncio.gather(*delayed_tasks)
+
+        self.assertTrue(ok, reason)
+
     async def test_new_connection_schedule_runs_after_old_upload_finishes(self):
         uploader = CloudCallRecordingUploader(self.repository)
         loop = asyncio.get_running_loop()
@@ -398,6 +447,110 @@ class CloudCallRecordingUploaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_imei_mismatch")
         self.assertEqual(sent, [])
+
+    async def test_late_response_from_old_connection_does_not_complete_new_waiter(self):
+        uploader = CloudCallRecordingUploader(self.repository)
+        old_ws = object()
+        new_ws = object()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        uploader._offer_waiters[self.recording.recording_id] = (new_ws, future)
+
+        self.assertTrue(
+            uploader.handle_server_message(
+                {
+                    "type": "call_recording_offer_ack",
+                    "ok": True,
+                    "accepted": True,
+                    "recording_id": self.recording.recording_id,
+                },
+                websocket=old_ws,
+            )
+        )
+        self.assertFalse(future.done())
+        self.assertIn(self.recording.recording_id, uploader._offer_waiters)
+
+        uploader.handle_server_message(
+            {
+                "type": "call_recording_offer_ack",
+                "ok": True,
+                "accepted": True,
+                "recording_id": self.recording.recording_id,
+            },
+            websocket=new_ws,
+        )
+        self.assertTrue(future.done())
+
+    async def test_unexpected_upload_exception_returns_recording_to_pending(self):
+        errors = []
+        uploader = CloudCallRecordingUploader(
+            self.repository,
+            log_error=errors.append,
+        )
+
+        async def send_payload(_ws, _payload):
+            raise RuntimeError("transport exploded")
+
+        await uploader._drain(
+            object(),
+            send_payload,
+            lambda: {"imei": IMEI_A},
+            lambda _ws: True,
+            lambda: True,
+        )
+
+        metadata = json.loads(
+            Path(self.recording.metadata_path).read_text(encoding="utf-8")
+        )
+        self.assertEqual(metadata["upload_status"], "pending")
+        self.assertEqual(metadata["upload_error"], "unexpected_upload_error")
+        self.assertTrue(any("transport exploded" in item for item in errors))
+
+    async def test_uploaded_state_exception_returns_recording_to_pending(self):
+        errors = []
+        uploader = CloudCallRecordingUploader(
+            self.repository,
+            log_error=errors.append,
+        )
+
+        async def send_payload(_ws, payload):
+            if payload["type"] == "call_recording_offer":
+                uploader.handle_server_message(
+                    {
+                        "type": "call_recording_offer_ack",
+                        "ok": True,
+                        "accepted": True,
+                        "recording_id": payload["recording_id"],
+                    }
+                )
+            elif payload["type"] == "call_recording_end":
+                uploader.handle_server_message(
+                    {
+                        "type": "call_recording_result",
+                        "ok": True,
+                        "recording_id": payload["recording_id"],
+                    }
+                )
+            return True
+
+        def fail_mark_uploaded(_recording):
+            raise OSError("sidecar is temporarily unavailable")
+
+        self.repository.mark_uploaded = fail_mark_uploaded
+        await uploader._drain(
+            object(),
+            send_payload,
+            lambda: {"imei": IMEI_A},
+            lambda _ws: True,
+            lambda: True,
+        )
+
+        metadata = json.loads(
+            Path(self.recording.metadata_path).read_text(encoding="utf-8")
+        )
+        self.assertEqual(metadata["upload_status"], "pending")
+        self.assertEqual(metadata["upload_error"], "upload_state_persist_error")
+        self.assertTrue(any("sidecar is temporarily unavailable" in item for item in errors))
 
 
 if __name__ == "__main__":

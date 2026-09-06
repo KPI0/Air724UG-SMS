@@ -27,11 +27,11 @@ class CallEffectTests(unittest.TestCase):
         )
 
         self.assertTrue(ok)
-        self.assertIn(("ui", "📞 已发送接听指令 (ATA)", "normal"), calls)
-        self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
-        self.assertIn(("timeout", -1.0), calls)
-        self.assertIn(("post", None), calls)
-        self.assertIn(("connected",), calls)
+        self.assertIn(("ui", "📞 已发送接听指令 (ATA)，等待对方接通", "normal"), calls)
+        self.assertIn(("status", "📞 正在接听：10086", "blue"), calls)
+        self.assertNotIn(("timeout", -1.0), calls)
+        self.assertNotIn(("post", None), calls)
+        self.assertNotIn(("connected",), calls)
         self.assertNotIn(("restore",), calls)
 
     def test_apply_call_answer_result_failure(self):
@@ -237,6 +237,34 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("ui", "📞 对方已接听：10086", "normal"), calls)
         self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
 
+    def test_apply_call_decision_finishes_outgoing_call_without_incoming_cleanup(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            call_ended=True,
+            hangup_notify=True,
+            outgoing_call_ended=True,
+            end_message="📞 对方已挂断",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *args, **kwargs: None,
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda number: None,
+            lambda: calls.append(("close",)),
+            finish_incoming_call=lambda: calls.append(("finish_incoming",)),
+            finish_dial_call=lambda message: calls.append(("finish_dial", message)),
+        )
+
+        self.assertIn(("ui", "📞 对方已挂断", "normal"), calls)
+        self.assertIn(("finish_dial", "📞 对方已挂断"), calls)
+        self.assertNotIn(("close",), calls)
+        self.assertNotIn(("finish_incoming",), calls)
+
     def test_duplicate_incoming_session_does_not_repeat_push_or_popup(self):
         calls = []
         decision = CallLineDecision(
@@ -303,6 +331,45 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("close",), calls)
         self.assertIn(("missed", missed_call), calls)
         self.assertNotIn(("ui", "📞 语音通话已结束", "normal"), calls)
+
+    def test_call_state_updates_are_sent_for_incoming_connected_and_terminal(self):
+        calls = []
+
+        apply_call_decision(
+            CallLineDecision(
+                state=CallState(),
+                incoming_connected_number="10086",
+            ),
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda: None,
+            send_cloud_call_state=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        apply_call_decision(
+            CallLineDecision(
+                state=CallState(),
+                call_ended=True,
+                end_direction="incoming",
+                end_number="10086",
+                end_phase="no_answer",
+                end_reason="NO ANSWER",
+            ),
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda: None,
+            send_cloud_call_state=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        self.assertEqual(calls[0], (("10086", "connected", ""), {"direction": "incoming"}))
+        self.assertEqual(calls[1], (("10086", "no_answer", "NO ANSWER"), {"direction": "incoming"}))
 
     def test_different_incoming_caller_replaces_popup_and_reports_previous_missed(self):
         calls = []

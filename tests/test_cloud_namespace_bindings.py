@@ -34,6 +34,7 @@ class CloudNamespaceBindingsTests(unittest.TestCase):
             "save_cloud_control_setting",
             "_cloud_send_payload",
             "_cloud_send_call_event",
+            "_cloud_send_call_state",
             "_cloud_reply",
             "_handle_cloud_message",
             "start_cloud_control",

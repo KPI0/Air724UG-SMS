@@ -6,6 +6,7 @@ from datetime import datetime
 from sms_core.cloud_message_runtime import (
     handle_cloud_message_runtime,
     send_cloud_call_event_runtime,
+    send_cloud_call_state_runtime,
     send_cloud_serial_command_runtime,
     send_cloud_sms_event_runtime,
 )
@@ -207,9 +208,14 @@ def send_cloud_call_recording_status_namespace_runtime(namespace, status, metada
     )
 
 
-def handle_cloud_call_recording_message_namespace_runtime(namespace, data):
+def handle_cloud_call_recording_message_namespace_runtime(
+    namespace, data, websocket=None
+):
     uploader = namespace.get("CALL_RECORDING_UPLOADER")
-    return bool(uploader is not None and uploader.handle_server_message(data))
+    return bool(
+        uploader is not None
+        and uploader.handle_server_message(data, websocket=websocket)
+    )
 
 
 def send_cloud_sms_event_namespace_runtime(
@@ -259,25 +265,24 @@ def send_cloud_call_event_namespace_runtime(
     *,
     blocked=False,
     block_reason="",
+    call_session_id="",
     send_runtime=send_cloud_call_event_runtime,
 ):
-    return send_runtime(
-        caller,
-        message,
-        blocked=blocked,
-        block_reason=block_reason,
-        authorized=namespace["cloud_device_authorized"],
-        get_loop=lambda: namespace["cloud_ws_loop"],
-        get_ws=lambda: namespace["cloud_ws_conn"],
-        is_connected=lambda: namespace["cloud_connected"],
-        runtime_imei=namespace["_cloud_runtime_imei"],
-        build_payload=namespace["_cloud_build_call_event_payload"],
-        send_payload=namespace["_cloud_send_payload"],
-        timestamp=namespace["_cloud_now_ts"],
-        identity_payload=namespace["_cloud_identity_payload"],
-        run_coroutine_threadsafe=namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
-        enabled=namespace.get("CLOUD_CONTROL_ENABLED", True),
-        enqueue_payload=lambda payload, loop, ws, can_send: enqueue_cloud_sms_event_runtime(
+    kwargs = {
+        "blocked": blocked,
+        "block_reason": block_reason,
+        "authorized": namespace["cloud_device_authorized"],
+        "get_loop": lambda: namespace["cloud_ws_loop"],
+        "get_ws": lambda: namespace["cloud_ws_conn"],
+        "is_connected": lambda: namespace["cloud_connected"],
+        "runtime_imei": namespace["_cloud_runtime_imei"],
+        "build_payload": namespace["_cloud_build_call_event_payload"],
+        "send_payload": namespace["_cloud_send_payload"],
+        "timestamp": namespace["_cloud_now_ts"],
+        "identity_payload": namespace["_cloud_identity_payload"],
+        "run_coroutine_threadsafe": namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        "enabled": namespace.get("CLOUD_CONTROL_ENABLED", True),
+        "enqueue_payload": lambda payload, loop, ws, can_send: enqueue_cloud_sms_event_runtime(
             payload,
             event_queue=namespace["CLOUD_SMS_EVENT_Q"],
             can_send=can_send,
@@ -291,7 +296,43 @@ def send_cloud_call_event_namespace_runtime(
             state=namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"),
             is_enabled=lambda: namespace.get("CLOUD_CONTROL_ENABLED", True),
         ),
+    }
+    if call_session_id:
+        kwargs["call_session_id"] = str(call_session_id)
+    return send_runtime(
+        caller,
+        message,
+        **kwargs,
     )
+
+
+def send_cloud_call_state_namespace_runtime(
+    namespace,
+    phone,
+    phase,
+    reason="",
+    *,
+    direction="incoming",
+    call_session_id="",
+    send_runtime=send_cloud_call_state_runtime,
+):
+    kwargs = {
+        "direction": direction,
+        "authorized": namespace["cloud_device_authorized"],
+        "get_loop": lambda: namespace["cloud_ws_loop"],
+        "get_ws": lambda: namespace["cloud_ws_conn"],
+        "is_connected": lambda: namespace["cloud_connected"],
+        "runtime_imei": namespace["_cloud_runtime_imei"],
+        "build_payload": namespace["_cloud_build_call_state_payload"],
+        "send_payload": namespace["_cloud_send_payload"],
+        "timestamp": namespace["_cloud_now_ts"],
+        "identity_payload": namespace["_cloud_identity_payload"],
+        "run_coroutine_threadsafe": namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        "enabled": namespace.get("CLOUD_CONTROL_ENABLED", True),
+    }
+    if call_session_id:
+        kwargs["call_session_id"] = str(call_session_id)
+    return send_runtime(phone, phase, reason, **kwargs)
 
 
 def send_cloud_serial_command_namespace_runtime(
@@ -348,6 +389,7 @@ def send_cloud_serial_command_namespace_runtime(
             build_own_number_commands(phone),
             response_coordinator=command_coordinator,
         ),
+        set_current_dial_num=lambda value: namespace.__setitem__("current_dial_num", value),
     )
     return result
 
@@ -422,6 +464,14 @@ async def handle_cloud_message_namespace_runtime(
     handle_runtime=handle_cloud_message_runtime,
 ):
     loop = asyncio.get_running_loop()
+    recording_handler = namespace.get("_handle_cloud_call_recording_message")
+    if callable(recording_handler):
+        handle_recording_message = lambda data: recording_handler(
+            data,
+            websocket=ws,
+        )
+    else:
+        handle_recording_message = lambda _data: False
 
     def set_authorized(value):
         authorized = bool(value)
@@ -455,8 +505,5 @@ async def handle_cloud_message_namespace_runtime(
         ),
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],
-        handle_call_recording_message=namespace.get(
-            "_handle_cloud_call_recording_message",
-            lambda _data: False,
-        ),
+        handle_call_recording_message=handle_recording_message,
     )

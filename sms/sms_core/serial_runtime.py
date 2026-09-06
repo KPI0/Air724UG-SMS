@@ -3,7 +3,12 @@ import codecs
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
-from sms_core.call_events import CallState, handle_call_line, ring_timeout_expired
+from sms_core.call_events import (
+    CallState,
+    handle_call_line,
+    line_confirms_call_presence,
+    ring_timeout_expired,
+)
 from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_line_effects import apply_serial_line_effects, push_serial_debug_insights
 from sms_core.serial_sms import (
@@ -85,6 +90,7 @@ class SerialRuntimeCallbacks:
     send_call_hangup: object
     show_call_popup: object
     send_cloud_call_event: object = lambda *_args, **_kwargs: None
+    send_cloud_call_state: object = lambda *_args, **_kwargs: None
     set_local_number: object = lambda *_args: None
     observe_sms_send_line: object = lambda *_args: None
     start_incoming_call: object = lambda _caller_num: True
@@ -92,6 +98,9 @@ class SerialRuntimeCallbacks:
     reset_incoming_call: object = lambda: None
     show_missed_call_popup: object = lambda _missed_call: None
     consume_call_recording_line: object = lambda _line: False
+    mark_dial_connected: object = lambda: None
+    mark_call_connected: object = lambda: None
+    finish_dial_call: object = lambda _message="": None
 
 
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
@@ -195,9 +204,23 @@ def handle_serial_runtime_line(
     except Exception:
         return SerialRuntimeResult(continue_read=True)
 
-    if ring_timeout_expired(state.call_state.ring_timeout_target, now):
+    if (
+        ring_timeout_expired(state.call_state.ring_timeout_target, now)
+        and not line_confirms_call_presence(line)
+    ):
+        timed_out_number = state.call_state.last_clip_num
+        timed_out_session_id = state.call_state.call_session_id
         state.call_state.ring_timeout_target = 0.0
         state.call_state.last_clip_num = ""
+        state.call_state.call_session_id = ""
+        if timed_out_number:
+            try:
+                kwargs = {"direction": "incoming"}
+                if timed_out_session_id:
+                    kwargs["call_session_id"] = timed_out_session_id
+                callbacks.send_cloud_call_state(timed_out_number, "no_answer", "RING TIMEOUT", **kwargs)
+            except Exception:
+                pass
         apply_ring_timeout_expired(
             current_port,
             callbacks.port_ui,
@@ -271,9 +294,22 @@ def handle_serial_runtime_line(
         callbacks.finish_incoming_call,
         callbacks.show_missed_call_popup,
         callbacks.send_cloud_call_event,
+        callbacks.send_cloud_call_state,
+        callbacks.finish_dial_call,
     )
     if call_effect.stop_processing:
         return SerialRuntimeResult(continue_read=True)
+
+    if call_decision.connected_number:
+        try:
+            callbacks.mark_dial_connected()
+        except Exception:
+            pass
+    if call_decision.incoming_connected_number:
+        try:
+            callbacks.mark_call_connected()
+        except Exception:
+            pass
 
     push_serial_debug_insights(line, callbacks.push_serial_debug)
 

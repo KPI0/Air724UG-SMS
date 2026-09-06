@@ -201,6 +201,7 @@ def send_cloud_serial_command_runtime(
     allow_sensitive_commands=False,
     send_sms_transaction=None,
     set_own_number_transaction=None,
+    set_current_dial_num=None,
 ):
     raw_command = str(command or "")
     batch_error = cloud_command_batch_error(raw_command)
@@ -259,10 +260,27 @@ def send_cloud_serial_command_runtime(
             log("云端本机号码修改事务执行成功")
             return True, "本机号码修改成功"
 
+        # Remote ATD commands do not pass through the local serial-debug
+        # dialog, so the reader would otherwise have no dial number to bind
+        # CONNECT/NO CARRIER and call_state to. Register it only after input
+        # validation and roll it back if the modem write fails.
+        # Only a numeric ATD starts a voice-call session.  MMI/USSD forms such
+        # as ATD*100# and ATD**21...# are supplementary-service commands; they
+        # must not populate the dial context or let a later modem URC close a
+        # real call popup.
+        dial_match = re.fullmatch(r"ATD(\+?\d+);?", cmd, re.IGNORECASE)
+        if dial_match and callable(set_current_dial_num):
+            set_current_dial_num(dial_match.group(1))
+
         with serial_lock:
             serial_obj = get_serial()
         result = write_command_result(serial_obj, cmd)
         if not result.ok:
+            # This helper only reports the synchronous serial write result;
+            # an unsuccessful write is not an accepted ATD and must never
+            # leave a stale number that can capture a later incoming call.
+            if dial_match and callable(set_current_dial_num):
+                set_current_dial_num("")
             if sensitive_reason:
                 return False, "敏感指令执行失败（指令内容已隐藏，Modem 未确认成功）"
             return False, result.error
@@ -442,6 +460,7 @@ def send_cloud_call_event_runtime(
     *,
     blocked=False,
     block_reason="",
+    call_session_id="",
     authorized,
     get_loop,
     get_ws,
@@ -479,13 +498,18 @@ def send_cloud_call_event_runtime(
         if not runtime_imei():
             return "missing_imei"
         try:
+            payload_kwargs = {
+                "blocked": blocked,
+                "block_reason": block_reason,
+            }
+            if call_session_id:
+                payload_kwargs["call_session_id"] = str(call_session_id)
             payload = build_payload(
                 caller_text,
                 message_text,
                 timestamp(),
                 identity_payload(),
-                blocked=blocked,
-                block_reason=block_reason,
+                **payload_kwargs,
             )
         except TypeError:
             # Keep compatibility with injected/legacy payload builders that
@@ -500,6 +524,74 @@ def send_cloud_call_event_runtime(
             return "empty_payload"
         if enqueue_payload is not None:
             return enqueue_payload(payload, loop, ws, can_send)
+        send_coro = send_payload(ws, payload)
+        run_coroutine_threadsafe(send_coro, loop)
+        return "scheduled"
+    except Exception:
+        close = getattr(send_coro, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+        return "error"
+
+
+def send_cloud_call_state_runtime(
+    phone,
+    phase,
+    reason="",
+    *,
+    direction="incoming",
+    call_session_id="",
+    authorized,
+    get_loop,
+    get_ws,
+    is_connected,
+    runtime_imei,
+    build_payload,
+    send_payload,
+    timestamp,
+    identity_payload,
+    run_coroutine_threadsafe,
+    enabled=True,
+):
+    if not enabled:
+        return "disabled"
+    if not authorized:
+        return "unauthorized"
+    send_coro = None
+    try:
+        loop = get_loop()
+        ws = get_ws()
+        if loop is None or not loop.is_running() or ws is None or not is_connected():
+            return "not_connected"
+        if not runtime_imei():
+            return "missing_imei"
+        payload_kwargs = {"direction": direction, "reason": reason}
+        if call_session_id:
+            payload_kwargs["call_session_id"] = str(call_session_id)
+        try:
+            payload = build_payload(
+                phone,
+                phase,
+                timestamp(),
+                identity_payload(),
+                **payload_kwargs,
+            )
+        except TypeError:
+            # Keep compatibility with injected/legacy payload builders that
+            # predate the optional call-generation metadata.
+            payload_kwargs.pop("call_session_id", None)
+            payload = build_payload(
+                phone,
+                phase,
+                timestamp(),
+                identity_payload(),
+                **payload_kwargs,
+            )
+        if payload is None:
+            return "empty_payload"
         send_coro = send_payload(ws, payload)
         run_coroutine_threadsafe(send_coro, loop)
         return "scheduled"

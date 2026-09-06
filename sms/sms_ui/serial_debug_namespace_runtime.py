@@ -6,6 +6,8 @@ from sms_ui.serial_debug_app_runtime import open_serial_debug_window_runtime
 def get_serial_debug_state_namespace_runtime(namespace, name):
     if name == "window_refs":
         return namespace["serial_debug_win"], namespace["serial_debug_text"]
+    if name == "dial_popup":
+        return namespace.get("current_dial_popup")
     if name == "debug_enabled":
         return namespace["SERIAL_DEBUG_ENABLED"]
     if name == "drop_count":
@@ -30,6 +32,10 @@ def set_serial_debug_state_namespace_runtime(namespace, name, *values):
             _require_values(2, values),
             namespace.__setitem__("serial_debug_win", values[0]),
             namespace.__setitem__("serial_debug_text", values[1]),
+        ),
+        "dial_popup": lambda: (
+            _require_values(1, values),
+            namespace.__setitem__("current_dial_popup", values[0]),
         ),
         "clear_window_refs": lambda: (
             namespace.__setitem__("serial_debug_win", None),
@@ -76,6 +82,12 @@ def open_serial_debug_window_namespace_runtime(
         center_window=namespace["center_window"],
         window_title=namespace.get("SERIAL_DEBUG_WINDOW_TITLE", "串口调试"),
         log_error=namespace.get("log_file_only"),
+        get_dial_popup=lambda: namespace.get("current_dial_popup"),
+        set_dial_popup=lambda window: set_serial_debug_state_namespace_runtime(
+            namespace,
+            "dial_popup",
+            window,
+        ),
     )
 
 

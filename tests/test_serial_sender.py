@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from sms_core.serial_sender import (
+    AtCommandResponseWaiter,
     AtCommandResponseCoordinator,
     SerialCommandResult,
     SmsPduSendCoordinator,
@@ -129,6 +130,18 @@ class SerialSenderResultTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.error, "write failed")
+
+    def test_at_response_waiter_recognizes_terminal_voice_dial_response(self):
+        waiter = AtCommandResponseWaiter("ATD10086;")
+        waiter.observe_line("NO CARRIER")
+        response = waiter.wait(0)
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error, "NO CARRIER")
+
+    def test_at_response_waiter_does_not_treat_call_terminal_as_result_for_other_command(self):
+        waiter = AtCommandResponseWaiter("AT+CSQ")
+        waiter.observe_line("NO CARRIER")
+        self.assertFalse(waiter.done())
 
     def test_send_command_with_result_async_invokes_callback(self):
         serial_obj = FakeSerial()

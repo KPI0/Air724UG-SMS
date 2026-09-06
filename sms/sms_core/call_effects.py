@@ -15,6 +15,14 @@ def enqueue_call_push(enqueue_push, message, variables):
         return enqueue_push(message, event_type="call")
 
 
+def _send_call_state(send_cloud_call_state, phone, phase, reason, direction, call_session_id=""):
+    """Send a transient call state while keeping legacy callback compatibility."""
+    kwargs = {"direction": direction}
+    if call_session_id:
+        kwargs["call_session_id"] = str(call_session_id)
+    return send_cloud_call_state(phone, phase, reason, **kwargs)
+
+
 def _show_missed_call(missed_call, port_ui, show_missed_call_popup):
     if missed_call is None:
         return False
@@ -54,10 +62,15 @@ def apply_call_answer_result(
         ui_post(restore_answer)
         return False
 
-    port_ui("📞 已发送接听指令 (ATA)", "normal")
-    set_status(f"📞 通话中：{caller_num}", "blue")
-    set_ring_timeout(-1.0)
-    ui_post(mark_connected)
+    # ATA only confirms that the modem accepted the answer command.  The
+    # remote party may still be ringing, so do not mark the call connected or
+    # start its duration timer until a real CALL=1/CLCC/CONNECT indication is
+    # observed by the serial call state machine.
+    port_ui("📞 已发送接听指令 (ATA)，等待对方接通", "normal")
+    set_status(f"📞 正在接听：{caller_num}", "blue")
+    # Keep the existing ringing deadline while the modem is still negotiating
+    # the answer. The call state machine switches it to the connected sentinel
+    # only after CALL=1/CLCC/CONNECT is observed.
     return True
 
 
@@ -91,6 +104,8 @@ def apply_call_decision(
     finish_incoming_call=lambda: None,
     show_missed_call_popup=lambda _missed_call: None,
     send_cloud_call_event=lambda *_args, **_kwargs: None,
+    send_cloud_call_state=lambda *_args, **_kwargs: None,
+    finish_dial_call=lambda _message="": None,
 ):
     incoming_started = True
     incoming_replaced = False
@@ -117,12 +132,13 @@ def apply_call_decision(
             },
         )
         try:
-            send_cloud_call_event(
-                caller,
-                decision.push_message,
-                blocked=bool(decision.blocked_number),
-                block_reason=decision.block_reason,
-            )
+            event_kwargs = {
+                "blocked": bool(decision.blocked_number),
+                "block_reason": decision.block_reason,
+            }
+            if getattr(decision, "call_session_id", ""):
+                event_kwargs["call_session_id"] = decision.call_session_id
+            send_cloud_call_event(caller, decision.push_message, **event_kwargs)
         except Exception:
             pass
 
@@ -142,15 +158,44 @@ def apply_call_decision(
         show_call_popup(decision.show_popup_number)
 
     if decision.call_ended or decision.hangup_notify:
+        if decision.call_ended and decision.end_direction:
+            try:
+                _send_call_state(
+                    send_cloud_call_state,
+                    decision.end_number,
+                    decision.end_phase or "ended",
+                    decision.end_reason,
+                    decision.end_direction,
+                    getattr(decision, "call_session_id", ""),
+                )
+            except Exception:
+                pass
+        end_message = getattr(decision, "end_message", "") or "📞 语音通话已结束"
         if decision.hangup_notify:
-            port_ui("📞 语音通话已结束", "normal")
+            port_ui(end_message, "normal")
         set_status(format_connected_status(current_port), "green")
-        missed_call = finish_incoming_call()
-        close_call_popup()
-        _show_missed_call(missed_call, port_ui, show_missed_call_popup)
+        if getattr(decision, "outgoing_call_ended", False):
+            finish_dial_call(end_message)
+        else:
+            missed_call = finish_incoming_call()
+            close_call_popup()
+            _show_missed_call(missed_call, port_ui, show_missed_call_popup)
 
     if decision.connected_number:
         port_ui(f"📞 对方已接听：{decision.connected_number}", "normal")
         set_status(f"📞 通话中：{decision.connected_number}", "blue")
+
+    if decision.incoming_connected_number:
+        try:
+            _send_call_state(
+                send_cloud_call_state,
+                decision.incoming_connected_number,
+                "connected",
+                "",
+                "incoming",
+                getattr(decision, "call_session_id", ""),
+            )
+        except Exception:
+            pass
 
     return CallEffectResult(stop_processing=False)

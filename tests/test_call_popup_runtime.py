@@ -185,8 +185,10 @@ class CallPopupRuntimeTests(unittest.TestCase):
         self.assertEqual(opened["parent"], parent)
         self.assertEqual(opened["caller_num"], "10086")
         self.assertEqual(sent, [(serial_lock, serial_obj, "ATA"), (serial_lock, serial_obj, "ATH")])
-        self.assertEqual(ring_timeout, [-1.0])
-        self.assertEqual(posted, [mark_connected])
+        self.assertEqual(ring_timeout, [])
+        # ATA success only means the modem accepted the command.  The serial
+        # reader posts mark_connected after CALL=1/CLCC/CONNECT arrives.
+        self.assertEqual(posted, [])
         self.assertEqual(closed, ["closed", "closed", "closed"])
         self.assertEqual(handled, ["handled", "handled"])
         self.assertTrue(port_messages)

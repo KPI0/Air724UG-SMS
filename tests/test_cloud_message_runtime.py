@@ -11,6 +11,7 @@ from sms_core.cloud_message_runtime import (
     cloud_status_payload_runtime,
     handle_cloud_message_runtime,
     send_cloud_call_event_runtime,
+    send_cloud_call_state_runtime,
     send_cloud_register_runtime,
     send_cloud_session_revoke_runtime,
     send_cloud_serial_command_runtime,
@@ -512,6 +513,57 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "scheduled")
         self.assertEqual(calls[0][0][2]["caller"], "10086")
 
+    def test_send_cloud_call_state_runtime_is_transient_and_requires_live_auth(self):
+        calls = []
+        loop = FakeLoop(True)
+        ws = object()
+
+        result = send_cloud_call_state_runtime(
+            "10086",
+            "no_answer",
+            "NO ANSWER",
+            direction="incoming",
+            authorized=True,
+            get_loop=lambda: loop,
+            get_ws=lambda: ws,
+            is_connected=lambda: True,
+            runtime_imei=lambda: "imei",
+            build_payload=lambda phone, phase, ts, identity, **metadata: {
+                "type": "call_state",
+                "phone": phone,
+                "phase": phase,
+                "ts": ts,
+                **identity,
+                **metadata,
+            },
+            send_payload=lambda next_ws, payload: ("send", next_ws, payload),
+            timestamp=lambda: 123,
+            identity_payload=lambda: {"imei": "imei"},
+            run_coroutine_threadsafe=lambda coro, next_loop: calls.append((coro, next_loop)),
+        )
+
+        self.assertEqual(result, "scheduled")
+        self.assertEqual(calls[0][0][2]["type"], "call_state")
+        self.assertEqual(calls[0][0][2]["direction"], "incoming")
+        self.assertEqual(calls[0][0][2]["reason"], "NO ANSWER")
+        self.assertEqual(
+            send_cloud_call_state_runtime(
+                "10086",
+                "ended",
+                authorized=False,
+                get_loop=lambda: loop,
+                get_ws=lambda: ws,
+                is_connected=lambda: True,
+                runtime_imei=lambda: "imei",
+                build_payload=lambda *_args, **_kwargs: {},
+                send_payload=lambda *_args: None,
+                timestamp=lambda: 123,
+                identity_payload=lambda: {"imei": "imei"},
+                run_coroutine_threadsafe=lambda *_args: None,
+            ),
+            "unauthorized",
+        )
+
     def test_cloud_status_payload_runtime_reports_serial_connection(self):
         payload = cloud_status_payload_runtime(
             serial_lock=DummyLock(),
@@ -904,6 +956,87 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(info, "closed")
+
+    def test_remote_atd_registers_dial_context_for_serial_call_state(self):
+        calls = []
+        serial_obj = object()
+        ok, _info = send_cloud_serial_command_runtime(
+            "ATD10086;",
+            serial_lock=DummyLock(),
+            get_serial=lambda: serial_obj,
+            write_command_result=lambda next_serial, command: (
+                calls.append((next_serial, command)) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args: None,
+            allow_sensitive_commands={"call": True},
+            set_current_dial_num=lambda number: calls.append(("dial", number)),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls[0], ("dial", "10086"))
+        self.assertEqual(calls[1], (serial_obj, "ATD10086;"))
+
+    def test_remote_atd_terminal_response_clears_dial_context(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "ATD10086;",
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(False, "NO CARRIER"),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args: None,
+            allow_sensitive_commands={"call": True},
+            set_current_dial_num=lambda number: calls.append(number),
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(calls, ["10086", ""])
+
+    def test_remote_atd_write_failure_clears_dial_context(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "ATD10086;",
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(False, "write failed"),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args: None,
+            allow_sensitive_commands={"call": True},
+            set_current_dial_num=lambda number: calls.append(number),
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(calls, ["10086", ""])
+
+    def test_remote_mmi_and_ussd_atd_do_not_register_voice_dial_context(self):
+        registered = []
+        writes = []
+        common = {
+            "serial_lock": DummyLock(),
+            "get_serial": lambda: object(),
+            "write_command_result": lambda _serial, command: (
+                writes.append(command) or SimpleResult(True)
+            ),
+            "push_serial_debug": lambda *_args: None,
+            "log": lambda *_args, **_kwargs: None,
+            "set_current_dial_num": lambda number: registered.append(number),
+        }
+
+        ok, _ = send_cloud_serial_command_runtime(
+            "ATD*100#;",
+            allow_sensitive_commands={"ussd": True},
+            **common,
+        )
+        self.assertTrue(ok)
+        ok, _ = send_cloud_serial_command_runtime(
+            "ATD**21*13800138000#;",
+            allow_sensitive_commands={"call_control": True},
+            **common,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(registered, [])
+        self.assertEqual(writes, ["ATD*100#;", "ATD**21*13800138000#;"])
 
     def test_send_cloud_serial_command_runtime_logs_readable_sms_summary(self):
         calls = []

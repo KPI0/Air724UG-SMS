@@ -87,6 +87,7 @@ from sms_app.version import APP_VERSION as CLIENT_VERSION
 from sms_core.cloud_auth import auth_match_result as _cloud_auth_match_result
 from sms_core.cloud_payloads import (
     build_call_event_payload as _cloud_build_call_event_payload,
+    build_call_state_payload as _cloud_build_call_state_payload,
     build_call_recording_status_payload as _cloud_build_call_recording_status_payload,
     build_channel_status_payload as _cloud_build_channel_status_payload,
     build_register_payload as _cloud_build_register_payload,
@@ -632,7 +633,7 @@ def _build_main_layout():
 
 
 def _install_cloud_and_serial_bindings():
-    global _last_play_time, current_call_popup, current_missed_call_popup
+    global _last_play_time, current_call_popup, current_dial_popup, current_missed_call_popup
     global INCOMING_CALL_SESSION, third_push_thread
 
     _last_play_time = 0.0
@@ -645,6 +646,7 @@ def _install_cloud_and_serial_bindings():
     globals()["consume_call_recording_line"] = CALL_RECORDING_RECEIVER.consume_line
     globals()["abort_call_recording_transfer"] = CALL_RECORDING_RECEIVER.abort
     current_call_popup = None
+    current_dial_popup = None
     current_missed_call_popup = None
     INCOMING_CALL_SESSION = IncomingCallSessionTracker()
     install_serial_namespace_bindings(globals())

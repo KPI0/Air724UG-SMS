@@ -133,6 +133,8 @@ def open_dial_dialog(parent, enabled_var, dial, hangup, close_active_call, cente
             return
         is_dialing = True
         dial(phone)
+        # Release the modal grab so the outbound-call status popup is interactive.
+        close_dialog_window()
 
     def submit_hangup():
         nonlocal is_dialing
@@ -148,6 +150,13 @@ def open_dial_dialog(parent, enabled_var, dial, hangup, close_active_call, cente
         if is_dialing and enabled_var.get():
             is_dialing = False
             close_active_call()
+        close_dialog_window()
+
+    def close_dialog_window():
+        try:
+            win.grab_release()
+        except tk.TclError:
+            pass
         win.destroy()
 
     buttons = ttk.Frame(frm)

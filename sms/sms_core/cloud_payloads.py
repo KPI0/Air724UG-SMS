@@ -206,12 +206,13 @@ def build_call_event_payload(
     *,
     blocked=False,
     block_reason="",
+    call_session_id="",
 ):
     caller_text = str(caller or "").strip()
     message_text = str(message or "").strip()
     if not caller_text and not message_text:
         return None
-    return {
+    payload = {
         "type": "call_event",
         "event_type": "call",
         "tag": "call",
@@ -226,6 +227,42 @@ def build_call_event_payload(
         "message": message_text or f"收到来电：来自 {caller_text or '未知号码'}",
         "raw": message_text or f"收到来电：来自 {caller_text or '未知号码'}",
     }
+    session_id = str(call_session_id or "").strip()
+    if session_id:
+        payload["call_session_id"] = session_id[:128]
+    return payload
+
+
+def build_call_state_payload(
+    phone,
+    phase,
+    timestamp,
+    identity,
+    time_text=None,
+    *,
+    direction="incoming",
+    reason="",
+    call_session_id="",
+):
+    direction_text = str(direction or "").strip().lower()
+    phase_text = str(phase or "").strip().lower()
+    if direction_text not in ("incoming", "outgoing") or not phase_text:
+        return None
+    payload = {
+        "type": "call_state",
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        **identity,
+        "state": direction_text,
+        "direction": direction_text,
+        "phase": phase_text,
+        "reason": str(reason or "").strip(),
+        "phone": str(phone or "").strip(),
+    }
+    session_id = str(call_session_id or "").strip()
+    if session_id:
+        payload["call_session_id"] = session_id[:128]
+    return payload
 
 
 def build_call_recording_status_payload(

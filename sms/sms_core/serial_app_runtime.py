@@ -28,6 +28,7 @@ def build_serial_runtime_callbacks(callbacks):
         enqueue_third_push=callbacks["enqueue_third_push"],
         send_cloud_sms_event=callbacks["send_cloud_sms_event"],
         send_cloud_call_event=callbacks.get("send_cloud_call_event", lambda *_args, **_kwargs: None),
+        send_cloud_call_state=callbacks.get("send_cloud_call_state", lambda *_args, **_kwargs: None),
         port_ui=callbacks["port_ui"],
         play_alert=callbacks["play_alert"],
         show_sms_popup=callbacks["show_sms_popup"],
@@ -54,6 +55,9 @@ def build_serial_runtime_callbacks(callbacks):
             "show_missed_call_popup",
             lambda _missed_call: None,
         ),
+        mark_dial_connected=callbacks.get("mark_dial_connected", lambda: None),
+        mark_call_connected=callbacks.get("mark_call_connected", lambda: None),
+        finish_dial_call=callbacks.get("finish_dial_call", lambda _message="": None),
         consume_call_recording_line=callbacks.get(
             "consume_call_recording_line",
             lambda _line: False,
@@ -157,6 +161,7 @@ def build_serial_app_wiring(
         "enqueue_third_push": callbacks["enqueue_third_push"],
         "send_cloud_sms_event": callbacks["send_cloud_sms_event"],
         "send_cloud_call_event": callbacks.get("send_cloud_call_event", lambda *_args, **_kwargs: None),
+        "send_cloud_call_state": callbacks.get("send_cloud_call_state", lambda *_args, **_kwargs: None),
         "port_ui": callbacks["port_ui"],
         "play_alert": callbacks["play_alert"],
         "show_sms_popup": callbacks["show_sms_popup"],
@@ -187,6 +192,9 @@ def build_serial_app_wiring(
             "show_missed_call_popup",
             lambda _missed_call: None,
         ),
+        "mark_dial_connected": callbacks.get("mark_dial_connected", lambda: None),
+        "mark_call_connected": callbacks.get("mark_call_connected", lambda: None),
+        "finish_dial_call": callbacks.get("finish_dial_call", lambda _message="": None),
         "consume_call_recording_line": callbacks.get(
             "consume_call_recording_line",
             lambda _line: False,
@@ -304,6 +312,10 @@ def run_serial_reader_namespace_runtime(
                 "_cloud_send_call_event",
                 lambda *_args, **_kwargs: None,
             ),
+            "send_cloud_call_state": namespace.get(
+                "_cloud_send_call_state",
+                lambda *_args, **_kwargs: None,
+            ),
             "port_ui": namespace["port_ui"],
             "play_alert": namespace["play_alert"],
             "show_sms_popup": namespace["show_sms_popup"],
@@ -336,6 +348,14 @@ def run_serial_reader_namespace_runtime(
             "show_missed_call_popup": namespace.get(
                 "show_missed_call_popup",
                 lambda _missed_call: None,
+            ),
+            "mark_dial_connected": namespace.get(
+                "mark_dial_connected",
+                lambda: None,
+            ),
+            "mark_call_connected": namespace.get(
+                "mark_call_connected",
+                lambda: None,
             ),
             "consume_call_recording_line": namespace.get(
                 "consume_call_recording_line",

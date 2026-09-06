@@ -40,6 +40,10 @@ MODEM_ERROR_RE = re.compile(
     r"^\+(?:CMS|CME)\s+ERROR(?:\s*:\s*.*)?$",
     re.IGNORECASE,
 )
+CALL_TERMINAL_RESPONSE_RE = re.compile(
+    r"^(?:NO\s+CARRIER|NO\s+ANSWER|BUSY)$",
+    re.IGNORECASE,
+)
 TRUSTED_MODEM_LOG_SOURCE = "ril.proatc"
 TRUSTED_CMGS_RESULT_SOURCE = "lib_sms rsp"
 SMS_PDU_SEND_DEFAULT_TIMEOUT = 45.0
@@ -211,6 +215,12 @@ class AtCommandResponseWaiter:
             return
 
         upper = body.upper()
+        # ATD has valid modem-level terminal responses that are not reported
+        # as ERROR. Restrict this to ATD so an unrelated unsolicited call URC
+        # cannot fail another command's waiter.
+        if self.command.upper().startswith("ATD") and CALL_TERMINAL_RESPONSE_RE.fullmatch(body):
+            self._complete(AtCommandResponse(False, body, str(line or "")))
+            return
         if upper == "ERROR" or MODEM_ERROR_RE.fullmatch(body):
             self._complete(AtCommandResponse(False, body, str(line or "")))
             return

@@ -11,6 +11,7 @@ from sms_core.cloud_message_namespace_runtime import (
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
     send_cloud_call_event_namespace_runtime,
+    send_cloud_call_state_namespace_runtime,
     send_cloud_call_recording_status_namespace_runtime,
     send_cloud_serial_command_namespace_runtime,
     send_cloud_serial_log_namespace_runtime,
@@ -79,6 +80,13 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_build_call_event_payload": lambda caller, message, ts, identity, **metadata: {
                 "caller": caller,
                 "message": message,
+                "ts": ts,
+                **identity,
+                **metadata,
+            },
+            "_cloud_build_call_state_payload": lambda phone, phase, ts, identity, **metadata: {
+                "phone": phone,
+                "phase": phase,
                 "ts": ts,
                 **identity,
                 **metadata,
@@ -200,6 +208,51 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertTrue(forwarded["authorized"])
         self.assertEqual(forwarded["timestamp"](), 123)
         self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
+
+    def test_send_cloud_call_state_namespace_runtime_forwards_live_connection_context(self):
+        namespace = self.base_namespace()
+        calls = []
+
+        result = send_cloud_call_state_namespace_runtime(
+            namespace,
+            "10086",
+            "no_answer",
+            "NO ANSWER",
+            direction="incoming",
+            send_runtime=lambda phone, phase, reason, **kwargs: (
+                calls.append((phone, phase, reason, kwargs)) or "scheduled"
+            ),
+        )
+
+        self.assertEqual(result, "scheduled")
+        phone, phase, reason, forwarded = calls[0]
+        self.assertEqual((phone, phase, reason), ("10086", "no_answer", "NO ANSWER"))
+        self.assertEqual(forwarded["direction"], "incoming")
+        self.assertTrue(forwarded["authorized"])
+        self.assertEqual(forwarded["get_loop"](), namespace["cloud_ws_loop"])
+        self.assertEqual(forwarded["get_ws"](), "ws")
+        self.assertTrue(forwarded["is_connected"]())
+        self.assertEqual(forwarded["runtime_imei"](), "861")
+        self.assertEqual(forwarded["timestamp"](), 123)
+        self.assertEqual(forwarded["identity_payload"](), {"imei": "861"})
+        self.assertEqual(
+            forwarded["build_payload"](
+                "10086",
+                "no_answer",
+                123,
+                {"imei": "861"},
+                direction="incoming",
+                reason="NO ANSWER",
+            ),
+            {
+                "phone": "10086",
+                "phase": "no_answer",
+                "ts": 123,
+                "imei": "861",
+                "direction": "incoming",
+                "reason": "NO ANSWER",
+            },
+        )
 
     def test_send_cloud_call_recording_status_namespace_runtime_schedules_payload(self):
         namespace = self.base_namespace()
