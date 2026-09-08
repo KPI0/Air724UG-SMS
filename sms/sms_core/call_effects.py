@@ -32,6 +32,20 @@ def _show_missed_call(missed_call, port_ui, show_missed_call_popup):
     return True
 
 
+def _show_incoming_call_popup(show_call_popup, caller_num, call_session_id=""):
+    """Show a popup while preserving compatibility with legacy callbacks."""
+    session_id = str(call_session_id or "").strip()
+    if not session_id:
+        return show_call_popup(caller_num)
+    try:
+        return show_call_popup(caller_num, call_session_id=session_id)
+    except TypeError:
+        # Older namespace bindings and test doubles accepted only the number.
+        # The current binding accepts the keyword above, so this fallback does
+        # not alter the production path.
+        return show_call_popup(caller_num)
+
+
 def apply_ring_timeout_expired(
     current_port,
     port_ui,
@@ -62,15 +76,14 @@ def apply_call_answer_result(
         ui_post(restore_answer)
         return False
 
-    # ATA only confirms that the modem accepted the answer command.  The
-    # remote party may still be ringing, so do not mark the call connected or
-    # start its duration timer until a real CALL=1/CLCC/CONNECT indication is
-    # observed by the serial call state machine.
-    port_ui("📞 已发送接听指令 (ATA)，等待对方接通", "normal")
-    set_status(f"📞 正在接听：{caller_num}", "blue")
-    # Keep the existing ringing deadline while the modem is still negotiating
-    # the answer. The call state machine switches it to the connected sentinel
-    # only after CALL=1/CLCC/CONNECT is observed.
+    # Air724UG modem firmware accepts ATA as the local answer transition and
+    # may not emit a subsequent CALL=1/CONNECT indication.  Start the timer
+    # here, matching the stable 3.9.3 behavior; terminal URCs still close the
+    # call through the normal serial state machine.
+    port_ui("📞 已发送接听指令 (ATA)", "normal")
+    set_status(f"📞 通话中：{caller_num}", "blue")
+    set_ring_timeout(-1.0)
+    ui_post(mark_connected)
     return True
 
 
@@ -155,7 +168,11 @@ def apply_call_decision(
     if decision.incoming_number and incoming_started:
         port_ui(f"📞 收到来电：来自 {decision.incoming_number}", "normal")
         set_status(f"🔔 响铃中：{decision.incoming_number}", "blue")
-        show_call_popup(decision.show_popup_number)
+        _show_incoming_call_popup(
+            show_call_popup,
+            decision.show_popup_number,
+            getattr(decision, "call_session_id", ""),
+        )
 
     if decision.call_ended or decision.hangup_notify:
         if decision.call_ended and decision.end_direction:
@@ -186,6 +203,8 @@ def apply_call_decision(
         set_status(f"📞 通话中：{decision.connected_number}", "blue")
 
     if decision.incoming_connected_number:
+        port_ui(f"📞 对方已接听：{decision.incoming_connected_number}", "normal")
+        set_status(f"📞 通话中：{decision.incoming_connected_number}", "blue")
         try:
             _send_call_state(
                 send_cloud_call_state,

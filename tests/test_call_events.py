@@ -101,6 +101,236 @@ class CallEventTests(unittest.TestCase):
         self.assertTrue(is_call_active(0.0, "", True))
         self.assertFalse(is_call_active(0.0, "", False))
 
+    def test_clcc_connected_state_requires_matching_direction_and_number(self):
+        outgoing = handle_call_line(
+            '+CLCC: 1,0,0,0,0,"10086",129',
+            CallState(current_dial_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        self.assertEqual(outgoing.connected_number, "10086")
+
+        incoming = handle_call_line(
+            '+CLCC: 1,1,0,0,0,"10086",129',
+            CallState(ring_timeout_target=20.0, last_clip_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        self.assertEqual(incoming.incoming_connected_number, "10086")
+
+        mismatch = handle_call_line(
+            '+CLCC: 1,1,0,0,0,"10010",129',
+            CallState(ring_timeout_target=20.0, last_clip_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        self.assertEqual(mismatch.incoming_connected_number, "")
+
+    def test_repeated_clcc_connected_state_is_reported_once_per_session(self):
+        ringing = handle_call_line(
+            '+CLIP: "10086",129',
+            CallState(),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        first = handle_call_line(
+            '+CLCC: 1,1,0,0,0,"10086",129',
+            ringing.state,
+            now=10.5,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        second = handle_call_line(
+            '+CLCC: 1,1,0,0,0,"10086",129',
+            first.state,
+            now=11.5,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(first.incoming_connected_number, "10086")
+        self.assertEqual(second.incoming_connected_number, "")
+        self.assertEqual(
+            second.state.incoming_connected_session_id,
+            first.state.incoming_connected_session_id,
+        )
+
+    def test_repeated_outgoing_connected_state_is_reported_once_per_session(self):
+        first = handle_call_line(
+            '+CLCC: 1,0,0,0,0,"10086",129',
+            CallState(current_dial_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        second = handle_call_line(
+            '+CLCC: 1,0,0,0,0,"10086",129',
+            first.state,
+            now=11.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(first.connected_number, "10086")
+        self.assertEqual(second.connected_number, "")
+        self.assertEqual(
+            second.state.outgoing_connected_session_id,
+            first.state.outgoing_connected_session_id,
+        )
+
+    def test_repeated_outgoing_ciev_connected_state_is_reported_once(self):
+        first = handle_call_line(
+            '+CIEV: "CALL",1',
+            CallState(current_dial_num="10000"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        second = handle_call_line(
+            '+CIEV: "CALL",1',
+            first.state,
+            now=10.5,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(first.connected_number, "10000")
+        self.assertEqual(second.connected_number, "")
+
+    def test_outgoing_redial_allows_a_new_connected_transition(self):
+        first = handle_call_line(
+            '+CIEV: "CALL",1',
+            CallState(current_dial_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        ended = handle_call_line(
+            "NO CARRIER",
+            first.state,
+            now=20.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+        second = handle_call_line(
+            '+CIEV: "CALL",1',
+            CallState(
+                current_dial_num="10086",
+                call_session_sequence=ended.state.call_session_sequence,
+            ),
+            now=30.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(first.connected_number, "10086")
+        self.assertTrue(ended.outgoing_call_ended)
+        self.assertEqual(second.connected_number, "10086")
+        self.assertNotEqual(
+            first.state.call_session_id,
+            second.state.call_session_id,
+        )
+
+    def test_incoming_connection_wins_over_stale_outbound_context(self):
+        ringing = handle_call_line(
+            '+CLIP: "10010",129',
+            CallState(current_dial_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(ringing.incoming_number, "10010")
+        self.assertEqual(ringing.state.current_dial_num, "")
+
+        connected = handle_call_line(
+            '+CIEV: "CALL",1',
+            ringing.state,
+            now=11.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=True,
+        )
+
+        self.assertEqual(connected.incoming_connected_number, "10010")
+        self.assertEqual(connected.connected_number, "")
+        self.assertEqual(connected.call_session_id, ringing.call_session_id)
+        self.assertEqual(connected.state.current_dial_num, "")
+
+    def test_incoming_connected_indication_before_clip_is_bound_to_later_call(self):
+        ringing = handle_call_line(
+            "RING",
+            CallState(current_dial_num="10086"),
+            now=10.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        connected_first = handle_call_line(
+            '+CIEV: "CALL",1',
+            ringing.state,
+            now=10.5,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertEqual(connected_first.incoming_connected_number, "")
+        self.assertEqual(connected_first.state.current_dial_num, "")
+        self.assertGreater(connected_first.state.pending_incoming_connected_until, 10.5)
+
+        clip = handle_call_line(
+            '+CLIP: "10010",129',
+            connected_first.state,
+            now=11.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertEqual(clip.incoming_number, "10010")
+        self.assertEqual(clip.incoming_connected_number, "10010")
+        self.assertEqual(clip.state.ring_timeout_target, -1.0)
+        self.assertEqual(clip.state.pending_incoming_connected_until, 0.0)
+
     def test_handle_call_line_reports_incoming_call(self):
         decision = handle_call_line(
             '+CLIP: "+8613123123123",129',

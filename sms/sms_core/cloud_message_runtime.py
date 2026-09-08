@@ -202,6 +202,7 @@ def send_cloud_serial_command_runtime(
     send_sms_transaction=None,
     set_own_number_transaction=None,
     set_current_dial_num=None,
+    mark_call_connected=None,
 ):
     raw_command = str(command or "")
     batch_error = cloud_command_batch_error(raw_command)
@@ -284,6 +285,42 @@ def send_cloud_serial_command_runtime(
             if sensitive_reason:
                 return False, "敏感指令执行失败（指令内容已隐藏，Modem 未确认成功）"
             return False, result.error
+
+        # A remote ATA is executed outside the local call-popup callback.
+        # Mirror the local answer transition only after the Modem accepted
+        # the command, and bind it to the originating call generation when
+        # the console supplied one.  Legacy consoles may omit the metadata;
+        # the callback then falls back to the currently active popup.
+        if re.fullmatch(r"ATA;?", cmd, re.IGNORECASE) and callable(mark_call_connected):
+            session_id = ""
+            caller_num = ""
+            if isinstance(command_meta, dict):
+                session_id = str(command_meta.get("call_session_id") or "").strip()
+                caller_num = str(
+                    command_meta.get("call_phone")
+                    or command_meta.get("phone")
+                    or command_meta.get("caller")
+                    or ""
+                ).strip()
+            try:
+                if session_id:
+                    try:
+                        mark_call_connected(session_id, caller_num)
+                    except TypeError:
+                        try:
+                            mark_call_connected(session_id)
+                        except TypeError:
+                            mark_call_connected()
+                else:
+                    try:
+                        mark_call_connected("", caller_num)
+                    except TypeError:
+                        mark_call_connected()
+            except Exception as exc:
+                try:
+                    log(f"同步本地来电接听状态失败：{type(exc).__name__}")
+                except Exception:
+                    pass
 
         try:
             if push_serial_debug:
@@ -605,6 +642,112 @@ def send_cloud_call_state_runtime(
         return "error"
 
 
+def handle_device_call_state_runtime(
+    data,
+    *,
+    runtime_imei,
+    register_incoming=None,
+    mark_call_connected=None,
+    mark_peer_call_connected=None,
+    finish_call=None,
+    log=None,
+):
+    """Apply an authenticated peer-channel call state to the local popup.
+
+    The server uses ``device_call_state`` only for synchronizing the other
+    authenticated transport of the same IMEI.  It is deliberately handled
+    before normal command authentication because this internal frame does not
+    carry a device secret of its own.
+    """
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("type") or "").strip().lower() != "device_call_state":
+        return False
+
+    local_imei = str(runtime_imei() or "").strip()
+    target_imei = str(
+        data.get("imei")
+        or data.get("device_imei")
+        or data.get("target_imei")
+        or ""
+    ).strip()
+    if target_imei and local_imei and target_imei != local_imei:
+        return True
+    direction = str(data.get("direction") or data.get("state") or "").strip().lower()
+    phase = str(data.get("phase") or "").strip().lower()
+    if direction not in ("incoming", "inbound"):
+        return True
+    session_id = str(data.get("call_session_id") or "").strip()
+    caller_num = str(
+        data.get("phone")
+        or data.get("caller")
+        or data.get("number")
+        or ""
+    ).strip()
+    terminal_phases = {
+        "ended",
+        "no_answer",
+        "busy",
+        "hangup",
+        "disconnected",
+        "terminated",
+        "released",
+        "unanswered",
+    }
+    if phase in terminal_phases:
+        if not callable(finish_call):
+            return True
+        try:
+            try:
+                finish_call(
+                    phase,
+                    str(data.get("reason") or "").strip(),
+                    session_id=session_id,
+                    caller_num=caller_num,
+                )
+            except TypeError:
+                finish_call(phase, str(data.get("reason") or "").strip())
+        except Exception as exc:
+            if callable(log):
+                try:
+                    log(f"同步备用通道来电结束状态失败：{type(exc).__name__}")
+                except Exception:
+                    pass
+        return True
+    if phase == "incoming":
+        if callable(register_incoming):
+            try:
+                register_incoming(session_id, caller_num)
+            except Exception as exc:
+                if callable(log):
+                    try:
+                        log(f"登记备用通道来电会话失败：{type(exc).__name__}")
+                    except Exception:
+                        pass
+        return True
+    if phase not in ("connected", "answered", "active"):
+        return True
+    callback = mark_peer_call_connected or mark_call_connected
+    if not callable(callback):
+        return True
+
+    try:
+        try:
+            callback(session_id, caller_num)
+        except TypeError:
+            try:
+                callback(session_id)
+            except TypeError:
+                callback()
+    except Exception as exc:
+        if callable(log):
+            try:
+                log(f"同步备用通道来电接听状态失败：{type(exc).__name__}")
+            except Exception:
+                pass
+    return True
+
+
 def cloud_status_payload_runtime(
     *,
     serial_lock,
@@ -654,6 +797,7 @@ async def handle_cloud_message_runtime(
     show_window,
     hide_window,
     handle_call_recording_message=None,
+    handle_device_call_state_message=None,
 ):
     incoming, error_payload = parse_cloud_message(message)
     log(f"收到：{cloud_incoming_preview(incoming)}")
@@ -699,6 +843,12 @@ async def handle_cloud_message_runtime(
         log("已拒绝云端指令：设备尚未获得服务端授权")
         await task_reply(cloud_unauthorized_payload())
         return
+
+    if (
+        handle_device_call_state_message is not None
+        and handle_device_call_state_message(data)
+    ):
+        return "device_call_state"
 
     if not await check_replay_window(data, mark_seen=False):
         return

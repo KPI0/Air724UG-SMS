@@ -17,6 +17,7 @@ from sms_core.serial_parsers import (
     is_ring_line,
     is_hangup_event,
     is_call_connected_event,
+    parse_clcc_line,
     is_sms_collection_boundary,
 )
 
@@ -299,6 +300,19 @@ class SerialParsersTests(unittest.TestCase):
         """Should recognize +CIEV CALL,1 as connected."""
         self.assertTrue(is_call_connected_event('+CIEV: "CALL",1'))
         self.assertFalse(is_call_connected_event('[I]-[websocket] json: {"message":"+CIEV: \\"CALL\\",1"}'))
+
+    def test_parse_clcc_active_row_and_connected_event(self):
+        line = '[I]-[ril.proatc] +CLCC: 1,1,0,0,0,"15923240141",129'
+        self.assertEqual(
+            parse_clcc_line(line),
+            {"direction": 1, "status": 0, "number": "15923240141"},
+        )
+        self.assertTrue(is_call_connected_event(line))
+
+    def test_parse_clcc_ringing_row_is_not_connected(self):
+        line = '+CLCC: 1,1,4,0,0,"15923240141",129'
+        self.assertEqual(parse_clcc_line(line)["status"], 4)
+        self.assertFalse(is_call_connected_event(line))
 
     def test_is_sms_collection_boundary_recognizes_log_prefixes(self):
         """Should recognize log prefixes as boundaries."""

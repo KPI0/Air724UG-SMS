@@ -310,6 +310,57 @@ class CallPopupTests(unittest.TestCase):
         self.assertEqual(duration_label.configured[1]["text"], "00:01")
         self.assertEqual(len(window.callbacks), 1)
 
+    def test_peer_channel_connected_marker_updates_incoming_popup(self):
+        events = []
+        buttons = []
+        labels = []
+        window = TimerWindow(events)
+
+        class FakeLabel(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.configured = []
+                labels.append(self)
+
+            def config(self, *args, **kwargs):
+                self.configured.append(kwargs)
+
+        class FakeButton(FakeWidget):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.configured = []
+                self.hidden = False
+                buttons.append(self)
+
+            def config(self, *args, **kwargs):
+                self.configured.append(kwargs)
+
+            def pack_forget(self):
+                self.hidden = True
+
+        with patch("sms_ui.call_popup.time.monotonic", return_value=100.0), \
+                patch("sms_ui.call_popup.tk.Toplevel", return_value=window), \
+                patch("sms_ui.call_popup.ttk.Frame", FakeWidget), \
+                patch("sms_ui.call_popup.tk.Label", FakeLabel), \
+                patch("sms_ui.call_popup.ttk.Button", FakeButton):
+            result = open_call_popup(
+                object(),
+                "10086",
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda: None,
+                lambda: None,
+            )
+            result._call_popup_mark_connected()
+
+        self.assertEqual(labels[0].configured[-1]["text"], "📞 正在通话中...")
+        self.assertEqual(labels[2].configured[-1]["text"], "00:00")
+        self.assertTrue(buttons[0].hidden)
+        self.assertTrue(buttons[2].hidden)
+        self.assertEqual(buttons[1].configured[-1]["state"], "normal")
+        self.assertEqual(len(window.callbacks), 1)
+
     def test_duration_timer_is_cancelled_when_popup_closes(self):
         events = []
         buttons = []

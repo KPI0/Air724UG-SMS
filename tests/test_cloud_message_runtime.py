@@ -8,6 +8,7 @@ from sms_core.cloud_command_security import (
 )
 from sms_core.cloud_message_runtime import (
     cloud_session_revoke_proof,
+    handle_device_call_state_runtime,
     cloud_status_payload_runtime,
     handle_cloud_message_runtime,
     send_cloud_call_event_runtime,
@@ -63,6 +64,142 @@ class FakeWs:
 
 
 class CloudMessageRuntimeTests(unittest.TestCase):
+    def test_device_call_state_marks_matching_incoming_popup(self):
+        calls = []
+
+        handled = handle_device_call_state_runtime(
+            {
+                "type": "device_call_state",
+                "imei": "861",
+                "direction": "incoming",
+                "phase": "connected",
+                "phone": "15923240141",
+                "call_session_id": "incoming:firmware:1",
+            },
+            runtime_imei=lambda: "861",
+            mark_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("incoming:firmware:1", "15923240141")])
+
+    def test_device_call_state_registers_incoming_generation_before_progress(self):
+        calls = []
+
+        handled = handle_device_call_state_runtime(
+            {
+                "type": "device_call_state",
+                "imei": "861",
+                "direction": "incoming",
+                "phase": "incoming",
+                "phone": "15923240141",
+                "call_session_id": "incoming:firmware:1",
+            },
+            runtime_imei=lambda: "861",
+            register_incoming=lambda *args: calls.append(args),
+            mark_call_connected=lambda *_args: self.fail("incoming is not connected"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("incoming:firmware:1", "15923240141")])
+
+    def test_device_call_state_prefers_peer_connected_callback(self):
+        calls = []
+
+        handled = handle_device_call_state_runtime(
+            {
+                "type": "device_call_state",
+                "imei": "861",
+                "direction": "incoming",
+                "phase": "connected",
+                "phone": "15923240141",
+                "call_session_id": "incoming:firmware:2",
+            },
+            runtime_imei=lambda: "861",
+            mark_call_connected=lambda *_args: self.fail("legacy callback used"),
+            mark_peer_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("incoming:firmware:2", "15923240141")])
+
+    def test_device_call_state_does_not_cross_device_or_direction(self):
+        calls = []
+        self.assertTrue(
+            handle_device_call_state_runtime(
+                {
+                    "type": "device_call_state",
+                    "imei": "862",
+                    "direction": "incoming",
+                    "phase": "connected",
+                },
+                runtime_imei=lambda: "861",
+                mark_call_connected=lambda *args: calls.append(args),
+            )
+        )
+        self.assertTrue(
+            handle_device_call_state_runtime(
+                {
+                    "type": "device_call_state",
+                    "imei": "861",
+                    "direction": "outgoing",
+                    "phase": "connected",
+                },
+                runtime_imei=lambda: "861",
+                mark_call_connected=lambda *args: calls.append(args),
+            )
+        )
+        self.assertEqual(calls, [])
+
+    def test_device_call_state_finishes_matching_incoming_popup(self):
+        calls = []
+
+        handled = handle_device_call_state_runtime(
+            {
+                "type": "device_call_state",
+                "imei": "861",
+                "direction": "incoming",
+                "phase": "no_answer",
+                "phone": "15923240141",
+                "reason": "NO ANSWER",
+                "call_session_id": "incoming:firmware:2",
+            },
+            runtime_imei=lambda: "861",
+            finish_call=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            calls,
+            [
+                (
+                    ("no_answer", "NO ANSWER"),
+                    {
+                        "session_id": "incoming:firmware:2",
+                        "caller_num": "15923240141",
+                    },
+                )
+            ],
+        )
+
+    def test_device_call_state_terminal_does_not_use_connected_callback(self):
+        calls = []
+
+        self.assertTrue(
+            handle_device_call_state_runtime(
+                {
+                    "type": "device_call_state",
+                    "imei": "861",
+                    "direction": "incoming",
+                    "phase": "ended",
+                    "phone": "10086",
+                },
+                runtime_imei=lambda: "861",
+                mark_call_connected=lambda *_args: calls.append("connected"),
+            )
+        )
+        self.assertEqual(calls, [])
+
     async def _handle(self, message, *, authorized=False, auth_ok=True, replay_ok=True):
         state = {"authorized": authorized}
         calls = []
@@ -956,6 +1093,73 @@ class CloudMessageRuntimeTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(info, "closed")
+
+    def test_remote_ata_success_marks_matching_local_call_connected(self):
+        calls = []
+        ok, info = send_cloud_serial_command_runtime(
+            "ATA",
+            command_meta={"call_session_id": "incoming:123:4"},
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            mark_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(info, "执行成功：ATA")
+        self.assertEqual(calls, [("incoming:123:4", "")])
+
+    def test_remote_ata_success_passes_caller_for_cross_channel_session_fallback(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "ATA",
+            command_meta={
+                "call_session_id": "incoming:firmware:4",
+                "call_phone": "15923240141",
+            },
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            mark_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [("incoming:firmware:4", "15923240141")])
+
+    def test_remote_ata_failure_does_not_mark_local_call_connected(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "ATA",
+            command_meta={"call_session_id": "incoming:123:4"},
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(False, "NO CARRIER"),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            mark_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
+    def test_remote_non_ata_success_does_not_mark_local_call_connected(self):
+        calls = []
+        ok, _info = send_cloud_serial_command_runtime(
+            "AT+CSQ",
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda *_args: SimpleResult(True),
+            push_serial_debug=lambda *_args: None,
+            log=lambda *_args, **_kwargs: None,
+            mark_call_connected=lambda *args: calls.append(args),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(calls, [])
 
     def test_remote_atd_registers_dial_context_for_serial_call_state(self):
         calls = []

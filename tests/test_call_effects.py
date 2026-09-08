@@ -27,11 +27,11 @@ class CallEffectTests(unittest.TestCase):
         )
 
         self.assertTrue(ok)
-        self.assertIn(("ui", "📞 已发送接听指令 (ATA)，等待对方接通", "normal"), calls)
-        self.assertIn(("status", "📞 正在接听：10086", "blue"), calls)
-        self.assertNotIn(("timeout", -1.0), calls)
-        self.assertNotIn(("post", None), calls)
-        self.assertNotIn(("connected",), calls)
+        self.assertIn(("ui", "📞 已发送接听指令 (ATA)", "normal"), calls)
+        self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
+        self.assertIn(("timeout", -1.0), calls)
+        self.assertIn(("post", None), calls)
+        self.assertIn(("connected",), calls)
         self.assertNotIn(("restore",), calls)
 
     def test_apply_call_answer_result_failure(self):
@@ -236,6 +236,71 @@ class CallEffectTests(unittest.TestCase):
         self.assertIn(("close",), calls)
         self.assertIn(("ui", "📞 对方已接听：10086", "normal"), calls)
         self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
+
+    def test_apply_call_decision_updates_local_ui_for_incoming_connected(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            incoming_connected_number="10086",
+            call_session_id="incoming:10:1",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda text, level: calls.append(("ui", text, level)),
+            lambda text, color: calls.append(("status", text, color)),
+            lambda *_args, **_kwargs: None,
+            lambda: None,
+        )
+
+        self.assertIn(("ui", "📞 对方已接听：10086", "normal"), calls)
+        self.assertIn(("status", "📞 通话中：10086", "blue"), calls)
+
+    def test_incoming_popup_receives_the_call_session_id(self):
+        calls = []
+        decision = CallLineDecision(
+            state=CallState(),
+            incoming_number="10086",
+            show_popup_number="10086",
+            call_session_id="incoming:10:1",
+        )
+
+        apply_call_decision(
+            decision,
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+            lambda: None,
+        )
+
+        self.assertEqual(calls, [(("10086",), {"call_session_id": "incoming:10:1"})])
+
+    def test_incoming_popup_keeps_legacy_one_argument_callback_compatibility(self):
+        calls = []
+
+        apply_call_decision(
+            CallLineDecision(
+                state=CallState(),
+                incoming_number="10086",
+                show_popup_number="10086",
+                call_session_id="incoming:10:1",
+            ),
+            "COM5",
+            lambda: None,
+            lambda *_args, **_kwargs: None,
+            lambda *_args: None,
+            lambda *_args: None,
+            lambda number: calls.append(number),
+            lambda: None,
+        )
+
+        self.assertEqual(calls, ["10086"])
 
     def test_apply_call_decision_finishes_outgoing_call_without_incoming_cleanup(self):
         calls = []

@@ -1,3 +1,4 @@
+import csv
 import re
 
 from sms_core.phone_numbers import is_valid_call_filter_number, normalize_call_number
@@ -18,6 +19,7 @@ CESQ_RE = re.compile(
 AT_RESPONSE_RE_TEMPLATE = r"^\s*" + SERIAL_AT_PREFIX + r"{command}:\s*(?P<body>.*?)\s*$"
 SERIAL_PREFIX_RE = re.compile(rf"^\s*{SERIAL_AT_PREFIX}(?P<body>.*?)\s*$")
 CIEV_CALL_RE = re.compile(r'^\+CIEV:\s*"CALL"\s*,\s*(?P<state>[01])$', re.IGNORECASE)
+CLCC_PREFIX_RE = re.compile(r'^\+CLCC\s*:\s*(?P<body>.*)$', re.IGNORECASE)
 AT_URC_BOUNDARY_RE = re.compile(r"^\+[A-Z][A-Z0-9 ]*(?:[:=]|$)")
 STAR_URC_BOUNDARY_RE = re.compile(r"^\*CGEV:")
 
@@ -31,6 +33,35 @@ def _at_response_body(line: str, command: str):
 def _serial_body(line: str):
     match = SERIAL_PREFIX_RE.match(str(line or ""))
     return match.group("body").strip() if match else str(line or "").strip()
+
+
+def parse_clcc_line(line: str):
+    """Parse a modem ``+CLCC`` row used to confirm call state.
+
+    The response is CSV-like and is commonly wrapped in a Luat log prefix.
+    Only direction, status and the optional remote number are returned.  A
+    malformed or truncated row is ignored so diagnostic text can never make
+    the call UI start timing accidentally.
+    """
+    text = _serial_body(line)
+    match = CLCC_PREFIX_RE.match(text)
+    if not match:
+        return None
+    try:
+        fields = next(csv.reader([match.group("body")], skipinitialspace=True))
+    except (csv.Error, StopIteration):
+        return None
+    if len(fields) < 5:
+        return None
+    try:
+        direction = int(fields[1].strip())
+        status = int(fields[2].strip())
+    except (TypeError, ValueError):
+        return None
+    if direction not in (0, 1) or status not in range(6):
+        return None
+    number = fields[5].strip().strip('"') if len(fields) >= 6 else ""
+    return {"direction": direction, "status": status, "number": number}
 
 
 def parse_temperature(line: str):
@@ -223,7 +254,10 @@ def is_hangup_event(line: str) -> bool:
 def is_call_connected_event(line: str) -> bool:
     text = _serial_body(line)
     ciev = CIEV_CALL_RE.match(text)
-    return text == "CONNECT" or bool(ciev and ciev.group("state") == "1")
+    if text == "CONNECT" or bool(ciev and ciev.group("state") == "1"):
+        return True
+    clcc = parse_clcc_line(line)
+    return bool(clcc and clcc["status"] == 0)
 
 
 def is_sms_collection_boundary(line: str) -> bool:

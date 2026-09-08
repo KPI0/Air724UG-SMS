@@ -7,11 +7,15 @@ from sms_ui.call_popup_namespace_runtime import (
     close_missed_call_popup_namespace_runtime,
     close_phone_popups_namespace_runtime,
     finish_incoming_call_session_namespace_runtime,
+    finish_remote_incoming_call_namespace_runtime,
     get_serial_call_state_namespace_runtime,
     mark_call_popup_connected_namespace_runtime,
     mark_dial_popup_connected_namespace_runtime,
     finish_dial_popup_namespace_runtime,
     mark_incoming_call_handled_namespace_runtime,
+    mark_peer_incoming_call_connected_namespace_runtime,
+    register_peer_incoming_call_namespace_runtime,
+    _get_peer_call_binding,
     reset_incoming_call_session_namespace_runtime,
     set_call_popup_namespace_runtime,
     set_dial_popup_namespace_runtime,
@@ -51,6 +55,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             "show_window": "show_window",
             "run_on_ui_thread": lambda callback, ui_post: callback(),
             "log_file_only": lambda message: ("log", message),
+            "_call_peer_monotonic": lambda: 100.0,
         }
 
     def test_set_call_popup_namespace_runtime_updates_window(self):
@@ -91,11 +96,302 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             _call_popup_mark_connected=lambda: calls.append("connected"),
         )
         namespace["current_call_popup"] = popup
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
 
         result = mark_call_popup_connected_namespace_runtime(namespace)
 
         self.assertTrue(result)
         self.assertEqual(calls, ["connected"])
+
+    def test_finish_remote_incoming_call_closes_popup_without_hangup(self):
+        class Tracker:
+            def __init__(self):
+                self.finished = 0
+
+            def snapshot(self):
+                return SimpleNamespace(caller_num="15923240141")
+
+            def finish(self):
+                self.finished += 1
+                return None
+
+        namespace = self.base_namespace()
+        tracker = Tracker()
+        namespace["INCOMING_CALL_SESSION"] = tracker
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        namespace["ui_post"] = "post"
+        closed = []
+        namespace["close_call_popup"] = lambda: closed.append("closed")
+        popup = SimpleNamespace(
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+        )
+        namespace["current_call_popup"] = popup
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+
+        result = finish_remote_incoming_call_namespace_runtime(
+            namespace,
+            "no_answer",
+            "NO ANSWER",
+            session_id="incoming:firmware:1",
+            caller_num="15923240141",
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(tracker.finished, 1)
+        self.assertEqual(namespace["current_call_popup"], None)
+        self.assertEqual(closed, [])
+        self.assertEqual(namespace["call_popup_active_session_id"], "")
+
+    def test_peer_generation_binds_to_local_generation_before_connected(self):
+        namespace = self.base_namespace()
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        calls = []
+        namespace["current_call_popup"] = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+        )
+
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+        self.assertTrue(
+            mark_peer_incoming_call_connected_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+
+        self.assertEqual(calls, ["connected"])
+        self.assertEqual(
+            namespace["call_popup_peer_local_session_id"],
+            "incoming:desktop:1",
+        )
+
+    def test_old_peer_terminal_cannot_close_same_number_redial(self):
+        class Tracker:
+            def __init__(self):
+                self.finished = 0
+
+            def snapshot(self):
+                return SimpleNamespace(caller_num="15923240141")
+
+            def finish(self):
+                self.finished += 1
+                return None
+
+        namespace = self.base_namespace()
+        tracker = Tracker()
+        namespace["INCOMING_CALL_SESSION"] = tracker
+        namespace["call_popup_active_session_id"] = "incoming:desktop:new"
+        namespace["current_call_popup"] = SimpleNamespace(
+            _call_popup_session_id="incoming:desktop:new",
+            _call_popup_caller_num="15923240141",
+        )
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:new",
+                "15923240141",
+            )
+        )
+
+        result = finish_remote_incoming_call_namespace_runtime(
+            namespace,
+            "ended",
+            "NO CARRIER",
+            session_id="incoming:firmware:old",
+            caller_num="15923240141",
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(tracker.finished, 0)
+        self.assertEqual(
+            namespace["call_popup_active_session_id"],
+            "incoming:desktop:new",
+        )
+
+    def test_bound_peer_generation_survives_pending_ttl_until_call_finishes(self):
+        namespace = self.base_namespace()
+        now = [100.0]
+        namespace["_call_peer_monotonic"] = lambda: now[0]
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        namespace["current_call_popup"] = SimpleNamespace(
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+        )
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+        namespace["call_popup_peer_local_session_id"] = "incoming:desktop:1"
+
+        now[0] = 1000.0
+
+        self.assertIsNotNone(_get_peer_call_binding(namespace))
+
+    def test_terminal_before_incoming_is_consumed_after_local_popup_binds(self):
+        class Tracker:
+            def __init__(self):
+                self.caller_num = ""
+                self.finished = 0
+
+            def snapshot(self):
+                return SimpleNamespace(caller_num=self.caller_num)
+
+            def finish(self):
+                self.finished += 1
+                self.caller_num = ""
+                return None
+
+        namespace = self.base_namespace()
+        tracker = Tracker()
+        namespace["INCOMING_CALL_SESSION"] = tracker
+        namespace["current_call_popup"] = None
+        namespace["call_popup_active_session_id"] = ""
+
+        self.assertTrue(
+            finish_remote_incoming_call_namespace_runtime(
+                namespace,
+                "no_answer",
+                "NO ANSWER",
+                session_id="incoming:firmware:1",
+                caller_num="15923240141",
+            )
+        )
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+        tracker.caller_num = "15923240141"
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        popup = SimpleNamespace(
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+            winfo_exists=lambda: True,
+            destroy=lambda: None,
+        )
+
+        set_call_popup_namespace_runtime(namespace, popup)
+
+        self.assertEqual(tracker.finished, 1)
+        self.assertIsNone(namespace["current_call_popup"])
+
+    def test_connected_before_incoming_is_consumed_after_local_popup_binds(self):
+        namespace = self.base_namespace()
+        namespace["current_call_popup"] = None
+        namespace["call_popup_active_session_id"] = ""
+        calls = []
+
+        self.assertTrue(
+            mark_peer_incoming_call_connected_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+        self.assertTrue(
+            register_peer_incoming_call_namespace_runtime(
+                namespace,
+                "incoming:firmware:1",
+                "15923240141",
+            )
+        )
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        popup = SimpleNamespace(
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+            winfo_exists=lambda: True,
+        )
+
+        set_call_popup_namespace_runtime(namespace, popup)
+
+        self.assertEqual(calls, ["connected"])
+
+    def test_mark_call_popup_connected_allows_matching_caller_when_generation_differs(self):
+        namespace = self.base_namespace()
+        namespace["call_popup_active_session_id"] = "incoming:desktop:1"
+        calls = []
+        popup = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_session_id="incoming:desktop:1",
+            _call_popup_caller_num="15923240141",
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+        )
+        namespace["current_call_popup"] = popup
+
+        result = mark_call_popup_connected_namespace_runtime(
+            namespace,
+            "incoming:firmware:1",
+            "15923240141",
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["connected"])
+
+    def test_mark_call_popup_connected_is_deferred_until_popup_is_registered(self):
+        namespace = self.base_namespace()
+        namespace["current_call_popup"] = None
+        namespace["call_popup_active_session_id"] = "incoming:1"
+        namespace["call_popup_pending_connected_session_id"] = ""
+        calls = []
+
+        result = mark_call_popup_connected_namespace_runtime(namespace, "incoming:1")
+
+        self.assertTrue(result)
+        self.assertEqual(namespace["call_popup_pending_connected_session_id"], "incoming:1")
+
+        popup = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _call_popup_mark_connected=lambda: calls.append("connected"),
+        )
+        set_call_popup_namespace_runtime(namespace, popup)
+
+        self.assertEqual(calls, ["connected"])
+        self.assertEqual(namespace["call_popup_pending_connected_session_id"], "")
+
+    def test_late_connected_state_cannot_update_a_new_or_closed_session(self):
+        namespace = self.base_namespace()
+        namespace["current_call_popup"] = None
+        namespace["call_popup_active_session_id"] = "incoming:new"
+        namespace["call_popup_pending_connected_session_id"] = ""
+
+        self.assertFalse(
+            mark_call_popup_connected_namespace_runtime(namespace, "incoming:old")
+        )
+        self.assertEqual(namespace["call_popup_pending_connected_session_id"], "")
+
+        namespace["call_popup_active_session_id"] = ""
+        self.assertFalse(
+            mark_call_popup_connected_namespace_runtime(namespace, "incoming:new")
+        )
+        self.assertEqual(namespace["call_popup_pending_connected_session_id"], "")
 
     def test_finish_dial_popup_runs_terminal_marker_on_ui_thread(self):
         namespace = self.base_namespace()

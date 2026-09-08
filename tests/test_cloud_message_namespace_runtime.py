@@ -294,6 +294,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
     def test_send_cloud_serial_command_namespace_runtime_forwards_serial_callbacks(self):
         namespace = self.base_namespace()
         calls = []
+        namespace["mark_call_connected"] = lambda *args: calls.append(("connected", args))
 
         with patch(
             "sms_core.cloud_message_namespace_runtime.write_serial_command_sequence_confirmed_locked",
@@ -315,6 +316,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
                 SerialCommandResult(True),
             )
             self.assertEqual(forwarded["allow_sensitive_commands"], {"sms": False})
+            forwarded["mark_call_connected"]("incoming:1")
 
         confirmed.assert_called_once()
         confirmed_args = confirmed.call_args.args
@@ -323,6 +325,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(confirmed_args[1](), "serial")
         self.assertEqual(confirmed_args[2], ("ATI",))
         self.assertEqual(confirmed.call_args.kwargs["response_timeout"], 10.0)
+        self.assertEqual(calls[-1], ("connected", ("incoming:1",)))
 
     def test_cloud_at_reports_success_only_after_modem_ok(self):
         namespace = self.base_namespace()

@@ -648,6 +648,15 @@ def _install_cloud_and_serial_bindings():
     current_call_popup = None
     current_dial_popup = None
     current_missed_call_popup = None
+    globals()["call_popup_active_session_id"] = ""
+    globals()["call_popup_pending_connected_session_id"] = ""
+    globals()["call_popup_peer_session_id"] = ""
+    globals()["call_popup_peer_caller_num"] = ""
+    globals()["call_popup_peer_local_session_id"] = ""
+    globals()["call_popup_peer_expires_at"] = 0.0
+    globals()["call_popup_pending_peer_connected"] = None
+    globals()["call_popup_pending_peer_terminal"] = None
+    globals()["call_popup_pending_peer_incoming"] = None
     INCOMING_CALL_SESSION = IncomingCallSessionTracker()
     install_serial_namespace_bindings(globals())
 

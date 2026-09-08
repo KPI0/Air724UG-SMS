@@ -440,6 +440,82 @@ class SerialRuntimeTests(unittest.TestCase):
 
         self.assertIn(("call_connected",), calls)
 
+    def test_incoming_call_connected_passes_the_current_session_to_the_popup(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        state.call_state.ring_timeout_target = 20.0
+        state.call_state.last_clip_num = "10086"
+        state.call_state.call_session_id = "incoming:10:1"
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "mark_call_connected": lambda session_id: calls.append(
+                    ("call_connected", session_id)
+                ),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            '+CIEV: "CALL",1',
+            10.0,
+            "COM5",
+            True,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertIn(("call_connected", "incoming:10:1"), calls)
+
+    def test_incoming_connected_before_clip_starts_popup_timer_after_clip(self):
+        calls = []
+        state = SerialRuntimeState.create(parse_head)
+        base_callbacks = runtime_callbacks(calls)
+        callbacks = SerialRuntimeCallbacks(
+            **{
+                **base_callbacks.__dict__,
+                "mark_call_connected": lambda session_id: calls.append(
+                    ("call_connected", session_id)
+                ),
+            }
+        )
+
+        handle_serial_runtime_line(
+            state,
+            "RING",
+            10.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+        handle_serial_runtime_line(
+            state,
+            '+CIEV: "CALL",1',
+            10.5,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+        handle_serial_runtime_line(
+            state,
+            '+CLIP: "10086",129',
+            11.0,
+            "COM5",
+            False,
+            runtime_config(),
+            callbacks,
+            {},
+        )
+
+        self.assertTrue(any(item[0] == "call_popup" for item in calls))
+        self.assertTrue(any(item[0] == "call_connected" for item in calls))
+
     def test_outgoing_call_hangup_finishes_dial_popup_with_reason(self):
         calls = []
         state = SerialRuntimeState.create(parse_head)

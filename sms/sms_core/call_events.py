@@ -8,8 +8,10 @@ from sms_core.serial_parsers import (
     is_hangup_event,
     is_new_clip,
     is_ring_line,
+    parse_clcc_line,
     parse_clip_number,
 )
+from sms_core.phone_numbers import normalize_call_number
 
 
 @dataclass
@@ -46,6 +48,17 @@ class CallState:
     # web console when both channels are connected.
     call_session_id: str = ""
     call_session_sequence: int = 0
+    # Some modem revisions report CALL=1/CONNECT before the delayed +CLIP
+    # number.  Keep that indication briefly so the eventual CLIP can create
+    # an already-connected incoming session instead of a stuck ringing popup.
+    pending_incoming_connected_until: float = 0.0
+    # A CLCC query can return the same active call repeatedly.  Remember the
+    # session for which the connected transition was already published so the
+    # UI/log/cloud callbacks run once per call generation.
+    incoming_connected_session_id: str = ""
+    # Keep the same transition de-duplication for outbound calls.  Modems may
+    # repeat CALL=1, CONNECT, or active CLCC frames while a call remains up.
+    outgoing_connected_session_id: str = ""
 
 
 @dataclass
@@ -182,9 +195,47 @@ def handle_hangup_line(
     )
 
 
+def _call_numbers_match(left, right):
+    left_text = str(left or "").strip()
+    right_text = str(right or "").strip()
+    if not left_text or not right_text:
+        return True
+    if left_text == "未知号码" or right_text == "未知号码":
+        return True
+    return normalize_call_number(left_text) == normalize_call_number(right_text)
+
+
 def connected_call_number(line, current_dial_num):
-    if is_call_connected_event(line) and current_dial_num:
+    if not current_dial_num:
+        return ""
+    clcc = parse_clcc_line(line)
+    if clcc is not None:
+        if (
+            clcc["status"] == 0
+            and clcc["direction"] == 0
+            and _call_numbers_match(clcc.get("number"), current_dial_num)
+        ):
+            return current_dial_num
+        return ""
+    if is_call_connected_event(line):
         return current_dial_num
+    return ""
+
+
+def incoming_call_connected_number(line, caller_num):
+    if not caller_num:
+        return ""
+    clcc = parse_clcc_line(line)
+    if clcc is not None:
+        if (
+            clcc["status"] == 0
+            and clcc["direction"] == 1
+            and _call_numbers_match(clcc.get("number"), caller_num)
+        ):
+            return caller_num
+        return ""
+    if is_call_connected_event(line):
+        return caller_num
     return ""
 
 
@@ -235,14 +286,24 @@ def handle_call_line(
         last_hangup_time=state.last_hangup_time,
         call_session_id=state.call_session_id,
         call_session_sequence=state.call_session_sequence,
+        pending_incoming_connected_until=state.pending_incoming_connected_until,
+        incoming_connected_session_id=state.incoming_connected_session_id,
+        outgoing_connected_session_id=state.outgoing_connected_session_id,
     )
     decision = CallLineDecision(state=next_state)
+
+    if (
+        next_state.pending_incoming_connected_until > 0.0
+        and now > next_state.pending_incoming_connected_until
+    ):
+        next_state.pending_incoming_connected_until = 0.0
 
     # The serial UI stores the dial number before writing ATD.  Establish the
     # outgoing generation at the first modem line so CONNECT/NO CARRIER cannot
     # be associated with a previous incoming or same-number session.
     if next_state.current_dial_num and not next_state.call_session_id.startswith("outgoing:"):
         _begin_call_session(next_state, "outgoing", next_state.current_dial_num, now)
+        next_state.outgoing_connected_session_id = ""
 
     if next_state.current_dial_num and is_call_dial_failure_event(line):
         decision.call_session_id = next_state.call_session_id
@@ -254,6 +315,7 @@ def handle_call_line(
         decision.end_message = "📞 拨号失败：" + str(line or "").strip()
         next_state.current_dial_num = ""
         next_state.call_session_id = ""
+        next_state.outgoing_connected_session_id = ""
         return decision
 
     if is_clip_line(line):
@@ -292,9 +354,23 @@ def handle_call_line(
             next_state.last_clip_num = clip.last_clip_num
             next_state.last_clip_time = clip.last_clip_time
             next_state.last_hangup_time = 0.0
+            next_state.incoming_connected_session_id = ""
+            next_state.outgoing_connected_session_id = ""
+            # A new incoming CLIP is authoritative for the modem's current
+            # call generation.  If an earlier outbound command never emitted
+            # a terminal URC, do not let that stale dial context capture this
+            # call's CONNECT/CALL=1 state or route it to the dial popup.
+            next_state.current_dial_num = ""
             _begin_call_session(next_state, "incoming", clip.caller_num, now)
             decision.call_session_id = next_state.call_session_id
             decision.push_message = call_push_message(clip.caller_num, clip.blocked, clip.block_reason)
+            if next_state.pending_incoming_connected_until > now:
+                decision.incoming_connected_number = clip.caller_num
+                next_state.incoming_connected_session_id = (
+                    next_state.call_session_id or next_state.last_clip_num
+                )
+                next_state.pending_incoming_connected_until = 0.0
+                next_state.ring_timeout_target = -1.0
 
         if clip.blocked:
             if clip.new_clip:
@@ -307,6 +383,11 @@ def handle_call_line(
             decision.incoming_number = clip.caller_num
             decision.show_popup_number = clip.caller_num
     else:
+        if is_ring_line(line):
+            # RING is the first authoritative indication of a new incoming
+            # generation.  Clear an orphaned outbound context before a
+            # delayed CALL=1/CONNECT can be classified as outbound.
+            next_state.current_dial_num = ""
         next_state.ring_timeout_target = refresh_ring_timeout(
             line,
             next_state.ring_timeout_target,
@@ -335,18 +416,43 @@ def handle_call_line(
         next_state.current_dial_num = hangup.current_dial_num
         next_state.last_clip_num = hangup.last_clip_num
         next_state.call_session_id = ""
+        next_state.pending_incoming_connected_until = 0.0
+        next_state.incoming_connected_session_id = ""
+        next_state.outgoing_connected_session_id = ""
         if hangup.should_notify:
             decision.hangup_notify = True
             next_state.last_hangup_time = hangup.last_hangup_time
 
-    connected_num = connected_call_number(line, next_state.current_dial_num)
-    if connected_num:
-        decision.call_session_id = next_state.call_session_id
-        decision.connected_number = connected_num
-        next_state.ring_timeout_target = 0.0
-    elif is_call_connected_event(line) and next_state.last_clip_num:
-        decision.call_session_id = next_state.call_session_id
-        decision.incoming_connected_number = next_state.last_clip_num
+    # When a CLIP-established incoming session is active, classify a shared
+    # CALL=1/CLCC/CONNECT indication as incoming first.  This prevents a
+    # stale outbound dial number from hijacking the incoming popup's state.
+    incoming_connected_num = incoming_call_connected_number(line, next_state.last_clip_num)
+    if incoming_connected_num:
+        connection_key = next_state.call_session_id or next_state.last_clip_num
+        if connection_key != next_state.incoming_connected_session_id:
+            decision.call_session_id = next_state.call_session_id
+            decision.incoming_connected_number = incoming_connected_num
+            next_state.incoming_connected_session_id = connection_key
+        next_state.current_dial_num = ""
         next_state.ring_timeout_target = -1.0
+    else:
+        connected_num = connected_call_number(line, next_state.current_dial_num)
+        if connected_num:
+            connection_key = next_state.call_session_id or next_state.current_dial_num
+            if connection_key != next_state.outgoing_connected_session_id:
+                decision.call_session_id = next_state.call_session_id
+                decision.connected_number = connected_num
+                next_state.outgoing_connected_session_id = connection_key
+            next_state.ring_timeout_target = 0.0
+        elif (
+            not next_state.current_dial_num
+            and next_state.ring_timeout_target > 0.0
+            and is_call_connected_event(line)
+        ):
+            # RING may be followed by CALL=1/CONNECT before +CLIP.  The
+            # marker is intentionally short-lived and only armed while an
+            # incoming ring deadline is active, so unrelated CONNECT lines
+            # cannot be attached to a later call.
+            next_state.pending_incoming_connected_until = now + 3.0
 
     return decision

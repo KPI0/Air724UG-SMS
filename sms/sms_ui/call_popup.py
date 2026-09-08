@@ -25,6 +25,7 @@ def open_call_popup(
     on_close_callback = on_close
     win.withdraw()
     win.title("来电提醒")
+    win._call_popup_caller_num = str(caller_num or "").strip()
     win.minsize(300, 0)
     win.resizable(False, False)
     win.attributes("-topmost", True)
@@ -160,6 +161,11 @@ def open_call_popup(
     btn_ignore.pack(side="left", padx=6)
 
     win._call_popup_cleanup = stop_duration_timer
+    # The cloud peer-channel synchronizer applies a modem-side ATA result
+    # after the popup has already been created.  Keep the UI transition on
+    # the window so the namespace runtime can invoke it safely on the Tk
+    # thread without reaching into this closure.
+    win._call_popup_mark_connected = mark_connected
     win.protocol("WM_DELETE_WINDOW", close_popup)
     center_window(win, parent)
     win.deiconify()

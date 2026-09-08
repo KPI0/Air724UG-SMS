@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import codecs
+import inspect
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
@@ -117,6 +118,19 @@ def _push_sms_diagnostic_debug(push_serial_debug, message):
         pass
 
 
+def _mark_call_connected(callback, call_session_id=""):
+    """Notify the UI and keep compatibility with older zero-argument bindings."""
+    session_id = str(call_session_id or "").strip()
+    if not session_id:
+        return callback()
+    try:
+        signature = inspect.signature(callback)
+        signature.bind(session_id)
+    except (TypeError, ValueError):
+        return callback()
+    return callback(session_id)
+
+
 class SerialLineDecoder:
     def __init__(self, encoding="utf-8"):
         self.encoding = encoding
@@ -213,6 +227,8 @@ def handle_serial_runtime_line(
         state.call_state.ring_timeout_target = 0.0
         state.call_state.last_clip_num = ""
         state.call_state.call_session_id = ""
+        state.call_state.pending_incoming_connected_until = 0.0
+        state.call_state.incoming_connected_session_id = ""
         if timed_out_number:
             try:
                 kwargs = {"direction": "incoming"}
@@ -307,7 +323,10 @@ def handle_serial_runtime_line(
             pass
     if call_decision.incoming_connected_number:
         try:
-            callbacks.mark_call_connected()
+            _mark_call_connected(
+                callbacks.mark_call_connected,
+                call_decision.call_session_id,
+            )
         except Exception:
             pass
 

@@ -4,6 +4,7 @@ import threading
 from datetime import datetime
 
 from sms_core.cloud_message_runtime import (
+    handle_device_call_state_runtime,
     handle_cloud_message_runtime,
     send_cloud_call_event_runtime,
     send_cloud_call_state_runtime,
@@ -390,6 +391,7 @@ def send_cloud_serial_command_namespace_runtime(
             response_coordinator=command_coordinator,
         ),
         set_current_dial_num=lambda value: namespace.__setitem__("current_dial_num", value),
+        mark_call_connected=namespace.get("mark_call_connected"),
     )
     return result
 
@@ -473,6 +475,17 @@ async def handle_cloud_message_namespace_runtime(
     else:
         handle_recording_message = lambda _data: False
 
+    def handle_device_call_state_message(data):
+        return handle_device_call_state_runtime(
+            data,
+            runtime_imei=namespace["_cloud_runtime_imei"],
+            register_incoming=namespace.get("register_peer_incoming_call"),
+            mark_call_connected=namespace.get("mark_call_connected"),
+            mark_peer_call_connected=namespace.get("mark_peer_call_connected"),
+            finish_call=namespace.get("finish_remote_incoming_call"),
+            log=namespace.get("_cloud_log"),
+        )
+
     def set_authorized(value):
         authorized = bool(value)
         namespace["cloud_device_authorized"] = authorized
@@ -506,4 +519,5 @@ async def handle_cloud_message_namespace_runtime(
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],
         handle_call_recording_message=handle_recording_message,
+        handle_device_call_state_message=handle_device_call_state_message,
     )
