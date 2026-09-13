@@ -3,7 +3,10 @@ import asyncio
 import json
 import queue
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
+from sms_core import cloud_event_ack_runtime as ack_runtime
 from sms_core import cloud_sms_event_runtime as events
 from sms_core.cloud_payloads import (
     build_call_event_payload, build_sent_sms_event_payload, build_sms_event_payload,
@@ -132,27 +135,66 @@ class CloudEventAckTests(unittest.IsolatedAsyncioTestCase):
         payload = payloads()[1]
         self.queue.put(payload)
         warnings = []
-        times = []
-        async def send(ws, payload):
-            times.append(asyncio.get_running_loop().time())
-            return await self.write(ws, payload)
-        task = asyncio.create_task(self.drain(
-            send_payload=send, ack_timeout=0.01, retry_base=0.02, retry_max=0.04,
-            log_error=warnings.append,
-        ))
-        try:
-            await self.wait_until(lambda: len(self.writes) >= 3)
-            self.assertLessEqual(len(self.writes), 3)
-            self.assertTrue(all(item == payload for _ws, item in self.writes))
-            self.assertEqual(self.queue.unfinished_tasks, 1)
-            self.assertGreaterEqual(times[1] - times[0], 0.025)
-            self.assertGreaterEqual(times[2] - times[1], 0.045)
-            self.assertEqual(len(warnings), 1)
-            self.assertTrue(self.confirm(payload))
-            await asyncio.wait_for(task, 1)
-            self.assertEqual(self.queue.unfinished_tasks, 0)
-        finally:
-            await self.cancel(task)
+        waits = asyncio.Queue()
+
+        async def controlled_wait_for(awaitable, timeout):
+            operation = asyncio.ensure_future(awaitable)
+            expiry = asyncio.get_running_loop().create_future()
+            waits.put_nowait((timeout, expiry))
+            try:
+                done, _ = await asyncio.wait(
+                    (operation, expiry), return_when=asyncio.FIRST_COMPLETED,
+                )
+                if operation in done:
+                    return operation.result()
+                raise asyncio.TimeoutError
+            finally:
+                expiry.cancel()
+                if not operation.done():
+                    operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+
+        async def next_wait(expected_timeout):
+            actual_timeout, expiry = await asyncio.wait_for(waits.get(), 1)
+            self.assertEqual(actual_timeout, expected_timeout)
+            return expiry
+
+        # Windows Python 3.11 has an approximately 15.6 ms monotonic clock.
+        # Control timeout expiry instead of measuring tiny real intervals;
+        # keep the actual send, ACK wake-up, cancellation and queue handling.
+        controlled_asyncio = SimpleNamespace(**vars(asyncio))
+        controlled_asyncio.wait_for = controlled_wait_for
+        with mock.patch.object(ack_runtime, "asyncio", controlled_asyncio):
+            task = asyncio.create_task(self.drain(log_error=warnings.append))
+            try:
+                backoffs = (2.0, 4.0, 8.0, 16.0, 30.0, 30.0)
+                for attempt, delay in enumerate(backoffs, start=1):
+                    await next_wait(10.0)  # The transport send completes normally.
+                    ack_expiry = await next_wait(10.0)
+                    self.assertEqual(len(self.writes), attempt)
+                    self.assertTrue(all(item == payload for _ws, item in self.writes))
+                    self.assertEqual(self.queue.unfinished_tasks, 1)
+                    self.assertFalse(task.done())
+                    ack_expiry.set_result(None)
+
+                    retry_expiry = await next_wait(delay)
+                    self.assertEqual(len(self.writes), attempt,
+                                     "Do not resend before the backoff expires")
+                    self.assertEqual(len(warnings), 1)
+                    if attempt < len(backoffs):
+                        retry_expiry.set_result(None)
+                    else:
+                        # A late ACK interrupts even the capped retry wait.
+                        self.assertTrue(self.confirm(payload))
+
+                await asyncio.wait_for(task, 1)
+                self.assertEqual(len(self.writes), len(backoffs))
+                self.assertEqual(self.queue.unfinished_tasks, 0)
+                self.assertTrue(self.queue.empty())
+                self.assertIsNone(self.state.pending_ack)
+                self.assertFalse(self.state.active_ack_tasks)
+            finally:
+                await self.cancel(task)
 
     async def test_transport_error_retries_event_without_rebuilding_payload(self):
         payload = payloads()[0]
