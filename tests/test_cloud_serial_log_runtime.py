@@ -172,7 +172,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         self.assertEqual(created[0].cr_frame, None)
         self.assertIn("scheduler down", logs[0])
 
-    def test_drain_cloud_serial_log_queue_clears_when_connection_stale(self):
+    def test_drain_cloud_serial_log_queue_preserves_current_state_when_connection_stale(self):
         log_queue = queue.Queue()
         log_queue.put_nowait({"id": 1})
         state = CloudSerialLogDrainState()
@@ -188,9 +188,9 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
             is_connected=lambda: True,
         ))
 
-        self.assertTrue(log_queue.empty())
-        self.assertEqual(log_queue.unfinished_tasks, 0)
-        self.assertFalse(state.drain_scheduled)
+        self.assertEqual(list(log_queue.queue), [{"id": 1}])
+        self.assertEqual(log_queue.unfinished_tasks, 1)
+        self.assertTrue(state.drain_scheduled)
         self.assertEqual(ws.sent, [])
 
     def test_drain_cloud_serial_log_queue_balances_tasks_when_send_fails(self):
@@ -223,7 +223,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         ws = object()
         calls = []
 
-        async def drain(_ws):
+        async def drain(_ws, _generation):
             pass
 
         def run_coroutine_threadsafe(coro, next_loop):
@@ -250,7 +250,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
     def test_schedule_cloud_serial_log_drain_resets_flag_on_failure(self):
         state = CloudSerialLogDrainState()
 
-        async def drain(_ws):
+        async def drain(_ws, _generation):
             pass
 
         def run_coroutine_threadsafe(coro, _loop):
@@ -272,11 +272,11 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         created = []
         logs = []
 
-        async def drain(_ws):
+        async def drain(_ws, _generation):
             pass
 
-        def drain_coro_factory(ws):
-            coro = drain(ws)
+        def drain_coro_factory(ws, generation):
+            coro = drain(ws, generation)
             created.append(coro)
             return coro
 
@@ -299,7 +299,7 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         state = CloudSerialLogDrainState()
         logs = []
 
-        def drain_coro_factory(_ws):
+        def drain_coro_factory(_ws, _generation):
             raise RuntimeError("factory failed")
 
         self.assertFalse(schedule_cloud_serial_log_drain(

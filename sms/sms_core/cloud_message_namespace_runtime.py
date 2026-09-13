@@ -3,6 +3,7 @@ import inspect
 import threading
 from datetime import datetime
 
+from sms_core.cloud_command_context import capture_cloud_serial_command_context
 from sms_core.cloud_message_runtime import (
     handle_device_call_state_runtime,
     handle_cloud_message_runtime,
@@ -22,8 +23,12 @@ from sms_core.cloud_sms_event_runtime import (
     clear_cloud_sms_event_state,
     drain_cloud_sms_event_queue,
     enqueue_cloud_sms_event_runtime,
+    has_cloud_sms_event_for_imei,
+    handle_cloud_sms_event_ack,
+    interrupt_cloud_sms_event_drain,
     schedule_cloud_sms_event_drain,
 )
+from sms_core.cloud_protocol import cloud_login_ack_matches_imei
 from sms_core.serial_debug import build_own_number_commands
 from sms_core.serial_sender import (
     AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
@@ -68,7 +73,9 @@ def clear_cloud_sms_event_state_namespace_runtime(namespace):
     )
 
 
-async def drain_cloud_sms_event_queue_namespace_runtime(namespace, ws, *, generation=None):
+async def drain_cloud_sms_event_queue_namespace_runtime(
+    namespace, ws, *, generation=None, drain_imei=None
+):
     return await _call_with_optional_log_error(
         drain_cloud_sms_event_queue,
         ws,
@@ -81,35 +88,44 @@ async def drain_cloud_sms_event_queue_namespace_runtime(namespace, ws, *, genera
         send_payload=namespace["_cloud_send_payload"],
         log_error=namespace.get("log_file_only"),
         generation=generation,
+        runtime_imei=namespace["_cloud_runtime_imei"],
+        drain_imei=drain_imei,
+        schedule_pending=namespace.get("_schedule_cloud_sms_event_drain"),
     )
 
 
 def schedule_cloud_sms_event_drain_namespace_runtime(namespace, loop=None, ws=None):
     loop = namespace["cloud_ws_loop"] if loop is None else loop
     ws = namespace["cloud_ws_conn"] if ws is None else ws
-    if (
-        loop is None
-        or not loop.is_running()
-        or ws is None
-        or ws is not namespace["cloud_ws_conn"]
-        or not namespace["cloud_connected"]
-        or not namespace["cloud_device_authorized"]
-        or namespace["CLOUD_SMS_EVENT_Q"].empty()
-    ):
-        return False
+    def can_schedule():
+        return bool(
+            loop is not None
+            and loop is namespace["cloud_ws_loop"]
+            and loop.is_running()
+            and ws is not None
+            and ws is namespace["cloud_ws_conn"]
+            and namespace["cloud_connected"]
+            and namespace["cloud_device_authorized"]
+            and has_cloud_sms_event_for_imei(
+                namespace["CLOUD_SMS_EVENT_Q"], namespace["_cloud_runtime_imei"]()
+            )
+        )
+
     return _call_with_optional_log_error(
         schedule_cloud_sms_event_drain,
         loop,
         ws,
         state=namespace["CLOUD_SMS_EVENT_DRAIN_STATE"],
-        drain_coro_factory=lambda current_ws, generation: namespace[
+        drain_coro_factory=lambda current_ws, generation, drain_imei: namespace[
             "_cloud_drain_sms_event_queue"
-        ](current_ws, generation=generation),
+        ](current_ws, generation=generation, drain_imei=drain_imei),
         log_error=namespace.get("log_file_only"),
+        runtime_imei=namespace["_cloud_runtime_imei"],
+        can_schedule=can_schedule,
     )
 
 
-async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws):
+async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws, *, generation=None):
     return await _call_with_optional_log_error(
         drain_cloud_serial_log_queue,
         ws,
@@ -118,18 +134,31 @@ async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws):
         state=namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
         is_current_connection=lambda current_ws: current_ws is namespace["cloud_ws_conn"],
         is_connected=lambda: namespace["cloud_connected"],
+        is_authorized=lambda: namespace["cloud_device_authorized"],
         log_error=namespace.get("log_file_only"),
+        generation=generation,
     )
 
 
-def schedule_cloud_serial_log_drain_namespace_runtime(namespace, loop, ws):
+def schedule_cloud_serial_log_drain_namespace_runtime(namespace, loop, ws, *, generation=None):
     return _call_with_optional_log_error(
         schedule_cloud_serial_log_drain,
         loop,
         ws,
         state=namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
-        drain_coro_factory=lambda current_ws: namespace["_cloud_drain_serial_log_queue"](current_ws),
+        drain_coro_factory=lambda current_ws, drain_generation: namespace["_cloud_drain_serial_log_queue"](
+            current_ws, generation=drain_generation
+        ),
         log_error=namespace.get("log_file_only"),
+        generation=generation,
+        can_schedule=lambda: (
+            ws is namespace["cloud_ws_conn"]
+            and loop is namespace["cloud_ws_loop"]
+            and loop is not None
+            and loop.is_running()
+            and namespace["cloud_connected"]
+            and namespace["cloud_device_authorized"]
+        ),
     )
 
 
@@ -157,8 +186,12 @@ def send_cloud_serial_log_namespace_runtime(
         runtime_imei=namespace["_cloud_runtime_imei"],
         build_payload=build_payload,
         log_queue=namespace["CLOUD_SERIAL_LOG_Q"],
-        schedule_drain=lambda loop, ws: namespace["_schedule_cloud_serial_log_drain"](loop, ws),
+        schedule_drain=lambda loop, ws, generation=None: namespace["_schedule_cloud_serial_log_drain"](
+            loop, ws, generation=generation
+        ),
         log_error=namespace.get("log_file_only"),
+        state=namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"],
+        is_authorized=lambda: namespace["cloud_device_authorized"],
     )
 
 
@@ -192,6 +225,7 @@ def send_cloud_call_recording_status_namespace_runtime(namespace, status, metada
         metadata.get("size"),
         namespace["_cloud_now_ts"](),
         namespace["_cloud_identity_payload"](),
+        direction=metadata.get("direction"),
     )
     if payload is None:
         return False
@@ -341,8 +375,25 @@ def send_cloud_serial_command_namespace_runtime(
     command,
     command_data=None,
     *,
+    command_context=None,
     send_runtime=send_cloud_serial_command_runtime,
 ):
+    if command_context is None:
+        command_context = capture_cloud_serial_command_context(namespace)
+    context_error = ""
+
+    def get_command_serial():
+        nonlocal context_error
+        # All three transaction writers call this under serial_lock before
+        # selecting a connection and again before each write (including PDU).
+        context_error = context_error or command_context.rejection_reason(namespace)
+        return None if context_error else command_context.serial
+
+    with namespace["serial_lock"]:
+        get_command_serial()
+    if context_error:
+        return False, context_error
+
     sms_coordinator = namespace.get(
         "SMS_SEND_COORDINATOR",
         DEFAULT_SMS_PDU_SEND_COORDINATOR,
@@ -355,7 +406,7 @@ def send_cloud_serial_command_namespace_runtime(
     def execute_confirmed_command(_serial_obj, next_command):
         return write_serial_command_sequence_confirmed_locked(
             namespace["serial_lock"],
-            lambda: namespace["serial_obj"],
+            get_command_serial,
             (next_command,),
             response_coordinator=command_coordinator,
             response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
@@ -365,7 +416,7 @@ def send_cloud_serial_command_namespace_runtime(
         command,
         command_meta=command_data,
         serial_lock=namespace["serial_lock"],
-        get_serial=lambda: namespace["serial_obj"],
+        get_serial=get_command_serial,
         write_command_result=execute_confirmed_command,
         push_serial_debug=namespace.get("_push_serial_debug"),
         port_ui=namespace.get("port_ui"),
@@ -376,7 +427,7 @@ def send_cloud_serial_command_namespace_runtime(
         ),
         send_sms_transaction=lambda phone, message: write_text_sms_pdu_locked(
             namespace["serial_lock"],
-            lambda: namespace["serial_obj"],
+            get_command_serial,
             phone,
             message,
             push_debug=namespace.get("_push_serial_debug"),
@@ -386,14 +437,14 @@ def send_cloud_serial_command_namespace_runtime(
         ),
         set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
             namespace["serial_lock"],
-            lambda: namespace["serial_obj"],
+            get_command_serial,
             build_own_number_commands(phone),
             response_coordinator=command_coordinator,
         ),
         set_current_dial_num=lambda value: namespace.__setitem__("current_dial_num", value),
         mark_call_connected=namespace.get("mark_call_connected"),
     )
-    return result
+    return (False, context_error) if context_error else result
 
 
 def apply_cloud_modem_health_namespace_runtime(namespace, result):
@@ -424,8 +475,11 @@ async def run_registered_cloud_serial_command_namespace_runtime(
     command,
     command_data=None,
     *,
+    command_context=None,
     start_worker=start_registered_serial_worker,
 ):
+    if command_context is None:
+        command_context = capture_cloud_serial_command_context(namespace)
     result_future = loop.create_future()
 
     def finish(result):
@@ -436,7 +490,9 @@ async def run_registered_cloud_serial_command_namespace_runtime(
 
     def worker():
         try:
-            result = namespace["_cloud_send_serial_command"](command, command_data)
+            result = namespace["_cloud_send_serial_command"](
+                command, command_data, command_context=command_context,
+            )
         except Exception as exc:
             result = (False, f"发送失败：{exc}")
         try:
@@ -489,9 +545,17 @@ async def handle_cloud_message_namespace_runtime(
     def set_authorized(value):
         authorized = bool(value)
         namespace["cloud_device_authorized"] = authorized
+        if not authorized:
+            interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), lock_held=True)
         if authorized:
             namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
             namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
+
+    def prepare_serial_command():
+        command_context = capture_cloud_serial_command_context(namespace, websocket=ws)
+        return lambda command, command_data=None: run_registered_cloud_serial_command_namespace_runtime(
+            namespace, loop, command, command_data, command_context=command_context,
+        )
 
     return await handle_runtime(
         message,
@@ -516,8 +580,17 @@ async def handle_cloud_message_namespace_runtime(
             command,
             command_data,
         ),
+        prepare_serial_command=prepare_serial_command,
         show_window=namespace["show_window"],
         hide_window=namespace["hide_window"],
         handle_call_recording_message=handle_recording_message,
+        handle_device_event_ack=lambda data: handle_cloud_sms_event_ack(
+            ws, data, state=namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"),
+        ),
         handle_device_call_state_message=handle_device_call_state_message,
+        auth_ack_matches=lambda data: (
+            ws is namespace["cloud_ws_conn"]
+            and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())
+        ),
+        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None),
     )

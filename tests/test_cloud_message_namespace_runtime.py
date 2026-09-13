@@ -19,6 +19,7 @@ from sms_core.cloud_message_namespace_runtime import (
 )
 from sms_core.serial_sender import AtCommandResponseCoordinator, SerialCommandResult
 from sms_core.cloud_modem_health import CloudModemHealthState
+from sms_core.cloud_serial_log_runtime import CloudSerialLogDrainState
 from sms_core.threading_runtime import WorkerThreadRegistry
 
 
@@ -49,7 +50,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
             "CLOUD_SERIAL_LOG_Q": queue.Queue(),
-            "CLOUD_SERIAL_LOG_DRAIN_STATE": "drain_state",
+            "CLOUD_SERIAL_LOG_DRAIN_STATE": CloudSerialLogDrainState(),
             "CLOUD_SERIAL_LOG_DRAIN_BATCH": 25,
             "cloud_ws_conn": "ws",
             "cloud_connected": True,
@@ -60,7 +61,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "cloud_ws_loop": FakeLoop(),
             "PORT": "COM5",
             "BAUD": 115200,
-            "serial_lock": "lock",
+            "serial_lock": threading.RLock(),
             "serial_obj": "serial",
             "SERIAL_COMMAND_THREAD_REGISTRY": WorkerThreadRegistry(),
             "asyncio": asyncio,
@@ -94,8 +95,8 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_now_ts": lambda: 123,
             "_cloud_identity_payload": lambda: {"imei": "861"},
             "_cloud_runtime_imei": lambda: "861",
-            "_schedule_cloud_serial_log_drain": lambda loop, ws: ("schedule", loop, ws),
-            "_cloud_drain_serial_log_queue": lambda ws: ("drain", ws),
+            "_schedule_cloud_serial_log_drain": lambda loop, ws, **kwargs: ("schedule", loop, ws),
+            "_cloud_drain_serial_log_queue": lambda ws, **kwargs: ("drain", ws),
             "_cloud_send_payload": lambda ws, payload: ("send_payload", ws, payload),
             "_cloud_log": lambda message: ("log", message),
             "_push_serial_debug": lambda line: ("debug", line),
@@ -105,7 +106,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             "_cloud_check_replay_window": lambda ws, data, mark_seen=True: ("replay", ws, data, mark_seen),
             "_cloud_auth_matches": lambda data: True,
             "_cloud_send_status_payload": lambda: {"status": "ok"},
-            "_cloud_send_serial_command": lambda command, command_data=None: (
+            "_cloud_send_serial_command": lambda command, command_data=None, **kwargs: (
                 "serial_command",
                 command,
                 command_data,
@@ -136,13 +137,13 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(schedule_cloud_serial_log_drain_namespace_runtime(namespace, "loop", "ws"), "scheduled")
 
-        self.assertEqual(calls[0], ("reset", namespace["CLOUD_SERIAL_LOG_Q"], "drain_state"))
+        self.assertEqual(calls[0], ("reset", namespace["CLOUD_SERIAL_LOG_Q"], namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"]))
         self.assertEqual(calls[1][0:2], ("drain", "ws"))
         self.assertEqual(calls[1][2]["batch_size"], 25)
         self.assertTrue(calls[1][2]["is_current_connection"]("ws"))
         self.assertTrue(calls[1][2]["is_connected"]())
         self.assertEqual(calls[2][0:3], ("schedule", "loop", "ws"))
-        self.assertEqual(calls[2][3]["state"], "drain_state")
+        self.assertIs(calls[2][3]["state"], namespace["CLOUD_SERIAL_LOG_DRAIN_STATE"])
 
     def test_send_cloud_serial_log_namespace_runtime_builds_payload_context(self):
         namespace = self.base_namespace()
@@ -257,10 +258,11 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
     def test_send_cloud_call_recording_status_namespace_runtime_schedules_payload(self):
         namespace = self.base_namespace()
         namespace["_cloud_build_call_recording_status_payload"] = (
-            lambda status, recording_id, phone, started_at, duration_ms, size, ts, identity: {
+            lambda status, recording_id, phone, started_at, duration_ms, size, ts, identity, *, direction=None: {
                 "type": "call_recording_status",
                 "status": status,
                 "recording_id": recording_id,
+                "direction": direction,
                 "phone": phone,
                 "started_at": started_at,
                 "duration_ms": duration_ms,
@@ -279,6 +281,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
                     "uploading",
                     {
                         "recording_id": "recording-a",
+                        "direction": "outgoing",
                         "phone": "10086",
                         "started_at": 1788048000,
                         "duration_ms": 3200,
@@ -290,6 +293,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["type"], "call_recording_status")
         self.assertEqual(payload["status"], "uploading")
         self.assertEqual(payload["recording_id"], "recording-a")
+        self.assertEqual(payload["direction"], "outgoing")
 
     def test_send_cloud_serial_command_namespace_runtime_forwards_serial_callbacks(self):
         namespace = self.base_namespace()
@@ -309,7 +313,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             self.assertEqual(result, (True, "ok"))
             command, forwarded = calls[0]
             self.assertEqual(command, "ATI")
-            self.assertEqual(forwarded["serial_lock"], "lock")
+            self.assertIs(forwarded["serial_lock"], namespace["serial_lock"])
             self.assertEqual(forwarded["get_serial"](), "serial")
             self.assertEqual(
                 forwarded["write_command_result"]("serial", "ATI"),
@@ -320,7 +324,7 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
 
         confirmed.assert_called_once()
         confirmed_args = confirmed.call_args.args
-        self.assertEqual(confirmed_args[0], "lock")
+        self.assertIs(confirmed_args[0], namespace["serial_lock"])
         self.assertTrue(callable(confirmed_args[1]))
         self.assertEqual(confirmed_args[1](), "serial")
         self.assertEqual(confirmed_args[2], ("ATI",))

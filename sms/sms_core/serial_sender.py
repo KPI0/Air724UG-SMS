@@ -224,7 +224,7 @@ class AtCommandResponseWaiter:
         if upper == "ERROR" or MODEM_ERROR_RE.fullmatch(body):
             self._complete(AtCommandResponse(False, body, str(line or "")))
             return
-        if _response_has_final_ok(upper):
+        if _is_final_ok_line(line, body):
             self._complete(AtCommandResponse(True, "", str(line or "")))
 
     def done(self):
@@ -698,6 +698,9 @@ def _write_confirmed_command_locked(
     response_coordinator,
     response_timeout,
     push_debug=None,
+    *,
+    append_crlf=True,
+    on_modem_response=None,
 ):
     if response_coordinator is None:
         return SerialCommandResult(False, "未配置 AT 指令响应确认器")
@@ -709,29 +712,55 @@ def _write_confirmed_command_locked(
     except Exception as exc:
         return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
 
-    result = _write_bytes_locked(
-        serial_lock,
-        get_serial,
-        (command + "\r\n").encode("utf-8"),
-        f">>> 发送: {command}\\r\\n" if push_debug else None,
-        push_debug,
-        expected_serial=transaction_serial,
-    )
-    if not result.ok:
-        try:
-            waiter.cancel(result.error)
-        except Exception:
-            pass
-        response_coordinator.finish(waiter)
-        return result
-
     try:
-        response = waiter.wait(response_timeout)
-    except Exception as exc:
-        response = AtCommandResponse(False, str(exc) or exc.__class__.__name__)
+        payload, display_suffix = build_serial_command_payload(command, append_crlf)
+        result = _write_bytes_locked(
+            serial_lock,
+            get_serial,
+            payload,
+            f">>> 发送: {command}{display_suffix}" if push_debug else None,
+            push_debug,
+            expected_serial=transaction_serial,
+        )
+        if not result.ok:
+            try:
+                waiter.cancel(result.error)
+            except Exception:
+                pass
+            return result
+        try:
+            response = waiter.wait(response_timeout)
+        except Exception as exc:
+            response = AtCommandResponse(False, str(exc) or exc.__class__.__name__)
+        if on_modem_response is not None:
+            on_modem_response(response)
+        return SerialCommandResult(bool(response.ok), str(response.error or ""))
     finally:
         response_coordinator.finish(waiter)
-    return SerialCommandResult(bool(response.ok), str(response.error or ""))
+
+
+def write_serial_command_confirmed_locked(
+    serial_lock,
+    get_serial,
+    command,
+    *,
+    response_coordinator,
+    append_crlf=True,
+    response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+    push_debug=None,
+    on_modem_response=None,
+):
+    """Confirm one command while preserving the serial editor's exact bytes."""
+    with DEFAULT_SERIAL_TRANSACTION_LOCK:
+        with serial_lock:
+            transaction_serial = get_serial()
+        if not _is_serial_open(transaction_serial):
+            return SerialCommandResult(False, "串口未连接")
+        return _write_confirmed_command_locked(
+            serial_lock, get_serial, transaction_serial, command,
+            response_coordinator, response_timeout, push_debug,
+            append_crlf=append_crlf, on_modem_response=on_modem_response,
+        )
 
 
 def write_serial_command_sequence_confirmed_locked(
@@ -1037,6 +1066,7 @@ def send_text_sms_pdu_async(
     segment_timeout=SMS_PDU_SEND_DEFAULT_TIMEOUT,
     prompt_timeout=None,
     thread_registry=DEFAULT_SMS_SEND_THREAD_REGISTRY,
+    on_sent=None,
 ):
     coordinator = response_coordinator or DEFAULT_SMS_PDU_SEND_COORDINATOR
     thread_holder = {}
@@ -1048,7 +1078,7 @@ def send_text_sms_pdu_async(
 
     def run_send():
         try:
-            return write_text_sms_pdu_locked(
+            sent = write_text_sms_pdu_locked(
                 serial_lock,
                 get_serial,
                 phone,
@@ -1060,6 +1090,18 @@ def send_text_sms_pdu_async(
                 segment_timeout=segment_timeout,
                 prompt_timeout=prompt_timeout,
             )
+            if sent and on_sent is not None:
+                try:
+                    on_sent()
+                except Exception:
+                    # Delivery is already confirmed. Do not report a send
+                    # failure or retry it because a history callback failed.
+                    if log_error is not None:
+                        try:
+                            log_error("短信已发送，但发送记录更新失败")
+                        except Exception:
+                            pass
+            return sent
         finally:
             if thread_registry is not None:
                 thread_registry.unregister(thread_holder.get("thread"))

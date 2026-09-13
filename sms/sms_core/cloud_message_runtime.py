@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import re
+from contextlib import nullcontext
 
 from sms_core.cloud_command_security import (
     CLOUD_SEND_SMS_TRANSACTION_COMMAND,
@@ -14,6 +15,7 @@ from sms_core.cloud_command_security import (
 )
 from sms_core.cloud_messages import (
     attach_cloud_task_ids,
+    cloud_action_kind,
     cloud_auth_failed_payload,
     cloud_command_started_payload,
     cloud_unauthorized_payload,
@@ -218,12 +220,17 @@ def send_cloud_serial_command_runtime(
 
     sensitive_decision = sensitive_cloud_command_decision(cmd, command_meta)
     sensitive_reason = sensitive_decision.reason
+    sensitive_allowed = is_sensitive_cloud_command_allowed(
+        sensitive_decision,
+        allow_sensitive_commands,
+    )
     try:
-        display_cmd = _cloud_command_display_text(cmd, command_meta)
-        if sensitive_reason and not is_sensitive_cloud_command_allowed(
-            sensitive_decision,
-            allow_sensitive_commands,
-        ):
+        display_cmd = _cloud_command_display_text(
+            cmd,
+            command_meta,
+            reveal_sensitive=sensitive_allowed,
+        )
+        if sensitive_reason and not sensitive_allowed:
             info = cloud_sensitive_command_block_message(sensitive_reason)
             try:
                 log(info, show_main=True)
@@ -282,7 +289,7 @@ def send_cloud_serial_command_runtime(
             # leave a stale number that can capture a later incoming call.
             if dial_match and callable(set_current_dial_num):
                 set_current_dial_num("")
-            if sensitive_reason:
+            if sensitive_reason and not sensitive_allowed:
                 return False, "敏感指令执行失败（指令内容已隐藏，Modem 未确认成功）"
             return False, result.error
 
@@ -337,12 +344,12 @@ def send_cloud_serial_command_runtime(
         log(f"云端指令执行成功：{display_cmd}")
         return True, f"执行成功：{display_cmd}"
     except Exception as exc:
-        if sensitive_reason:
+        if sensitive_reason and not sensitive_allowed:
             return False, f"敏感指令执行失败（指令内容已隐藏）：{type(exc).__name__}"
         return False, f"执行失败：{exc}"
 
 
-def _cloud_command_display_text(cmd, command_meta):
+def _cloud_command_display_text(cmd, command_meta, *, reveal_sensitive=False):
     if cloud_command_batch_error(cmd):
         return "云端 AT 指令（已拒绝：只允许单条指令）"
     meta = command_meta if isinstance(command_meta, dict) else {}
@@ -353,7 +360,7 @@ def _cloud_command_display_text(cmd, command_meta):
     ):
         return HIDDEN_SMS_COMMAND
     reason = decision.reason
-    if reason:
+    if reason and not reveal_sensitive:
         return f"敏感指令（{reason}，内容已隐藏）"
     return str(cmd or "").strip()
 
@@ -798,8 +805,25 @@ async def handle_cloud_message_runtime(
     hide_window,
     handle_call_recording_message=None,
     handle_device_call_state_message=None,
+    auth_ack_matches=None,
+    auth_ack_lock=None,
+    prepare_serial_command=None,
+    handle_device_event_ack=None,
 ):
     incoming, error_payload = parse_cloud_message(message)
+    if error_payload is None and incoming.msg_type == "device_event_ack":
+        # Save ACKs are connection-scoped protocol replies, not commands;
+        # they carry no command secret, replay timestamp or serial action.
+        accepted = handle_device_event_ack is not None and handle_device_event_ack(incoming.data)
+        return "device_event_ack" if accepted else "stale_event_ack"
+    if (
+        error_payload is None
+        and prepare_serial_command is not None
+        and cloud_action_kind(incoming.action) == "send_at"
+    ):
+        # Capture the target before replay validation or the started ACK can
+        # yield. Login ACKs and other non-serial messages need no serial state.
+        send_serial_command = prepare_serial_command()
     log(f"收到：{cloud_incoming_preview(incoming)}")
     if error_payload is not None:
         await reply(error_payload)
@@ -812,15 +836,16 @@ async def handle_cloud_message_runtime(
         await reply(attach_cloud_task_ids(payload, incoming.task_id))
 
     if is_cloud_auth_ack_type(msg_type):
-        auth_status = auth_status_from_ack(data)
-        if auth_status == "authorized":
-            set_authorized(True)
+        with auth_ack_lock if auth_ack_lock is not None else nullcontext():
+            if auth_ack_matches is not None and not auth_ack_matches(data):
+                return "stale_ack"
+            auth_status = auth_status_from_ack(data)
+            set_authorized(auth_status == "authorized")
             set_auth_status_from_ack(data)
+        if auth_status == "authorized":
             log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return
 
-        set_authorized(False)
-        set_auth_status_from_ack(data)
         if auth_status == "waiting":
             set_cloud_status("🌐 等待授权", "#b26a00")
             log(

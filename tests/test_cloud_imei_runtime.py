@@ -265,11 +265,14 @@ class CloudImeiRuntimeTests(unittest.TestCase):
             get_serial=lambda: "serial",
             write_command_result=lambda serial_obj, command: SerialCommandResult(False, "closed"),
             set_query_deadline=lambda deadline: calls.append(("deadline", deadline)),
+            monotonic=lambda: 10.0,
             cloud_log=lambda message: calls.append(("log", message)),
         )
 
         self.assertFalse(ok)
-        self.assertEqual(calls, [("log", "读取IMEI失败：closed")])
+        self.assertEqual(calls, [
+            ("deadline", 16.0), ("deadline", 0.0), ("log", "读取IMEI失败：closed"),
+        ])
 
     def test_request_cloud_device_imei_runtime_starts_worker_thread(self):
         calls = []

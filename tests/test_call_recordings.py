@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from sms_core.call_recordings import (
@@ -180,7 +181,7 @@ class CallRecordingRepositoryTests(unittest.TestCase):
     def test_invalid_chunk_aborts_and_removes_partial_file(self):
         receiver = SerialCallRecordingReceiver(self.repository)
         receiver.consume_line(begin_frame("recording-invalid"))
-        partial = Path(self.repository.incoming_path("recording-invalid"))
+        partial = Path(receiver.current.temp_path)
         self.assertTrue(partial.exists())
 
         receiver.consume_line(chunk_frame("recording-invalid", 2, AMR_PAYLOAD))
@@ -224,6 +225,8 @@ class CallRecordingRepositoryTests(unittest.TestCase):
     def test_repository_removes_stale_partial_files_on_startup(self):
         partial = Path(self.repository.incoming_path("stale-recording"))
         partial.write_bytes(b"partial")
+        old = time.time() - 7 * 86400
+        os.utime(partial, (old, old))
 
         reloaded = CallRecordingRepository(self.root / "recordings")
 
@@ -237,13 +240,13 @@ class CallRecordingRepositoryTests(unittest.TestCase):
             monotonic=lambda: now[0],
         )
         receiver.consume_line(begin_frame("recording-abort"))
-        abort_path = Path(self.repository.incoming_path("recording-abort"))
+        abort_path = Path(receiver.current.temp_path)
         self.assertTrue(abort_path.exists())
         self.assertTrue(receiver.abort("serial_disconnect"))
         self.assertFalse(abort_path.exists())
 
         receiver.consume_line(begin_frame("recording-timeout"))
-        timeout_path = Path(self.repository.incoming_path("recording-timeout"))
+        timeout_path = Path(receiver.current.temp_path)
         now[0] += 31.0
         self.assertTrue(receiver.expire_stale())
         self.assertFalse(timeout_path.exists())

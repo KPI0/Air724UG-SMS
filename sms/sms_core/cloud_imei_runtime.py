@@ -3,6 +3,8 @@ import time
 
 from sms_core.serial_sender import (
     DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    DEFAULT_SERIAL_TRANSACTION_LOCK,
+    DEFAULT_SERIAL_WRITE_LOCK,
     start_registered_serial_worker,
 )
 
@@ -108,19 +110,42 @@ def request_cloud_device_imei_worker(
     get_serial,
     write_command_result,
     set_query_deadline,
+    get_query_deadline=None,
+    transaction_lock=DEFAULT_SERIAL_TRANSACTION_LOCK,
+    write_lock=DEFAULT_SERIAL_WRITE_LOCK,
     monotonic=time.monotonic,
     push_serial_debug=None,
     cloud_log,
 ):
     try:
-        with serial_lock:
-            serial_obj = get_serial()
-        result = write_command_result(serial_obj, IMEI_READ_COMMAND)
+        # Wait for preceding AT/PDU transactions before starting the reply
+        # window. Choose the connection only after that wait, since a serial
+        # reconnect may have replaced it while this request was queued.
+        with transaction_lock, write_lock:
+            with serial_lock:
+                serial_obj = get_serial()
+                query_deadline = monotonic() + IMEI_QUERY_WINDOW_SECONDS
+                set_query_deadline(query_deadline)
+
+            def cancel_query_window():
+                with serial_lock:
+                    if get_query_deadline is None or get_query_deadline() == query_deadline:
+                        set_query_deadline(0.0)
+
+            try:
+                # Do not hold serial_lock while writing/flushing: the read
+                # thread must be able to consume an immediate reply.
+                result = write_command_result(serial_obj, IMEI_READ_COMMAND)
+            except Exception:
+                cancel_query_window()
+                raise
+            if not result.ok:
+                cancel_query_window()
         if not result.ok:
             cloud_log(f"读取IMEI失败：{result.error}")
             return False
-        with serial_lock:
-            set_query_deadline(monotonic() + IMEI_QUERY_WINDOW_SECONDS)
+        # A reply can already have consumed the window during flush().
+        # Successful writes must not reopen it after capture completes.
 
         if push_serial_debug is not None:
             try:
@@ -140,6 +165,9 @@ def request_cloud_device_imei_runtime(
     get_serial,
     write_command_result,
     set_query_deadline,
+    get_query_deadline=None,
+    transaction_lock=DEFAULT_SERIAL_TRANSACTION_LOCK,
+    write_lock=DEFAULT_SERIAL_WRITE_LOCK,
     cloud_log,
     monotonic=time.monotonic,
     push_serial_debug=None,
@@ -153,6 +181,9 @@ def request_cloud_device_imei_runtime(
             get_serial=get_serial,
             write_command_result=write_command_result,
             set_query_deadline=set_query_deadline,
+            get_query_deadline=get_query_deadline,
+            transaction_lock=transaction_lock,
+            write_lock=write_lock,
             monotonic=monotonic,
             push_serial_debug=push_serial_debug,
             cloud_log=cloud_log,

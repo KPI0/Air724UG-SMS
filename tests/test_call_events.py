@@ -331,6 +331,50 @@ class CallEventTests(unittest.TestCase):
         self.assertEqual(clip.state.ring_timeout_target, -1.0)
         self.assertEqual(clip.state.pending_incoming_connected_until, 0.0)
 
+    def test_ring_clears_stale_outgoing_session_before_delayed_clip(self):
+        ringing = handle_call_line(
+            "RING",
+            CallState(
+                current_dial_num="10086",
+                call_session_id="outgoing:10:1",
+                outgoing_connected_session_id="outgoing:10:1",
+            ),
+            now=20.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertEqual(ringing.state.current_dial_num, "")
+        self.assertEqual(ringing.state.call_session_id, "")
+        self.assertEqual(ringing.state.outgoing_connected_session_id, "")
+        self.assertEqual(ringing.call_session_id, "")
+
+        clip = handle_call_line(
+            '+CLIP: "10010",129',
+            ringing.state,
+            now=20.5,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+        ended = handle_call_line(
+            "NO CARRIER",
+            clip.state,
+            now=21.0,
+            filter_mode="Disabled",
+            whitelist=[],
+            blacklist=[],
+            popup_active=False,
+        )
+
+        self.assertTrue(ended.call_ended)
+        self.assertEqual(ended.end_direction, "incoming")
+        self.assertEqual(ended.end_number, "10010")
+        self.assertTrue(ended.call_session_id.startswith("incoming:"))
+
     def test_handle_call_line_reports_incoming_call(self):
         decision = handle_call_line(
             '+CLIP: "+8613123123123",129',

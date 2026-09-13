@@ -2,10 +2,17 @@ import queue
 import tkinter as tk
 from tkinter import ttk
 
-from sms_core.serial_debug import COMMON_SERIAL_COMMANDS, quick_command_label
+from sms_core.serial_debug import (
+    CALL_FORWARD_ALL_QUERY_COMMAND,
+    CALL_FORWARD_DISABLE_COMMAND,
+    CALL_FORWARD_QUERY_COMMAND,
+    COMMON_SERIAL_COMMANDS,
+    quick_command_label,
+)
 from sms_core.threading_runtime import task_done_safely
 from sms_ui.serial_debug_finder import SerialDebugFinder
 from sms_ui.serial_debug_dialogs import (
+    open_call_forwarding_dialog,
     open_dial_dialog,
     open_input_pin_dialog,
     open_input_puk_dialog,
@@ -212,6 +219,31 @@ def create_serial_debug_quick_actions(
             quick_send,
             center_window,
         ),
+    ).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(
+        quick_scroll_frame,
+        text="查询全部呼叫转移",
+        command=lambda: quick_send(CALL_FORWARD_ALL_QUERY_COMMAND),
+    ).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(
+        quick_scroll_frame,
+        text="查询无条件呼叫转移",
+        command=lambda: quick_send(CALL_FORWARD_QUERY_COMMAND),
+    ).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(
+        quick_scroll_frame,
+        text="设置无条件呼叫转移",
+        command=lambda: open_call_forwarding_dialog(
+            parent,
+            enabled_var,
+            quick_send,
+            center_window,
+        ),
+    ).pack(fill="x", padx=6, pady=(0, 6))
+    ttk.Button(
+        quick_scroll_frame,
+        text="关闭全部呼叫转移",
+        command=lambda: quick_send(CALL_FORWARD_DISABLE_COMMAND),
     ).pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(
         quick_scroll_frame,

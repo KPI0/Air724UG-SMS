@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import threading
 import time
+
+from sms_core.call_recording_files import cleanup_incoming_files, create_incoming_file
 
 
 RECORDING_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -49,6 +52,14 @@ def _safe_int(value, default=0, minimum=None, maximum=None):
     return number
 
 
+def _safe_timestamp(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return number if math.isfinite(number) and number > 0 else 0.0
+
+
 def _valid_recording_id(value):
     value = str(value or "").strip()
     return value if RECORDING_ID_RE.fullmatch(value) else ""
@@ -57,6 +68,11 @@ def _valid_recording_id(value):
 def _valid_imei(value):
     value = str(value or "").strip()
     return value if IMEI_RE.fullmatch(value) else ""
+
+
+def _normalize_call_direction(value):
+    value = str(value or "").strip().lower()
+    return value if value in ("incoming", "outgoing") else ""
 
 
 def _recording_imei_from_id(recording_id):
@@ -102,6 +118,7 @@ class SavedCallRecording:
     sha256: str
     format: str = "amr"
     mime_type: str = "audio/amr"
+    direction: str = ""
 
 
 class CallRecordingRepository:
@@ -116,21 +133,7 @@ class CallRecordingRepository:
         self.rebuild_index()
 
     def cleanup_incoming(self):
-        removed = 0
-        try:
-            names = os.listdir(self.incoming_dir)
-        except OSError:
-            return 0
-        for name in names:
-            path = os.path.join(self.incoming_dir, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                os.remove(path)
-                removed += 1
-            except OSError:
-                pass
-        return removed
+        return cleanup_incoming_files(self.incoming_dir)
 
     def rebuild_index(self):
         records = {}
@@ -179,6 +182,13 @@ class CallRecordingRepository:
         if not recording_id:
             raise ValueError("invalid recording id")
         return os.path.join(self.incoming_dir, recording_id + ".part")
+
+    def create_incoming(self, recording_id):
+        recording_id = _valid_recording_id(recording_id)
+        if not recording_id:
+            raise ValueError("invalid recording id")
+        os.makedirs(self.incoming_dir, exist_ok=True)
+        return create_incoming_file(self.incoming_dir, recording_id)
 
     def _target_paths(self, metadata):
         date_value, started_at = _recording_date(metadata.get("started_at"))
@@ -243,6 +253,7 @@ class CallRecordingRepository:
             sha256=str(metadata.get("sha256") or ""),
             format=str(metadata.get("format") or "amr"),
             mime_type=str(metadata.get("mime_type") or "audio/amr"),
+            direction=_normalize_call_direction(metadata.get("direction")),
         )
 
     def commit(self, temp_path, metadata, sha256_hex):
@@ -275,6 +286,7 @@ class CallRecordingRepository:
                 "imei": imei,
                 "path": os.path.relpath(path, self.recordings_dir),
                 "phone": str(metadata.get("phone") or "unknown")[:64],
+                "direction": _normalize_call_direction(metadata.get("direction")),
                 "started_at": started_at,
                 "duration_ms": _safe_int(metadata.get("duration_ms"), 0, 0, 3600000),
                 "size": os.path.getsize(path),
@@ -283,6 +295,7 @@ class CallRecordingRepository:
                 "mime_type": "audio/amr",
                 "upload_status": "pending",
                 "upload_attempted_at": 0,
+                "upload_retry_at": 0,
                 "uploaded_at": 0,
                 "upload_error": "",
             }
@@ -317,7 +330,8 @@ class CallRecordingRepository:
         return self._update_upload_state(
             recording,
             upload_status="uploading",
-            upload_attempted_at=int(time.time()),
+            upload_attempted_at=time.time(),
+            upload_retry_at=0,
             upload_error="",
         )
 
@@ -326,19 +340,25 @@ class CallRecordingRepository:
             recording,
             upload_status="uploaded",
             uploaded_at=int(time.time()),
+            upload_retry_at=0,
             upload_error="",
         )
 
-    def mark_pending(self, recording, error=""):
+    def mark_pending(self, recording, error="", *, retry_after=0.0):
+        retry_after = min(CLOUD_RECORDING_RETRY_SECONDS, _safe_timestamp(retry_after))
         return self._update_upload_state(
             recording,
             upload_status="pending",
+            upload_retry_at=time.time() + retry_after if retry_after else 0,
             upload_error=str(error or "")[:240],
         )
 
     def pending(self, imei=""):
+        return [record for record, delay in self.pending_with_delays(imei) if delay <= 0]
+
+    def pending_with_delays(self, imei=""):
         records = []
-        now = int(time.time())
+        now = time.time()
         imei = _valid_imei(imei)
         with self.lock:
             for record in self.records.values():
@@ -348,14 +368,16 @@ class CallRecordingRepository:
                 if not metadata:
                     continue
                 status = str(metadata.get("upload_status") or "pending")
-                attempted_at = _safe_int(metadata.get("upload_attempted_at"), 0)
                 if status == "uploaded":
                     continue
-                if status == "uploading" and now - attempted_at < CLOUD_RECORDING_RETRY_SECONDS:
-                    continue
+                retry_at = _safe_timestamp(metadata.get("upload_retry_at"))
+                if status == "uploading":
+                    attempted_at = _safe_timestamp(metadata.get("upload_attempted_at"))
+                    retry_at = max(retry_at, attempted_at + CLOUD_RECORDING_RETRY_SECONDS)
+                delay = max(0.0, min(CLOUD_RECORDING_RETRY_SECONDS, retry_at - now))
                 if os.path.isfile(record.path) and 0 < record.size <= MAX_CALL_RECORDING_BYTES:
-                    records.append(record)
-        records.sort(key=lambda item: (item.started_at, item.recording_id))
+                    records.append((record, delay))
+        records.sort(key=lambda item: (item[0].started_at, item[0].recording_id))
         return records
 
 
@@ -372,6 +394,7 @@ class _IncomingRecording:
     digest: object
     last_activity: float
     duplicate: bool = False
+    lease: object = None
 
 
 class SerialCallRecordingReceiver:
@@ -395,8 +418,10 @@ class SerialCallRecordingReceiver:
         self.source_imei = source_imei or (lambda: "")
         self.lock = threading.RLock()
         self.current = None
+        self._direction_prelude = None
 
     def _abort(self, reason=""):
+        self._direction_prelude = None
         transfer = self.current
         self.current = None
         if transfer is None:
@@ -411,6 +436,9 @@ class SerialCallRecordingReceiver:
                 os.remove(transfer.temp_path)
             except OSError:
                 pass
+            finally:
+                if transfer.lease is not None:
+                    transfer.lease.close()
             if self.on_aborted is not None:
                 try:
                     self.on_aborted(dict(transfer.metadata), str(reason or "aborted"))
@@ -420,6 +448,11 @@ class SerialCallRecordingReceiver:
             _safe_log(self.log_error, "Call recording serial transfer aborted: " + str(reason))
 
     def _expire_stale(self):
+        if (
+            self._direction_prelude is not None
+            and self.monotonic() - self._direction_prelude[2] > SERIAL_RECORDING_TIMEOUT_SECONDS
+        ):
+            self._direction_prelude = None
         if self.current is None:
             return
         if self.monotonic() - self.current.last_activity > SERIAL_RECORDING_TIMEOUT_SECONDS:
@@ -437,7 +470,7 @@ class SerialCallRecordingReceiver:
             self._abort(reason or "aborted")
             return had_transfer
 
-    def _begin(self, parts):
+    def _begin(self, parts, direction=""):
         if len(parts) not in (7, 8):
             raise ValueError("invalid begin frame")
         recording_id = _valid_recording_id(parts[1])
@@ -462,9 +495,9 @@ class SerialCallRecordingReceiver:
         existing = self.repository.find(recording_id, source_imei)
         temp_path = self.repository.incoming_path(recording_id)
         file = None
+        lease = None
         if existing is None:
-            os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-            file = open(temp_path, "wb")
+            temp_path, file, lease = self.repository.create_incoming(recording_id)
         self.current = _IncomingRecording(
             recording_id=recording_id,
             temp_path=temp_path,
@@ -473,6 +506,7 @@ class SerialCallRecordingReceiver:
                 "recording_id": recording_id,
                 "imei": source_imei,
                 "phone": phone or "unknown",
+                "direction": _normalize_call_direction(direction),
                 "started_at": started_at,
                 "duration_ms": duration_ms,
                 "size": expected_size,
@@ -486,6 +520,7 @@ class SerialCallRecordingReceiver:
             digest=hashlib.sha256(),
             last_activity=self.monotonic(),
             duplicate=existing is not None,
+            lease=lease,
         )
         if not self.current.duplicate and self.on_started is not None:
             try:
@@ -556,6 +591,9 @@ class SerialCallRecordingReceiver:
                 except Exception as exc:
                     _safe_log(self.log_error, "Call recording save failure callback failed: {!r}".format(exc))
             raise
+        finally:
+            if transfer.lease is not None:
+                transfer.lease.close()
         if self.on_saved is not None:
             try:
                 self.on_saved(saved)
@@ -569,11 +607,28 @@ class SerialCallRecordingReceiver:
             if not text.startswith(SERIAL_RECORDING_PREFIX):
                 self._expire_stale()
                 return False
+            # Keep one bounded prelude across interleaved ordinary logs, but
+            # consume it at the next recording frame and require a matching ID.
+            prelude = self._direction_prelude
+            self._direction_prelude = None
             try:
                 parts = text.split("|")
                 frame_type = parts[0]
-                if frame_type == "@@CALL_RECORD_BEGIN":
-                    self._begin(parts)
+                if frame_type == "@@CALL_RECORD_META":
+                    if len(parts) == 3 and _valid_recording_id(parts[1]):
+                        direction = _normalize_call_direction(parts[2])
+                        if direction:
+                            self._direction_prelude = (parts[1], direction, self.monotonic())
+                elif frame_type == "@@CALL_RECORD_BEGIN":
+                    direction = (
+                        prelude[1]
+                        if (
+                            prelude and len(parts) > 1 and prelude[0] == parts[1]
+                            and self.monotonic() - prelude[2] <= SERIAL_RECORDING_TIMEOUT_SECONDS
+                        )
+                        else ""
+                    )
+                    self._begin(parts, direction)
                 elif frame_type == "@@CALL_RECORD_CHUNK":
                     self._chunk(parts)
                 elif frame_type == "@@CALL_RECORD_END":
@@ -593,6 +648,10 @@ class CloudCallRecordingUploader:
         self.log_error = log_error
         self._task = None
         self._next_schedule = None
+        self._retry_handle = None
+        self._retry_deadlines = {}
+        self._schedule_generation = 0
+        self._stopping = False
         self._offer_waiters = {}
         self._result_waiters = {}
 
@@ -675,6 +734,7 @@ class CloudCallRecordingUploader:
             "type": "call_recording_offer",
             "recording_id": recording.recording_id,
             "phone": recording.phone,
+            "direction": recording.direction,
             "started_at": recording.started_at,
             "duration_ms": recording.duration_ms,
             "size": recording.size,
@@ -771,9 +831,15 @@ class CloudCallRecordingUploader:
             str(result.get("reason") or result.get("message") or "upload_failed"),
         )
 
-    def _restore_pending(self, recording, reason):
+    def _restore_pending(self, recording, reason, *, retry_after=0.0):
+        key = (recording.imei, recording.recording_id)
+        if retry_after > 0:
+            # Keep a monotonic fallback even when the sidecar cannot be written.
+            self._retry_deadlines[key] = asyncio.get_running_loop().time() + retry_after
+        else:
+            self._retry_deadlines.pop(key, None)
         try:
-            restored = self.repository.mark_pending(recording, reason)
+            restored = self.repository.mark_pending(recording, reason, retry_after=retry_after)
         except Exception as exc:
             restored = False
             _safe_log(
@@ -787,31 +853,125 @@ class CloudCallRecordingUploader:
             )
         return restored
 
-    async def _drain(self, ws, send_payload, identity_payload, is_current, is_authorized):
+    @staticmethod
+    def _schedule_imei(schedule_args):
+        identity = dict(schedule_args[2]() or {})
+        return _valid_imei(identity.get("imei") or identity.get("device_imei"))
+
+    def _schedule_is_current(self, schedule_args, imei=""):
         try:
-            identity = dict(identity_payload() or {})
-            current_imei = _valid_imei(identity.get("imei") or identity.get("device_imei"))
+            return bool(
+                schedule_args[3](schedule_args[0])
+                and schedule_args[4]()
+                and (not imei or self._schedule_imei(schedule_args) == imei)
+            )
+        except Exception:
+            return False
+
+    def _pending_with_delays(self, imei):
+        now = asyncio.get_running_loop().time()
+        pending = self.repository.pending_with_delays(imei)
+        pending_keys = {(record.imei, record.recording_id) for record, _delay in pending}
+        self._retry_deadlines = {
+            key: deadline
+            for key, deadline in self._retry_deadlines.items()
+            if deadline > now or key in pending_keys
+        }
+        scheduled = []
+        for record, delay in pending:
+            key = (record.imei, record.recording_id)
+            if key not in self._retry_deadlines and delay > 0:
+                # Convert a persisted wall-clock deadline once per wait. A
+                # clock correction must not restart the same cooldown on
+                # every scan, including after the monotonic deadline expires.
+                self._retry_deadlines[key] = now + delay
+            deadline = self._retry_deadlines.get(key, now)
+            scheduled.append((record, max(0.0, deadline - now)))
+        return scheduled
+
+    def _cancel_retry(self):
+        if self._retry_handle is not None:
+            self._retry_handle.cancel()
+            self._retry_handle = None
+
+    def cancel_pending(self):
+        """Invalidate queued starts and retries on the owning cloud loop."""
+        self._schedule_generation += 1
+        self._next_schedule = None
+        self._cancel_retry()
+
+    async def stop(self):
+        """Release upload waiters and timers before the cloud loop is closed."""
+        self._stopping = True
+        self.cancel_pending()
+        task = self._task
+        try:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            if self._task is task:
+                self._task = None
+            self._stopping = False
+
+    def _start_schedule(self, schedule_args, generation, imei=""):
+        if self._stopping or generation != self._schedule_generation or not self._schedule_is_current(schedule_args, imei):
+            return
+        self._cancel_retry()
+        if self._task is not None and not self._task.done():
+            self._next_schedule = (schedule_args, generation, imei)
+            return
+        self._task = asyncio.get_running_loop().create_task(self._drain(*schedule_args))
+
+    def _schedule_retry(self, schedule_args, imei, generation):
+        if generation != self._schedule_generation or not self._schedule_is_current(schedule_args, imei):
+            return
+        pending = self._pending_with_delays(imei)
+        if not pending:
+            return
+        delay = max(0.05, min(delay for _record, delay in pending))
+        self._cancel_retry()
+
+        def retry():
+            self._retry_handle = None
+            self._start_schedule(schedule_args, generation, imei)
+
+        self._retry_handle = asyncio.get_running_loop().call_later(delay, retry)
+
+    async def _drain(self, ws, send_payload, identity_payload, is_current, is_authorized):
+        schedule_args = (ws, send_payload, identity_payload, is_current, is_authorized)
+        generation = self._schedule_generation
+        current_imei = ""
+        cancelled = False
+        try:
+            current_imei = self._schedule_imei(schedule_args)
             if not current_imei:
                 return
-            for recording in self.repository.pending(current_imei):
-                if not is_current(ws) or not is_authorized():
+            for recording, delay in self._pending_with_delays(current_imei):
+                if not self._schedule_is_current(schedule_args, current_imei):
                     break
+                if delay > 0:
+                    continue
                 try:
                     if not self.repository.mark_uploading(recording):
                         _safe_log(
                             self.log_error,
                             "Unable to persist call recording upload state",
                         )
-                        break
-                    ok, reason = await self._send_recording(
-                        recording,
-                        ws,
-                        send_payload,
-                        identity_payload,
-                        is_current,
-                    )
+                        ok, reason = False, "upload_state_persist_error"
+                    else:
+                        ok, reason = await self._send_recording(
+                            recording,
+                            ws,
+                            send_payload,
+                            identity_payload,
+                            lambda _ws: self._schedule_is_current(schedule_args, current_imei),
+                        )
+                except asyncio.CancelledError:
+                    self._restore_pending(recording, "upload_cancelled")
+                    raise
                 except Exception as exc:
-                    reason = "unexpected_upload_error"
+                    ok, reason = False, "unexpected_upload_error"
                     _safe_log(
                         self.log_error,
                         "Upload call recording failed for {}: {!r}".format(
@@ -819,11 +979,12 @@ class CloudCallRecordingUploader:
                             exc,
                         ),
                     )
-                    self._restore_pending(recording, reason)
-                    break
-                if ok:
+                if ok or reason in TERMINAL_UPLOAD_FAILURE_REASONS:
                     try:
-                        uploaded = self.repository.mark_uploaded(recording)
+                        if self.repository.mark_uploaded(recording):
+                            self._retry_deadlines.pop((recording.imei, recording.recording_id), None)
+                            continue
+                        _safe_log(self.log_error, "Unable to persist uploaded call recording state")
                     except Exception as exc:
                         _safe_log(
                             self.log_error,
@@ -832,36 +993,20 @@ class CloudCallRecordingUploader:
                                 exc,
                             ),
                         )
-                        self._restore_pending(
-                            recording,
-                            "upload_state_persist_error",
-                        )
-                        break
-                    if not uploaded:
-                        _safe_log(
-                            self.log_error,
-                            "Unable to persist uploaded call recording state",
-                        )
-                        break
-                else:
-                    if reason in TERMINAL_UPLOAD_FAILURE_REASONS:
-                        try:
-                            if not self.repository.mark_uploaded(recording):
-                                self._restore_pending(recording, reason)
-                                break
-                        except Exception as exc:
-                            _safe_log(
-                                self.log_error,
-                                "Persist terminal call recording state failed for {}: {!r}".format(
-                                    recording.recording_id,
-                                    exc,
-                                ),
-                            )
-                            self._restore_pending(recording, reason)
-                            break
-                        continue
-                    self._restore_pending(recording, reason)
-                    break
+                    if ok:
+                        reason = "upload_state_persist_error"
+                # Failures on a replaced/unauthorized connection must not make
+                # the new connection wait. Active failures retain a cooldown,
+                # while other ready recordings can continue in this pass.
+                retry_after = (
+                    CLOUD_RECORDING_RETRY_SECONDS
+                    if self._schedule_is_current(schedule_args, current_imei)
+                    else 0.0
+                )
+                self._restore_pending(recording, reason, retry_after=retry_after)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as exc:
             _safe_log(self.log_error, "Upload call recording failed: {!r}".format(exc))
         finally:
@@ -869,35 +1014,20 @@ class CloudCallRecordingUploader:
             self._next_schedule = None
             self._task = None
             if next_schedule is not None:
-                next_ws = next_schedule[0]
-                next_is_current = next_schedule[3]
-                next_is_authorized = next_schedule[4]
-                if next_is_current(next_ws) and next_is_authorized():
-                    self._task = asyncio.get_running_loop().create_task(
-                        self._drain(*next_schedule)
-                    )
+                self._start_schedule(*next_schedule)
+            elif not cancelled and current_imei:
+                try:
+                    self._schedule_retry(schedule_args, current_imei, generation)
+                except Exception as exc:
+                    _safe_log(self.log_error, "Schedule call recording retry failed: {!r}".format(exc))
 
     def schedule(self, loop, ws, *, send_payload, identity_payload, is_current, is_authorized):
-        if loop is None or not loop.is_running() or ws is None or not is_authorized():
+        if self._stopping or loop is None or not loop.is_running() or ws is None or not is_authorized():
             return False
 
-        def start():
-            schedule_args = (
-                ws,
-                send_payload,
-                identity_payload,
-                is_current,
-                is_authorized,
-            )
-            if self._task is not None and not self._task.done():
-                self._next_schedule = schedule_args
-                return
-            self._task = loop.create_task(
-                self._drain(*schedule_args)
-            )
-
+        schedule_args = (ws, send_payload, identity_payload, is_current, is_authorized)
         try:
-            loop.call_soon_threadsafe(start)
+            loop.call_soon_threadsafe(self._start_schedule, schedule_args, self._schedule_generation)
             return True
         except Exception as exc:
             _safe_log(self.log_error, "Schedule call recording upload failed: {!r}".format(exc))

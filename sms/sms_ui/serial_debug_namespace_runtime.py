@@ -1,5 +1,7 @@
 import queue
 
+from sms_core.call_send_namespace_runtime import send_local_serial_command_namespace_runtime
+from sms_core.sms_send_namespace_runtime import send_manual_sms_namespace_runtime
 from sms_ui.serial_debug_app_runtime import open_serial_debug_window_runtime
 
 
@@ -82,6 +84,10 @@ def open_serial_debug_window_namespace_runtime(
         center_window=namespace["center_window"],
         window_title=namespace.get("SERIAL_DEBUG_WINDOW_TITLE", "串口调试"),
         log_error=namespace.get("log_file_only"),
+        send_sms=lambda phone, message: send_manual_sms_namespace_runtime(namespace, phone, message),
+        send_local_command=lambda command, append_crlf=True: send_local_serial_command_namespace_runtime(
+            namespace, command, append_crlf=append_crlf,
+        ),
         get_dial_popup=lambda: namespace.get("current_dial_popup"),
         set_dial_popup=lambda window: set_serial_debug_state_namespace_runtime(
             namespace,

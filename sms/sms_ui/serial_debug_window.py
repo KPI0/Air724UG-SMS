@@ -52,6 +52,8 @@ def open_serial_debug_window_dialog(
     log_error=None,
     get_dial_popup=lambda: None,
     set_dial_popup=lambda _window: None,
+    send_sms=None,
+    send_local_command=None,
 ):
     if current_window is not None and current_window.winfo_exists():
         current_window.deiconify()
@@ -147,14 +149,17 @@ def open_serial_debug_window_dialog(
         if not cmd:
             return "break"
 
-        send_command_async(
-            serial_lock,
-            get_serial_obj,
-            cmd,
-            append_crlf=crlf_var.get(),
-            push_debug=push_serial_debug,
-            log_error=log_error,
-        )
+        if send_local_command is not None:
+            send_local_command(cmd, append_crlf=crlf_var.get())
+        else:
+            send_command_async(
+                serial_lock,
+                get_serial_obj,
+                cmd,
+                append_crlf=crlf_var.get(),
+                push_debug=push_serial_debug,
+                log_error=log_error,
+            )
         return "break"
 
     btn_send = ttk.Button(send_frame, text="发送", width=8, command=send_cmd)
@@ -175,7 +180,9 @@ def open_serial_debug_window_dialog(
         )
 
     def send_text_sms_pdu(phone, msg):
-        send_text_sms_pdu_async(
+        if send_sms is not None:
+            return send_sms(phone, msg)
+        return send_text_sms_pdu_async(
             serial_lock,
             get_serial_obj,
             phone,

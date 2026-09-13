@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from sms_core.serial_debug import (
+    build_call_forward_enable_command,
     build_information_center_command,
     build_manual_operator_command,
     build_own_number_commands,
@@ -84,6 +85,43 @@ def open_modify_information_center_dialog(
             return
         try:
             command = build_information_center_command(number_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
+            return
+        win.destroy()
+        quick_send(command)
+
+    finish_debug_dialog(win, center_window, parent, ent, submit)
+
+
+def open_call_forwarding_dialog(parent, enabled_var, quick_send, center_window):
+    win = create_debug_dialog(parent)
+    win.title("设置无条件呼叫转移")
+    win.resizable(False, False)
+    win.transient(parent)
+    win.grab_set()
+
+    frm = ttk.Frame(win, padding=15)
+    frm.pack(fill="both", expand=True)
+
+    ttk.Label(frm, text="请输入呼叫转移目标号码：").pack(anchor="w", pady=(0, 10))
+    number_var = tk.StringVar()
+    ent = ttk.Entry(frm, textvariable=number_var, width=28)
+    ent.pack(fill="x", pady=(0, 5))
+
+    tk.Label(
+        frm,
+        text="国内号码使用语音类型 129，+ 国际号码使用类型 145。\n仅设置无条件语音呼叫转移。",
+        fg="gray",
+        justify="left",
+        font=("微软雅黑", 9),
+    ).pack(anchor="w", pady=(0, 15))
+
+    def submit():
+        if not ensure_debug_enabled(enabled_var, win):
+            return
+        try:
+            command = build_call_forward_enable_command(number_var.get())
         except ValueError as exc:
             messagebox.showerror("错误", str(exc), parent=win)
             return

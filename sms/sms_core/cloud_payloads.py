@@ -1,4 +1,5 @@
 import socket
+import uuid
 from datetime import datetime
 
 from sms_core.cloud_protocol import parse_sms_callback_head
@@ -171,8 +172,11 @@ def build_sms_event_payload(
     sender, first_body = parse_sms_callback_head(callback_head)
     payload = {
         "type": "sms_event",
+        "ack_required": True,
+        "source_event_id": "desktop_rx_" + uuid.uuid4().hex,
         "event_type": "sms",
         "tag": "sms",
+        "direction": "incoming",
         "time": time_text or current_time_text(),
         "timestamp": timestamp,
         **identity,
@@ -197,6 +201,28 @@ def build_sms_event_payload(
     return payload
 
 
+def build_sent_sms_event_payload(phone, message, timestamp, identity, source_event_id, time_text=None):
+    """Describe one confirmed manual send; its body is already final text."""
+    target = str(phone or "").strip()
+    body = str(message if message is not None else "")
+    return {
+        **identity,
+        "type": "sms_event",
+        "event_type": "sms",
+        "tag": "sms",
+        "direction": "outgoing",
+        "source_event_id": str(source_event_id),
+        "ack_required": True,
+        "time": time_text or current_time_text(),
+        "timestamp": timestamp,
+        "phone": target,
+        "to": target,
+        "content": body,
+        "body": body,
+        "message": f"发送短信：发送至 {target}" + (f"，内容：{body}" if body else ""),
+    }
+
+
 def build_call_event_payload(
     caller,
     message,
@@ -214,6 +240,8 @@ def build_call_event_payload(
         return None
     payload = {
         "type": "call_event",
+        "ack_required": True,
+        "source_event_id": "desktop_call_" + uuid.uuid4().hex,
         "event_type": "call",
         "tag": "call",
         "time": time_text or current_time_text(),
@@ -231,6 +259,21 @@ def build_call_event_payload(
     if session_id:
         payload["call_session_id"] = session_id[:128]
     return payload
+
+
+def build_outgoing_call_event_payload(phone, timestamp, identity, source_event_id, time_text=None):
+    """One confirmed local dial; its history identity is not a live call state."""
+    target = str(phone or "").strip()
+    source_id = str(source_event_id)
+    message = f"拨打电话：{target}"
+    return {
+        **identity,
+        "type": "call_event", "event_type": "call", "tag": "call",
+        "direction": "outgoing", "phase": "outgoing", "phone": target,
+        "source_event_id": source_id, "call_session_id": source_id,
+        "ack_required": True, "timestamp": timestamp,
+        "time": time_text or current_time_text(), "message": message, "raw": message,
+    }
 
 
 def build_call_state_payload(
@@ -275,6 +318,8 @@ def build_call_recording_status_payload(
     timestamp,
     identity,
     time_text=None,
+    *,
+    direction="",
 ):
     status_text = str(status or "").strip().lower()
     recording_id = str(recording_id or "").strip()
@@ -304,6 +349,9 @@ def build_call_recording_status_payload(
         "timestamp": timestamp,
         **identity,
     }
+    direction_text = str(direction or "").strip().lower()
+    if direction_text in ("incoming", "outgoing"):
+        payload["direction"] = direction_text
     return payload
 
 

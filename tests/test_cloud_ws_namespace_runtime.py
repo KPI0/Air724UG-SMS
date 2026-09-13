@@ -143,6 +143,8 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             kwargs["set_ws"]("ws")
             kwargs["set_connected"](1)
             kwargs["set_authorized"]("")
+            self.assertEqual(namespace["cloud_ws_conn"], "ws")
+            self.assertTrue(namespace["cloud_connected"])
             return "main"
 
         result = asyncio.run(cloud_ws_main_namespace_runtime(
@@ -153,8 +155,8 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, "main")
-        self.assertEqual(namespace["cloud_ws_conn"], "ws")
-        self.assertTrue(namespace["cloud_connected"])
+        self.assertIsNone(namespace["cloud_ws_conn"])
+        self.assertFalse(namespace["cloud_connected"])
         self.assertFalse(namespace["cloud_device_authorized"])
         forwarded = calls[0][2]
         self.assertEqual(forwarded["connect"]("url"), ("connect", ("url",), {}))
@@ -183,6 +185,41 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
         forwarded["set_thread"](None)
         self.assertEqual(namespace["cloud_ws_loop"], "loop")
         self.assertIsNone(namespace["cloud_ws_thread"])
+
+    def test_recording_retries_cancel_on_deauthorization_and_stop_before_main_exits(self):
+        for should_fail in (False, True):
+            with self.subTest(should_fail=should_fail):
+                namespace = self.base_namespace()
+                calls = []
+
+                class Uploader:
+                    def cancel_pending(self):
+                        calls.append("cancel_pending")
+
+                    async def stop(self):
+                        await asyncio.sleep(0)
+                        calls.append("stopped")
+
+                namespace["CALL_RECORDING_UPLOADER"] = Uploader()
+
+                async def main_runtime(_url, _interval, **kwargs):
+                    kwargs["set_authorized"](False)
+                    if should_fail:
+                        raise RuntimeError("synthetic connection failure")
+                    return "finished"
+
+                async def run():
+                    result = await cloud_ws_main_namespace_runtime(
+                        namespace, "ws://test.invalid", 1, ws_main_runtime=main_runtime,
+                    )
+                    self.assertEqual(result, "finished")
+
+                if should_fail:
+                    with self.assertRaises(RuntimeError):
+                        asyncio.run(run())
+                else:
+                    asyncio.run(run())
+                self.assertEqual(calls, ["cancel_pending", "stopped"])
 
 
 if __name__ == "__main__":

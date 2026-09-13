@@ -143,6 +143,17 @@ class SerialSenderResultTests(unittest.TestCase):
         waiter.observe_line("NO CARRIER")
         self.assertFalse(waiter.done())
 
+    def test_at_response_waiter_requires_exact_ok_in_trusted_modem_frame(self):
+        for command in ("ATD10086;", "AT+CSQ", "AT+CMGF=0"):
+            with self.subTest(command=command):
+                waiter = AtCommandResponseWaiter(command)
+                for line in ("previous result OK", ">>> 发送: ATD10086; OK",
+                             "[I]-[app.note] OK", "[I]-[ril.proatc] payload OK"):
+                    waiter.observe_line(line)
+                    self.assertFalse(waiter.done())
+                waiter.observe_line("[I]-[ril.proatc] OK")
+                self.assertTrue(waiter.wait(0).ok)
+
     def test_send_command_with_result_async_invokes_callback(self):
         serial_obj = FakeSerial()
         lock = threading.RLock()

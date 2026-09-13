@@ -129,10 +129,10 @@ class CloudSmsEventRuntimeTests(unittest.TestCase):
             fromlist=["put_sms_event_drop_oldest"],
         ).put_sms_event_drop_oldest
 
-        def blocking_put(target_queue, payload):
+        def blocking_put(target_queue, payload, **kwargs):
             requeue_started.set()
             self.assertTrue(allow_requeue.wait(timeout=2.0))
-            return original_put(target_queue, payload)
+            return original_put(target_queue, payload, **kwargs)
 
         async def send_payload(_ws, _payload):
             return "error"
@@ -207,7 +207,7 @@ class CloudSmsEventRuntimeTests(unittest.TestCase):
             sent.append(payload)
             return "sent"
 
-        def drain_factory(current_ws, generation):
+        def drain_factory(current_ws, generation, drain_imei):
             return drain_cloud_sms_event_queue(
                 current_ws,
                 event_queue=event_queue,
@@ -218,6 +218,7 @@ class CloudSmsEventRuntimeTests(unittest.TestCase):
                 is_authorized=lambda: True,
                 send_payload=send_payload,
                 generation=generation,
+                drain_imei=drain_imei,
             )
 
         self.assertTrue(schedule_cloud_sms_event_drain(

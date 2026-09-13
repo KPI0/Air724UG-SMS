@@ -1520,6 +1520,27 @@ class CloudMessageRuntimeTests(unittest.TestCase):
                 self.assertTrue(allowed)
                 self.assertEqual(writes, [command])
 
+    def test_allowed_call_control_command_keeps_raw_text_in_realtime_result(self):
+        calls = []
+        command = "AT+CCFC=4,2"
+
+        ok, info = send_cloud_serial_command_runtime(
+            command,
+            serial_lock=DummyLock(),
+            get_serial=lambda: object(),
+            write_command_result=lambda _serial, value: (
+                calls.append(("write", value)) or SimpleResult(True)
+            ),
+            push_serial_debug=lambda message: calls.append(("debug", message)),
+            log=lambda message: calls.append(("log", message)),
+            allow_sensitive_commands={"call_control": True},
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(info, "执行成功：AT+CCFC=4,2")
+        self.assertIn(("write", command), calls)
+        self.assertTrue(any(command in value for kind, value in calls if kind in ("debug", "log")))
+
     def test_ussd_permission_does_not_allow_call_forwarding_mmi_code(self):
         command = "ATD**21*13800138000#;"
 

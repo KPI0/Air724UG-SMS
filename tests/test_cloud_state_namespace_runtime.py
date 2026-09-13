@@ -1,5 +1,6 @@
 ﻿import asyncio
 import re
+import threading
 import unittest
 from types import SimpleNamespace
 
@@ -43,7 +44,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
             "cloud_replay_seen": {},
             "CLOUD_REPLAY_WINDOW_SECONDS": 30,
             "CLOUD_REPLAY_CACHE_MAX": 100,
-            "serial_lock": "lock",
+            "serial_lock": threading.Lock(),
             "serial_obj": "serial",
             "SERIAL_COMMAND_THREAD_REGISTRY": WorkerThreadRegistry(),
             "PORT": "COM5",
@@ -147,6 +148,7 @@ class CloudStateNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["cloud_imei_query_deadline"], 0.0)
         calls[0][1]["set_query_deadline"](16.0)
         self.assertEqual(namespace["cloud_imei_query_deadline"], 16.0)
+        self.assertEqual(calls[0][1]["get_query_deadline"](), 16.0)
 
     def test_auth_matches_logs_failures(self):
         namespace = self.base_namespace()

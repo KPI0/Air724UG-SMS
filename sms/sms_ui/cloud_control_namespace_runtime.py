@@ -3,6 +3,7 @@ import threading
 
 from sms_core.config_runtime import reload_config_runtime
 from sms_core.cloud_runtime import read_cloud_control_settings
+from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain
 from sms_ui.cloud_control_app_runtime import (
     cloud_control_settings_from_values,
     open_cloud_control_values_app_runtime,
@@ -70,12 +71,17 @@ def stop_cloud_control_namespace_runtime(
     update_status=True,
     stop_app_runtime=stop_cloud_control_app_runtime,
 ):
+    def set_authorized(value):
+        namespace["cloud_device_authorized"] = bool(value)
+        if not value:
+            interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
+
     return stop_app_runtime(
         update_status=update_status,
         enabled=namespace["CLOUD_CONTROL_ENABLED"],
         stop_event=namespace["cloud_stop_event"],
         set_connected=lambda value: namespace.__setitem__("cloud_connected", bool(value)),
-        set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
+        set_authorized=set_authorized,
         reset_serial_log_state=namespace["_reset_cloud_serial_log_state"],
         clear_sms_event_state=namespace.get("_clear_cloud_sms_event_state"),
         get_loop=lambda: namespace["cloud_ws_loop"],

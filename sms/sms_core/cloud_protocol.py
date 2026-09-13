@@ -85,6 +85,18 @@ def normalize_imei(value: str) -> str:
     return re.sub(r"\D", "", str(value or "").strip())
 
 
+def cloud_login_ack_matches_imei(data, runtime_imei):
+    """Ignore explicitly stale identities; older servers may omit ACK IMEI."""
+    current_imei = normalize_imei(runtime_imei)
+    if not current_imei or not isinstance(data, dict):
+        return False
+    return all(
+        normalize_imei(data[key]) == current_imei
+        for key in ("imei", "device_imei", "target_imei")
+        if str(data.get(key) or "").strip()
+    )
+
+
 def parse_sms_callback_head(text: str):
     match = SMS_CALLBACK_HEAD_REGEX.search(str(text or "").strip())
     if not match:

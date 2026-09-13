@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from contextlib import nullcontext
 
 from sms_core.cloud_imei_runtime import (
     maybe_capture_cloud_device_imei_runtime,
@@ -11,6 +12,7 @@ from sms_core.cloud_imei_runtime import (
 from sms_core.cloud_message_runtime import cloud_status_payload_runtime
 from sms_core.cloud_connection_runtime import schedule_cloud_payload_runtime
 from sms_core.cloud_payloads import build_channel_status_payload
+from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain
 
 
 def cloud_runtime_imei_namespace_runtime(namespace):
@@ -45,11 +47,26 @@ def set_cloud_device_imei_namespace_runtime(
     source="",
     set_imei_runtime=set_cloud_device_imei_runtime,
 ):
+    def set_device_imei(value):
+        event_state = namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE")
+        with event_state.lock if event_state is not None else nullcontext():
+            # Authorization belongs to the previous identity until its new
+            # login ACK arrives. Keep queued events and their generation.
+            namespace["cloud_device_authorized"] = False
+            namespace["CLOUD_DEVICE_IMEI"] = value
+            interrupt_cloud_sms_event_drain(event_state, lock_held=True)
+        reset_logs = namespace.get("_reset_cloud_serial_log_state")
+        if callable(reset_logs):
+            reset_logs()
+        set_status = namespace.get("set_cloud_status")
+        if namespace.get("cloud_connected") and callable(set_status):
+            set_status("🌐 等待授权" if value else "🌐 等待读取IMEI", "#b26a00")
+
     return set_imei_runtime(
         imei,
         current_imei=lambda: namespace["CLOUD_DEVICE_IMEI"],
         normalize_imei=namespace["_normalize_imei"],
-        set_device_imei=lambda value: namespace.__setitem__("CLOUD_DEVICE_IMEI", value),
+        set_device_imei=set_device_imei,
         set_verified=lambda value: namespace.__setitem__("cloud_imei_verified", bool(value)),
         log=namespace["_cloud_log"],
         notify_identity_changed=namespace["_notify_cloud_identity_changed"],
@@ -67,6 +84,7 @@ def request_cloud_device_imei_namespace_runtime(
         get_serial=lambda: namespace["serial_obj"],
         write_command_result=namespace["write_serial_command_result"],
         set_query_deadline=lambda deadline: namespace.__setitem__("cloud_imei_query_deadline", deadline),
+        get_query_deadline=lambda: namespace["cloud_imei_query_deadline"],
         cloud_log=namespace["_cloud_log"],
         monotonic=namespace.get("time", time).monotonic,
         push_serial_debug=namespace["_push_serial_debug"],
@@ -81,14 +99,17 @@ def maybe_capture_cloud_device_imei_namespace_runtime(
     *,
     capture_runtime=maybe_capture_cloud_device_imei_runtime,
 ):
-    return capture_runtime(
-        line,
-        query_deadline=namespace["cloud_imei_query_deadline"],
-        set_query_deadline=lambda value: namespace.__setitem__("cloud_imei_query_deadline", value),
-        imei_regex=namespace["IMEI_REGEX"],
-        set_device_imei=namespace["_set_cloud_device_imei"],
-        monotonic=namespace.get("time", time).monotonic,
-    )
+    # Keep reading and consuming the window atomic with query creation or
+    # rollback. A stale capture must not clear a newer request's deadline.
+    with namespace["serial_lock"]:
+        return capture_runtime(
+            line,
+            query_deadline=namespace["cloud_imei_query_deadline"],
+            set_query_deadline=lambda value: namespace.__setitem__("cloud_imei_query_deadline", value),
+            imei_regex=namespace["IMEI_REGEX"],
+            set_device_imei=namespace["_set_cloud_device_imei"],
+            monotonic=namespace.get("time", time).monotonic,
+        )
 
 
 def cloud_auth_matches_namespace_runtime(namespace, data):

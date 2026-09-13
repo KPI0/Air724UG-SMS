@@ -388,6 +388,13 @@ def handle_call_line(
             # generation.  Clear an orphaned outbound context before a
             # delayed CALL=1/CONNECT can be classified as outbound.
             next_state.current_dial_num = ""
+            if next_state.call_session_id.startswith("outgoing:"):
+                # The modem can emit RING before +CLIP. An old outbound
+                # generation must not survive that boundary, otherwise a
+                # later NO CARRIER may be reported with the previous task ID
+                # and close the wrong remote call session.
+                next_state.call_session_id = ""
+                next_state.outgoing_connected_session_id = ""
         next_state.ring_timeout_target = refresh_ring_timeout(
             line,
             next_state.ring_timeout_target,

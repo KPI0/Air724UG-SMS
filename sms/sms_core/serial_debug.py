@@ -37,6 +37,10 @@ COMMON_SERIAL_COMMANDS = [
     ("AT+EEMGINFO?", "查询基站定位数据"),
 ]
 
+CALL_FORWARD_ALL_QUERY_COMMAND = "AT+CCFC=4,2"
+CALL_FORWARD_QUERY_COMMAND = "AT+CCFC=0,2"
+CALL_FORWARD_DISABLE_COMMAND = "AT+CCFC=4,4,0"
+
 
 def quick_command_label(command: str, description: str) -> str:
     return f"{command}  ({description})"
@@ -91,6 +95,24 @@ def normalize_information_center_number(phone: str) -> str:
 def build_information_center_command(phone: str) -> str:
     normalized = normalize_information_center_number(phone)
     return f'AT+CSCA="{normalized}",145'
+
+
+def normalize_call_forward_number(phone: str) -> str:
+    raw = str(phone or "").strip()
+    normalized = re.sub(r"[\s\-().（）]", "", raw)
+    if normalized.startswith("+"):
+        valid = bool(re.fullmatch(r"\+[1-9]\d{4,14}", normalized))
+    else:
+        valid = bool(re.fullmatch(r"\d{5,15}", normalized))
+    if not valid:
+        raise ValueError("呼叫转移号码需为 5-15 位数字，可使用 + 国际前缀")
+    return normalized
+
+
+def build_call_forward_enable_command(phone: str) -> str:
+    normalized = normalize_call_forward_number(phone)
+    number_type = "145" if normalized.startswith("+") else "129"
+    return f"AT+CCFC=0,3,{normalized},{number_type},1"
 
 
 def normalize_operator_plmn(plmn: str) -> str:

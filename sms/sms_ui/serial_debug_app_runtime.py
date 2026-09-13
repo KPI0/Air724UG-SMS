@@ -22,6 +22,8 @@ def open_serial_debug_window_runtime(
     get_dial_popup=lambda: None,
     set_dial_popup=lambda _window: None,
     open_dialog=open_serial_debug_window_dialog,
+    send_sms=None,
+    send_local_command=None,
 ):
     current_window, current_text = get_state("window_refs")
     args = (
@@ -45,6 +47,10 @@ def open_serial_debug_window_runtime(
         center_window,
     )
     kwargs = {"window_title": window_title}
+    if send_sms is not None:
+        kwargs["send_sms"] = send_sms
+    if send_local_command is not None:
+        kwargs["send_local_command"] = send_local_command
     if log_error is not None:
         kwargs["log_error"] = log_error
     try:

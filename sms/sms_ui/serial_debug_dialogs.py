@@ -1,4 +1,5 @@
 from sms_ui.serial_debug_identity_dialogs import (
+    open_call_forwarding_dialog,
     open_manual_operator_dialog,
     open_modify_information_center_dialog,
     open_modify_number_dialog,

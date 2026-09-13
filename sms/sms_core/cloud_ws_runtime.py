@@ -3,6 +3,7 @@ import json
 import random
 import ssl
 import threading
+from contextlib import nullcontext
 from urllib.parse import urlsplit
 
 from sms_core.cloud_messages import is_cloud_auth_ack_type, parse_cloud_message
@@ -132,6 +133,8 @@ async def wait_cloud_login_ack_runtime(
     timeout=8.0,
     monotonic,
     wait_for=asyncio.wait_for,
+    auth_ack_matches=None,
+    auth_ack_lock=None,
 ):
     deadline = monotonic() + float(timeout)
     while not stop_event.is_set():
@@ -155,9 +158,12 @@ async def wait_cloud_login_ack_runtime(
             log(f"登录确认前已忽略云端消息：{safe_preview(json.dumps(data, ensure_ascii=False))}")
             continue
 
-        status = auth_status_from_ack(data)
-        set_authorized(status == "authorized")
-        set_auth_status_from_ack(data)
+        with auth_ack_lock if auth_ack_lock is not None else nullcontext():
+            if auth_ack_matches is not None and not auth_ack_matches(data):
+                continue
+            status = auth_status_from_ack(data)
+            set_authorized(status == "authorized")
+            set_auth_status_from_ack(data)
         if status == "authorized":
             log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return True

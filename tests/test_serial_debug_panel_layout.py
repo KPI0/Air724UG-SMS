@@ -162,6 +162,43 @@ class SerialDebugPanelLayoutTests(unittest.TestCase):
             "修改信息中心号码 ✉️",
         )
 
+    def test_call_forwarding_actions_follow_information_center_action(self):
+        buttons = []
+
+        def make_button(parent=None, **kwargs):
+            widget = FakeWidget(parent, **kwargs)
+            buttons.append(widget)
+            return widget
+
+        quick_button = FakeWidget()
+        with patch.object(serial_debug_panel.ttk, "Button", side_effect=make_button):
+            serial_debug_panel.create_serial_debug_quick_actions(
+                "parent",
+                "enabled_var",
+                FakeWidget(),
+                FakeWidget(),
+                quick_button,
+                lambda _command: None,
+                lambda _commands: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+                lambda *_args: None,
+            )
+
+        labels = [button.kwargs.get("text") for button in buttons]
+        info_index = labels.index("修改信息中心号码 ✉️")
+        self.assertEqual(
+            labels[info_index + 1 : info_index + 5],
+            [
+                "查询全部呼叫转移",
+                "查询无条件呼叫转移",
+                "设置无条件呼叫转移",
+                "关闭全部呼叫转移",
+            ],
+        )
+
     def test_manual_operator_action_follows_operator_scan(self):
         buttons = []
         actions = []

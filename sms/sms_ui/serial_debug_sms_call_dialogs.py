@@ -72,8 +72,8 @@ def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
             return
 
         phone = phone_var.get().strip()
-        msg = txt_msg.get("1.0", "end-1c").strip()
-        if not phone or not msg:
+        msg = txt_msg.get("1.0", "end-1c")
+        if not phone or not msg.strip():
             messagebox.showerror("错误", "手机号和短信内容不能为空！", parent=win)
             return
         info = measure_text_sms_pdus(msg)

@@ -76,6 +76,39 @@ class SerialDebugIdentityDialogTests(unittest.TestCase):
         )
         return window, quick_send, captured["submit"]
 
+    def _open_call_forwarding_dialog(self, value):
+        parent = object()
+        window = MagicMock()
+        string_var = MagicMock()
+        string_var.get.return_value = value
+        widget = MagicMock()
+        captured = {}
+
+        def capture_finish(_win, _center, _parent, _entry, submit):
+            captured["submit"] = submit
+
+        patches = (
+            patch.object(dialogs, "create_debug_dialog", return_value=window),
+            patch.object(dialogs.tk, "StringVar", return_value=string_var),
+            patch.object(dialogs.tk, "Label", return_value=widget),
+            patch.object(dialogs.ttk, "Frame", return_value=widget),
+            patch.object(dialogs.ttk, "Label", return_value=widget),
+            patch.object(dialogs.ttk, "Entry", return_value=widget),
+            patch.object(dialogs, "finish_debug_dialog", side_effect=capture_finish),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        quick_send = MagicMock()
+        dialogs.open_call_forwarding_dialog(
+            parent,
+            EnabledVar(),
+            quick_send,
+            lambda *_args: None,
+        )
+        return window, quick_send, captured["submit"]
+
     def test_invalid_information_center_number_stays_open_and_does_not_send(self):
         window, quick_send, submit = self._open_information_center_dialog(
             "+8613800100500\r\nAT+RESET"
@@ -119,6 +152,27 @@ class SerialDebugIdentityDialogTests(unittest.TestCase):
 
         window.destroy.assert_called_once()
         quick_send.assert_called_once_with('AT+COPS=1,2,"46001"')
+
+    def test_valid_call_forwarding_number_is_sent_as_voice_command(self):
+        window, quick_send, submit = self._open_call_forwarding_dialog(" 19208260836 ")
+
+        submit()
+
+        window.destroy.assert_called_once()
+        quick_send.assert_called_once_with("AT+CCFC=0,3,19208260836,129,1")
+
+    def test_invalid_call_forwarding_number_stays_open_and_does_not_send(self):
+        window, quick_send, submit = self._open_call_forwarding_dialog(
+            '19208260836"\r\nAT+RESET'
+        )
+
+        with patch.object(dialogs.messagebox, "showerror") as show_error:
+            submit()
+
+        show_error.assert_called_once()
+        self.assertIn("5-15 位数字", show_error.call_args.args[1])
+        window.destroy.assert_not_called()
+        quick_send.assert_not_called()
 
 
 if __name__ == "__main__":

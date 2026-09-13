@@ -12,11 +12,15 @@ from sms_core.cloud_security import (
 from sms_core.log_cleanup import cleanup_old_logs_in_dir, parse_date_from_log_filename
 from sms_core.phone_numbers import normalize_call_number
 from sms_core.serial_debug import (
+    CALL_FORWARD_ALL_QUERY_COMMAND,
+    CALL_FORWARD_DISABLE_COMMAND,
+    CALL_FORWARD_QUERY_COMMAND,
     COMMON_SERIAL_COMMANDS,
     HANGUP_COMMAND,
     SERIAL_DEBUG_MAX_STORE_LINES,
     SERIAL_DEBUG_MAX_VISIBLE_LINES,
     build_dial_command,
+    build_call_forward_enable_command,
     build_information_center_command,
     build_manual_operator_command,
     build_own_number_commands,
@@ -27,6 +31,7 @@ from sms_core.serial_debug import (
     build_serial_command_payload,
     build_sn_command,
     normalize_information_center_number,
+    normalize_call_forward_number,
     normalize_operator_plmn,
     normalize_dial_number,
     normalize_own_number,
@@ -506,6 +511,22 @@ class CoreHelperTests(unittest.TestCase):
             build_information_center_command(" +8613800100500 "),
             'AT+CSCA="+8613800100500",145',
         )
+        self.assertEqual(CALL_FORWARD_ALL_QUERY_COMMAND, "AT+CCFC=4,2")
+        self.assertEqual(CALL_FORWARD_QUERY_COMMAND, "AT+CCFC=0,2")
+        self.assertEqual(CALL_FORWARD_DISABLE_COMMAND, "AT+CCFC=4,4,0")
+        self.assertEqual(normalize_call_forward_number(" 19208260836 "), "19208260836")
+        self.assertEqual(
+            normalize_call_forward_number("+86 (1920) 826-0836"),
+            "+8619208260836",
+        )
+        self.assertEqual(
+            build_call_forward_enable_command("19208260836"),
+            "AT+CCFC=0,3,19208260836,129,1",
+        )
+        self.assertEqual(
+            build_call_forward_enable_command("+8619208260836"),
+            "AT+CCFC=0,3,+8619208260836,145,1",
+        )
         self.assertEqual(normalize_operator_plmn(" 46000 "), "46000")
         self.assertEqual(
             build_manual_operator_command("460001"),
@@ -539,6 +560,20 @@ class CoreHelperTests(unittest.TestCase):
             with self.subTest(value=repr(value)):
                 with self.assertRaises(ValueError):
                     build_information_center_command(value)
+
+    def test_call_forward_number_rejects_invalid_or_injected_values(self):
+        invalid_values = (
+            "",
+            "1234",
+            "+0123456789",
+            "+1234567890123456",
+            "19208260836\"\r\nAT+RESET",
+            "+86ABC19208260836",
+        )
+        for value in invalid_values:
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError):
+                    build_call_forward_enable_command(value)
 
     def test_serial_sender_writes_command_and_sequence(self):
         serial_obj = self.FakeSerial()

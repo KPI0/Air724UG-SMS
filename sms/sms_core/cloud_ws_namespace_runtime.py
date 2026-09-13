@@ -1,5 +1,7 @@
 import inspect
 import time
+from sms_core.cloud_protocol import cloud_login_ack_matches_imei
+from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain, stop_cloud_sms_event_drain
 
 from sms_core.cloud_message_runtime import (
     send_cloud_register_runtime,
@@ -29,6 +31,11 @@ async def wait_cloud_login_ack_namespace_runtime(
         safe_preview=namespace["_cloud_safe_preview"],
         timeout=timeout,
         monotonic=namespace.get("time", time).monotonic,
+        auth_ack_matches=lambda data: (
+            ws is namespace["cloud_ws_conn"]
+            and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())
+        ),
+        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None),
     )
     if namespace.get("cloud_device_authorized"):
         namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
@@ -143,31 +150,48 @@ async def cloud_ws_main_namespace_runtime(
     *,
     ws_main_runtime=cloud_ws_main_app_runtime,
 ):
+    uploader = namespace.get("CALL_RECORDING_UPLOADER")
+
+    def set_authorized(value):
+        namespace["cloud_device_authorized"] = bool(value)
+        if not value:
+            interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
+        if not value and uploader is not None:
+            uploader.cancel_pending()
+
     def schedule_pending_uploads():
         sms_result = namespace.get("_schedule_cloud_sms_event_drain", lambda: None)()
         namespace.get("_schedule_cloud_call_recording_upload", lambda: None)()
         return sms_result
 
-    return await ws_main_runtime(
-        url,
-        reconnect_interval,
-        stop_event=namespace["cloud_stop_event"],
-        runtime_imei=namespace["_cloud_runtime_imei"],
-        request_cloud_device_imei=namespace["request_cloud_device_imei"],
-        set_cloud_status=namespace["set_cloud_status"],
-        log=namespace["_cloud_log"],
-        connect=namespace["websockets"].connect,
-        set_ws=lambda value: namespace.__setitem__("cloud_ws_conn", value),
-        set_connected=lambda value: namespace.__setitem__("cloud_connected", bool(value)),
-        set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
-        reset_serial_log_state=namespace["_reset_cloud_serial_log_state"],
-        send_register=namespace["_cloud_send_register"],
-        wait_login_ack=namespace["_cloud_wait_login_ack"],
-        handle_message=namespace["_handle_cloud_message"],
-        cloud_control_enabled=lambda: namespace["CLOUD_CONTROL_ENABLED"],
-        monotonic=namespace.get("time", time).monotonic,
-        schedule_pending_sms_events=schedule_pending_uploads,
-    )
+    try:
+        return await ws_main_runtime(
+            url,
+            reconnect_interval,
+            stop_event=namespace["cloud_stop_event"],
+            runtime_imei=namespace["_cloud_runtime_imei"],
+            request_cloud_device_imei=namespace["request_cloud_device_imei"],
+            set_cloud_status=namespace["set_cloud_status"],
+            log=namespace["_cloud_log"],
+            connect=namespace["websockets"].connect,
+            set_ws=lambda value: namespace.__setitem__("cloud_ws_conn", value),
+            set_connected=lambda value: namespace.__setitem__("cloud_connected", bool(value)),
+            set_authorized=set_authorized,
+            reset_serial_log_state=namespace["_reset_cloud_serial_log_state"],
+            send_register=namespace["_cloud_send_register"],
+            wait_login_ack=namespace["_cloud_wait_login_ack"],
+            handle_message=namespace["_handle_cloud_message"],
+            cloud_control_enabled=lambda: namespace["CLOUD_CONTROL_ENABLED"],
+            monotonic=namespace.get("time", time).monotonic,
+            schedule_pending_sms_events=schedule_pending_uploads,
+        )
+    finally:
+        namespace["cloud_connected"] = False
+        namespace["cloud_ws_conn"] = None
+        namespace["cloud_device_authorized"] = False
+        await stop_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
+        if uploader is not None:
+            await uploader.stop()
 
 
 def cloud_thread_main_namespace_runtime(
