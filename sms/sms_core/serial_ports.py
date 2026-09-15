@@ -39,6 +39,21 @@ def serial_port_info(port) -> SerialPortInfo:
     )
 
 
+def is_single_port_fallback_candidate(port) -> bool:
+    """Do not open a known AT/diagnostic/download interface as a log port.
+
+    During a modem reboot Windows may briefly expose only SPRD U2S Diag.
+    An unlabelled or generic serial adapter keeps the existing fallback.
+    """
+    info = serial_port_info(port)
+    desc_u = info.description.upper()
+    return bool(info.device) and not (
+        any(token in desc_u for token in LUAT_EXCLUDE_DESC_TOKENS)
+        or " AT" in desc_u
+        or desc_u.endswith("AT")
+    )
+
+
 def is_luat_modem_candidate(port_info, remembered_port="") -> bool:
     dev = str(port_info.device or "")
     desc_u = str(port_info.description or "").upper()
@@ -46,9 +61,7 @@ def is_luat_modem_candidate(port_info, remembered_port="") -> bool:
 
     if "LUAT" not in desc_u and "LUAT" not in hwid_u:
         return False
-    if any(token in desc_u for token in LUAT_EXCLUDE_DESC_TOKENS):
-        return False
-    if " AT" in desc_u or desc_u.endswith("AT"):
+    if not is_single_port_fallback_candidate(port_info):
         return False
     if "MODEM" not in desc_u and dev != remembered_port:
         return False
@@ -97,7 +110,7 @@ def choose_manual_rebind_candidate(luat_device, luat_description, all_ports, cur
 
     if not device:
         ports = list(all_ports or [])
-        if len(ports) == 1:
+        if len(ports) == 1 and is_single_port_fallback_candidate(ports[0]):
             info = serial_port_info(ports[0])
             device = info.device
             description = info.description

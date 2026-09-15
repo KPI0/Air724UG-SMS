@@ -78,6 +78,29 @@ class SerialPortSelectionTests(unittest.TestCase):
         self.assertEqual(candidate.device, "COM7")
         self.assertEqual(candidate.description, "single")
 
+    def test_manual_rebind_does_not_select_single_diagnostic_or_at_interface(self):
+        for description in (
+            "SPRD U2S Diag (COM55)",
+            "LUAT USB Device 1 AT",
+            "LUAT CP Diag",
+            "LUAT AP Diag",
+            "LUAT USB MOS",
+            "LUAT USB NPI",
+            "LUAT USB DEBUG",
+            "LUAT USB DOWNLOAD",
+        ):
+            with self.subTest(description=description):
+                candidate = choose_manual_rebind_candidate(
+                    None, None, [FakePort("COM55", description)], current_port="COM56"
+                )
+                self.assertFalse(candidate.found)
+
+    def test_manual_rebind_keeps_generic_single_serial_adapter_compatible(self):
+        candidate = choose_manual_rebind_candidate(
+            None, None, [FakePort("COM7", "USB-SERIAL CH340 (COM7)")], current_port="COM5"
+        )
+        self.assertEqual(candidate.device, "COM7")
+
     def test_choose_manual_rebind_candidate_rejects_missing_or_same_port(self):
         self.assertFalse(choose_manual_rebind_candidate(None, None, [], current_port="COM5").found)
         self.assertFalse(

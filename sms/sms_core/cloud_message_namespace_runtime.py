@@ -1,4 +1,5 @@
 import asyncio
+from sms_core.cloud_firmware_ota import handle_firmware_ota
 import inspect
 import threading
 from datetime import datetime
@@ -588,6 +589,7 @@ async def handle_cloud_message_namespace_runtime(
             ws, data, state=namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"),
         ),
         handle_device_call_state_message=handle_device_call_state_message,
+        handle_firmware_ota_message=lambda data: handle_firmware_ota(namespace, ws, data),
         auth_ack_matches=lambda data: (
             ws is namespace["cloud_ws_conn"]
             and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())

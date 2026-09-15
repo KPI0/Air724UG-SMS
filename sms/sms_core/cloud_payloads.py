@@ -36,6 +36,7 @@ def build_register_payload(
 ):
     payload = {
         "type": "device_login",
+        "ota_relay": 1,
         "channel_type": str(channel_type or "desktop").strip().lower() or "desktop",
         "event": "register" if auto_upload else "hidden",
         "public": bool(auto_upload),

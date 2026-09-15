@@ -8,8 +8,9 @@ from sms_core.serial_startup_runtime import (
 
 
 class FakePort:
-    def __init__(self, device):
+    def __init__(self, device, description=""):
         self.device = device
+        self.description = description
 
 
 class FakeLock:
@@ -112,6 +113,45 @@ class SerialStartupRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "status")
         self.assertEqual(calls[1], ("wait", {"timeout": 3}))
         self.assertEqual(calls[2], ("clear",))
+
+    def test_auto_mode_waits_through_diagnostic_enumeration_then_reconnects_modem(self):
+        calls = []
+        ports = [FakePort("COM55", "SPRD U2S Diag (COM55)")]
+
+        def resolve():
+            return resolve_serial_target_port_runtime(
+                mode="Auto", current_port="COM56", reconnect_interval=2,
+                find_luat_best_port=lambda: (
+                    ("COM56", "LUAT USB Device 0 Modem")
+                    if ports[0].device == "COM56" else (None, None)
+                ),
+                list_ports=lambda: ports, is_port_locked=lambda _port: False,
+                auto_connect_ui=lambda message: calls.append(("auto", message)),
+                set_status=lambda *args: calls.append(("status", args)),
+                wakeup_wait=lambda **kwargs: calls.append(("wait", kwargs)),
+                wakeup_clear=lambda: calls.append(("clear",)),
+            )
+
+        self.assertIsNone(resolve())
+        self.assertFalse(any(item[0] == "auto" for item in calls))
+        self.assertIn(("wait", {"timeout": 2}), calls)
+        ports[:] = [FakePort("COM56", "LUAT USB Device 0 Modem")]
+        self.assertEqual(resolve(), "COM56")
+
+    def test_auto_mode_does_not_use_single_ota_at_port_for_modem_logs(self):
+        calls = []
+        result = resolve_serial_target_port_runtime(
+            mode="Auto", current_port="COM56", reconnect_interval=2,
+            find_luat_best_port=lambda: (None, None),
+            list_ports=lambda: [FakePort("COM58", "LUAT USB Device 1 AT")],
+            is_port_locked=lambda _port: False,
+            auto_connect_ui=lambda message: calls.append(("auto", message)),
+            set_status=lambda *args: calls.append(("status", args)),
+            wakeup_wait=lambda **kwargs: calls.append(("wait", kwargs)),
+            wakeup_clear=lambda: calls.append(("clear",)),
+        )
+        self.assertIsNone(result)
+        self.assertFalse(any(item[0] == "auto" for item in calls))
 
     def test_resolve_serial_target_port_reports_missing_manual_port(self):
         calls = []

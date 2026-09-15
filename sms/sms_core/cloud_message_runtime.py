@@ -809,8 +809,15 @@ async def handle_cloud_message_runtime(
     auth_ack_lock=None,
     prepare_serial_command=None,
     handle_device_event_ack=None,
+    handle_firmware_ota_message=None,
 ):
     incoming, error_payload = parse_cloud_message(message)
+    if error_payload is None and incoming.msg_type == "firmware_ota":
+        # OTA frames contain package data and control credentials. Handle them
+        # before ordinary command logging and without blocking event ACKs.
+        if handle_firmware_ota_message is not None:
+            await handle_firmware_ota_message(incoming.data)
+        return "firmware_ota"
     if error_payload is None and incoming.msg_type == "device_event_ack":
         # Save ACKs are connection-scoped protocol replies, not commands;
         # they carry no command secret, replay timestamp or serial action.

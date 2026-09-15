@@ -51,6 +51,40 @@ SMS_PDU_PROMPT_TIMEOUT = 10.0
 AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT = 10.0
 DEFAULT_SERIAL_TRANSACTION_LOCK = threading.RLock()
 DEFAULT_SERIAL_WRITE_LOCK = threading.RLock()
+
+# OTA reservations reject new commands instead of queueing them until reboot.
+# The write lock protects both reservation changes and the final serial write.
+_OTA_RESERVATIONS = {}
+
+
+def reserve_serial_for_ota(serial_obj, owner, *, seconds=150):
+    with DEFAULT_SERIAL_WRITE_LOCK:
+        previous = _OTA_RESERVATIONS.get(id(serial_obj))
+        if previous and previous[1] is owner and previous[2] > time.monotonic():
+            _OTA_RESERVATIONS[id(serial_obj)] = (serial_obj, owner, time.monotonic() + seconds)
+            return _is_serial_open(serial_obj)
+    if not DEFAULT_SERIAL_TRANSACTION_LOCK.acquire(blocking=False):
+        return False
+    try:
+        with DEFAULT_SERIAL_WRITE_LOCK:
+            now = time.monotonic()
+            for key, (_, _, expiry) in list(_OTA_RESERVATIONS.items()):
+                if expiry <= now:
+                    _OTA_RESERVATIONS.pop(key, None)
+            previous = _OTA_RESERVATIONS.get(id(serial_obj))
+            if not _is_serial_open(serial_obj) or (previous and previous[1] is not owner):
+                return False
+            _OTA_RESERVATIONS[id(serial_obj)] = (serial_obj, owner, now + seconds)
+            return True
+    finally:
+        DEFAULT_SERIAL_TRANSACTION_LOCK.release()
+
+
+def release_serial_from_ota(serial_obj, owner):
+    with DEFAULT_SERIAL_WRITE_LOCK:
+        previous = _OTA_RESERVATIONS.get(id(serial_obj))
+        if previous and previous[1] is owner:
+            _OTA_RESERVATIONS.pop(id(serial_obj), None)
 _UNSET_CONNECTION = object()
 
 
@@ -458,6 +492,13 @@ def _write_sms_pdu_after_prompt(waiter, writer):
 
 def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=None):
     with DEFAULT_SERIAL_WRITE_LOCK:
+        reservation = _OTA_RESERVATIONS.get(id(serial_obj))
+        if reservation:
+            if reservation[2] > time.monotonic():
+                if push_debug:
+                    push_debug(">>> 发送失败: 固件更新中，请等待设备重启后再操作")
+                return SerialCommandResult(False, "固件更新中，请等待设备重启后再操作")
+            _OTA_RESERVATIONS.pop(id(serial_obj), None)
         if not _is_serial_open(serial_obj):
             error = "串口未连接"
             if push_debug:

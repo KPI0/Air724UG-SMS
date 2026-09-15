@@ -1,5 +1,6 @@
 import inspect
 import time
+from sms_core.cloud_firmware_ota import stop_firmware_ota
 from sms_core.cloud_protocol import cloud_login_ack_matches_imei
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain, stop_cloud_sms_event_drain
 
@@ -189,6 +190,7 @@ async def cloud_ws_main_namespace_runtime(
         namespace["cloud_connected"] = False
         namespace["cloud_ws_conn"] = None
         namespace["cloud_device_authorized"] = False
+        await stop_firmware_ota(namespace)
         await stop_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
         if uploader is not None:
             await uploader.stop()

@@ -1,6 +1,6 @@
 import time
 
-from sms_core.serial_ports import unlocked_ports
+from sms_core.serial_ports import is_single_port_fallback_candidate, unlocked_ports
 from sms_core.serial_reconnect import is_serial_open_denied, serial_open_denied_repeat_key
 from sms_core.serial_sender import DEFAULT_SERIAL_TRANSACTION_LOCK, write_serial_command_result
 
@@ -27,7 +27,7 @@ def resolve_serial_target_port_runtime(
             return dev
 
         available_ports = unlocked_ports_func(list_ports(), is_port_locked)
-        if len(available_ports) == 1:
+        if len(available_ports) == 1 and is_single_port_fallback_candidate(available_ports[0]):
             single = available_ports[0]
             auto_connect_ui(f"🔌 未检测到 LUAT Modem 标识，但仅发现单一串口，自动连接：{single.device}")
             return single.device
