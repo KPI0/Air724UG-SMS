@@ -318,12 +318,14 @@ def _initialize_third_push_settings():
 def _initialize_serial_state():
     global serial_obj, serial_running, ring_timeout_target, current_dial_num, serial_lock
     global serial_stop_event, serial_wakeup_event, serial_connection_generation
+    global serial_read_lock
 
     serial_obj = None
     serial_running = True
     ring_timeout_target = 0.0
     current_dial_num = ""
     serial_lock = threading.Lock()
+    serial_read_lock = threading.Lock()
     serial_stop_event = threading.Event()
     serial_wakeup_event = threading.Event()
     serial_connection_generation = 0

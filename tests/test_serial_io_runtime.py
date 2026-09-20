@@ -35,6 +35,23 @@ class ClosableSerial:
             raise self.error
 
 
+class BlockingSerial:
+    def __init__(self):
+        self.is_open = True
+        self.readline_started = threading.Event()
+        self.allow_readline = threading.Event()
+        self.closed = False
+
+    def readline(self):
+        self.readline_started.set()
+        self.allow_readline.wait(1)
+        return b"OK\r\n"
+
+    def close(self):
+        self.closed = True
+        self.is_open = False
+
+
 class SerialIoRuntimeTests(unittest.TestCase):
     def test_read_serial_line_safely_runtime_reads_open_serial(self):
         serial_obj = FakeSerial(line=b"+CSQ\r\n")
@@ -62,6 +79,49 @@ class SerialIoRuntimeTests(unittest.TestCase):
                 lambda: FakeSerial(error=RuntimeError("boom")),
                 SerialError,
             )
+
+    def test_read_serial_line_safely_runtime_serializes_close_with_read(self):
+        serial_obj = BlockingSerial()
+        serial_lock = threading.Lock()
+        serial_read_lock = threading.Lock()
+        read_result = []
+        close_result = []
+
+        reader = threading.Thread(
+            target=lambda: read_result.append(
+                read_serial_line_safely_runtime(
+                    serial_lock,
+                    lambda: serial_obj,
+                    SerialError,
+                    read_lock=serial_read_lock,
+                )
+            )
+        )
+        closer = threading.Thread(
+            target=lambda: safe_close_serial_runtime(
+                serial_lock,
+                lambda: serial_obj,
+                lambda value: close_result.append(("set", value)),
+                lambda: close_result.append(("unlock",)),
+                read_lock=serial_read_lock,
+            )
+        )
+
+        reader.start()
+        self.assertTrue(serial_obj.readline_started.wait(1))
+        closer.start()
+        self.assertTrue(closer.is_alive())
+        self.assertFalse(serial_obj.closed)
+
+        serial_obj.allow_readline.set()
+        reader.join(1)
+        closer.join(1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(read_result, [b"OK\r\n"])
+        self.assertTrue(serial_obj.closed)
+        self.assertEqual(close_result, [("set", None), ("unlock",)])
 
     def test_send_call_hangup_runtime_writes_ath_command(self):
         calls = []

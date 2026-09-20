@@ -58,6 +58,7 @@ def install_serial_namespace_bindings(namespace):
             namespace["serial_lock"],
             lambda: namespace["serial_obj"],
             namespace["serial"].SerialException,
+            read_lock=namespace.get("serial_read_lock"),
         )
 
     def try_manual_rebind_after_error(error):

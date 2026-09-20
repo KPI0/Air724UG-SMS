@@ -27,6 +27,7 @@ class CloudImeiQueryOrderingTests(unittest.TestCase):
         self.captured = []
         self.namespace = {
             "serial_lock": threading.Lock(),
+            "serial_read_lock": threading.Lock(),
             "serial_obj": FakeSerial(),
             "cloud_imei_query_deadline": 0.0,
             "IMEI_REGEX": re.compile(r"\b(\d{14,17})\b"),
@@ -72,7 +73,10 @@ class CloudImeiQueryOrderingTests(unittest.TestCase):
         def read_reply():
             try:
                 line = read_serial_line_safely_runtime(
-                    self.namespace["serial_lock"], lambda: self.namespace["serial_obj"], RuntimeError
+                    self.namespace["serial_lock"],
+                    lambda: self.namespace["serial_obj"],
+                    RuntimeError,
+                    read_lock=self.namespace["serial_read_lock"],
                 ).decode("ascii").strip()
                 decisions.append(maybe_capture_cloud_device_imei_namespace_runtime(self.namespace, line))
             except Exception as exc:
