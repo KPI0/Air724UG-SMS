@@ -10,7 +10,7 @@ from sms_ui import firmware_update_window as ui
 class Updater:
     def __init__(self):
         self.state = dict(phase="idle", busy=False, can_start=False, can_cancel=False,
-            config_changed=False, device="COM1 · IMEI 尾号 000001", current_version="1.0.13",
+            config_changed=False, device="COM1 · IMEI 000000000000001", current_version="1.0.13",
             target_version="1.0.14", filename="synthetic.dfota.bin", progress=0,
             message="连接设备后读取固件，或选择本地升级包")
         self.started = 0

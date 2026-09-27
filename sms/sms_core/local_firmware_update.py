@@ -208,7 +208,7 @@ class LocalFirmwareUpdater:
                     # package fails its version or compatibility check.
                     self.context = context
                     self.state.update(current_version=capability["version"],
-                        device=f"{getattr(context.serial, 'port', '')} · IMEI 尾号 {context.imei[-6:]}")
+                        device=f"{getattr(context.serial, 'port', '')} · IMEI {context.imei}")
                 changed = check_package(package, capability) if package else False
                 with self.lock:
                     self._check_cancel()
