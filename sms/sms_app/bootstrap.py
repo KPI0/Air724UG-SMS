@@ -179,6 +179,7 @@ from sms_ui.app_infrastructure_namespace_bindings import install_app_infrastruct
 from sms_ui.app_lifecycle_namespace_bindings import install_app_lifecycle_namespace_bindings
 from sms_ui.app_ui_namespace_bindings import install_app_ui_namespace_bindings
 from sms_ui.app_menu_runtime import build_main_menu_runtime
+from sms_ui.firmware_update_window import open_firmware_update_window
 from sms_ui.main_window_layout import build_main_window_layout_runtime
 from sms_ui.window_icon_runtime import install_window_icon_runtime
 from sms_ui.audio_namespace_bindings import install_audio_namespace_bindings
@@ -703,6 +704,7 @@ def _build_main_menu():
             "open_cloud_control_window": open_cloud_control_window,
             "open_third_push_window": open_third_push_window,
             "open_serial_debug_window": open_serial_debug_window,
+            "open_firmware_update_window": lambda: open_firmware_update_window(globals()),
             "show_about": show_about,
             "check_update_and_prompt": check_update_and_prompt,
         },

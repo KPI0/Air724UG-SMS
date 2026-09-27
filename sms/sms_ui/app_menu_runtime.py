@@ -58,6 +58,8 @@ def build_main_menu_runtime(
     settings_menu.add_command(label="云端控制", command=commands["open_cloud_control_window"])
     settings_menu.add_command(label="三方推送", command=commands["open_third_push_window"])
     settings_menu.add_command(label="串口调试", command=commands["open_serial_debug_window"])
+    if "open_firmware_update_window" in commands:
+        settings_menu.add_command(label="固件更新", command=commands["open_firmware_update_window"])
     menu_bar.add_cascade(label="设置", menu=settings_menu)
 
     help_menu = tk_module.Menu(menu_bar, tearoff=0)

@@ -138,6 +138,37 @@ class SerialRuntimeTests(unittest.TestCase):
         self.assertEqual(decoder.feed(raw[:split_at]), [])
         self.assertEqual(decoder.feed(raw[split_at:]), [text.strip()])
 
+    def test_serial_line_decoder_preserves_non_protocol_separators(self):
+        for separator in ("\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                decoder = SerialLineDecoder()
+                line = "first" + separator + "second"
+                self.assertEqual(decoder.feed((line + "\r\nOK\r\n").encode()), [line, "OK"])
+                self.assertEqual(decoder.feed(b""), [""])
+
+    def test_serial_line_decoder_preserves_unicode_separators_across_byte_splits(self):
+        line = "开头\u2028正文\u2029结尾"
+        raw = (line + "\r\nOK\n").encode()
+        for split_at in range(1, len(raw)):
+            with self.subTest(split_at=split_at):
+                decoder = SerialLineDecoder()
+                lines = decoder.feed(raw[:split_at]) + decoder.feed(raw[split_at:])
+                self.assertEqual([item for item in lines if item], [line, "OK"])
+                self.assertEqual(decoder.text_buffer, "")
+
+    def test_sms_with_unicode_separator_reaches_popup_and_cloud_intact(self):
+        body = "合成测试\u2028第二段\u2029第三段"
+        head = "10086 26/09/26,12:00:00+32 " + body
+        raw = ("[I]-[handler_sms.smsCallback] " + head + "\r\n[I]-[ril.proatc] OK\r\n").encode()
+        calls = []
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        for index, line in enumerate(SerialLineDecoder().feed(raw)):
+            handle_serial_runtime_line(state, line, 10.0 + index, "COM5", False,
+                                       runtime_config(), runtime_callbacks(calls), {})
+        flush_settled_sms(state, calls, 20.0)
+        self.assertIn(("sms_popup", (body,)), calls)
+        self.assertIn(("cloud_sms", (head, body)), calls)
+
     def test_serial_runtime_observes_sms_send_response_lines(self):
         calls = []
         state = SerialRuntimeState.create(parse_sms_callback_head)

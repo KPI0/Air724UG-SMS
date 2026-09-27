@@ -1,4 +1,8 @@
 import unittest
+from io import BytesIO
+from unittest.mock import Mock, patch
+
+from sms_core import updates
 
 from sms_core.updates import (
     build_download_url,
@@ -10,6 +14,73 @@ from sms_core.updates import (
 
 
 class UpdateRuntimeTests(unittest.TestCase):
+    def test_invalid_release_cannot_be_reported_as_latest(self):
+        for release in (None, [], {}, {"message": "upstream unavailable"},
+                        {"tag_name": ""}, {"tag_name": 399}, {"tag_name": "invalid"}):
+            with self.subTest(release=release):
+                with self.assertRaises(ValueError):
+                    plan_update_check(release, "3.9.9", "")
+
+    def test_invalid_proxy_release_falls_back_to_official_api(self):
+        official = {"tag_name": "v4.0.0", "assets": []}
+        get_json = Mock(side_effect=[{"message": "upstream unavailable"}, official])
+        self.assertEqual(fetch_latest_release("owner", "repo", "proxy.example", get_json=get_json), official)
+        self.assertEqual(get_json.call_count, 2)
+
+    def test_invalid_asset_metadata_falls_back_to_official_api(self):
+        official = {"tag_name": "v4.0.0", "assets": []}
+        for assets in (None, {}, [None], [{"name": 1}], [{"name": "app.zip", "size": "bad"}]):
+            with self.subTest(assets=assets):
+                get_json = Mock(side_effect=[{"tag_name": "v4.0.0", "assets": assets}, official])
+                self.assertEqual(fetch_latest_release("owner", "repo", "proxy.example", get_json=get_json), official)
+                self.assertEqual(get_json.call_count, 2)
+
+    def test_unparseable_numeric_tag_is_rejected(self):
+        with self.assertRaises(ValueError):
+            plan_update_check({"tag_name": "9" * 5000}, "3.9.9", "")
+
+    def test_invalid_download_link_is_rejected(self):
+        for url in ("", "file:///C:/fake.zip", "javascript:alert(1)", "https:///missing-host.zip"):
+            with self.subTest(url=url):
+                release = {"tag_name": "v4.0.0", "assets": [
+                    {"name": "app.zip", "browser_download_url": url}]}
+                with self.assertRaises(ValueError):
+                    plan_update_check(release, "3.9.9", "proxy.example")
+
+    def test_proxy_test_does_not_accept_error_json_as_success(self):
+        result = updates.test_update_proxy_connectivity(
+            "owner", "repo", "proxy.example", "",
+            get_json=lambda *a, **kw: {"message": "upstream unavailable"},
+            probe=Mock(side_effect=AssertionError("Must not probe an invalid release")),
+        )
+        self.assertFalse(result["ok_bases"])
+        self.assertTrue(all(not ok for _name, ok, _info in result["checks"]))
+
+    def test_oversized_release_response_is_rejected_with_bounded_read(self):
+        stream = BytesIO(b'{"padding":"' + b"x" * (2 * 1024 * 1024) + b'"}')
+        response = Mock(wraps=stream)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.object(updates, "_build_no_proxy_opener", return_value=opener):
+            with self.assertRaises(ValueError):
+                updates.http_get_json("https://example.invalid/release", retries=1)
+        self.assertLessEqual(stream.tell(), 1024 * 1024 + 1)
+
+    def test_http_json_accepts_valid_utf8_and_rejects_corrupt_data(self):
+        for payload in (b'{"tag_name":"v4.0.0"}', b'{"tag_name":"v4.0.0\xff"}', b'not json'):
+            with self.subTest(payload=payload):
+                opener = Mock()
+                opener.open.return_value = BytesIO(payload)
+                with patch.object(updates, "_build_no_proxy_opener", return_value=opener):
+                    if payload == b'{"tag_name":"v4.0.0"}':
+                        self.assertEqual(updates.http_get_json("https://example.invalid/release"), {"tag_name": "v4.0.0"})
+                    else:
+                        with self.assertRaises(ValueError):
+                            updates.http_get_json("https://example.invalid/release")
+                self.assertEqual(opener.open.call_count, 1)
+
     def test_version_tuple_normalizes_tags_and_bad_parts(self):
         self.assertEqual(version_tuple("v3.6.7"), (3, 6, 7))
         self.assertEqual(version_tuple("3.bad"), (3, 0, 0))

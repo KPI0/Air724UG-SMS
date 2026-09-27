@@ -1,8 +1,42 @@
 from dataclasses import dataclass
 import json
+import re
 import ssl
 import time
+from urllib.parse import urlsplit
 import urllib.request
+
+
+MAX_RELEASE_JSON_BYTES = 1024 * 1024
+
+
+def _validate_release(release):
+    tag = release.get("tag_name") if isinstance(release, dict) else None
+    if (not isinstance(tag, str) or len(tag) > 64
+            or not re.fullmatch(r"[vV]?[0-9]+(?:\.[0-9]+){0,2}", tag.strip())):
+        raise ValueError("更新服务返回的版本号缺失或无效，请检查更新代理设置")
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise ValueError("更新服务返回的附件列表无效")
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise ValueError("更新服务返回的附件信息无效")
+        size = asset.get("size", 0)
+        if type(size) is not int or size < 0:
+            raise ValueError("更新服务返回的附件大小无效")
+        if asset["name"].lower().endswith(".zip"):
+            url = asset.get("browser_download_url")
+            try:
+                parsed = urlsplit(url) if isinstance(url, str) else None
+                valid = (parsed is not None and parsed.scheme in ("http", "https")
+                         and bool(parsed.hostname) and parsed.username is None
+                         and parsed.password is None and parsed.port != 0
+                         and not any(char.isspace() or ord(char) < 32 or char == "\\" for char in url))
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("更新服务返回的下载链接无效，仅支持完整的 HTTP/HTTPS 地址")
+    return release
 
 
 @dataclass(frozen=True)
@@ -79,7 +113,7 @@ def fetch_latest_release(owner: str, repo: str, api_proxy_base: str, get_json=No
 
     for url in urls:
         try:
-            return get_json(url, timeout=8, retries=3)
+            return _validate_release(get_json(url, timeout=8, retries=3))
         except Exception as exc:
             last_err = exc
 
@@ -94,7 +128,7 @@ def plan_update_check(
     pick_asset=pick_zip_asset,
     parse_version=version_tuple,
 ):
-    tag = (release_json or {}).get("tag_name") or ""
+    tag = _validate_release(release_json)["tag_name"].strip()
     latest = parse_version(tag)
     current = parse_version(current_version)
 
@@ -139,8 +173,12 @@ def http_get_json(url: str, timeout=8, retries=3):
                 method="GET",
             )
             with opener.open(req, timeout=timeout) as resp:
-                data = resp.read().decode("utf-8", "ignore")
-                return json.loads(data)
+                data = resp.read(MAX_RELEASE_JSON_BYTES + 1)
+                if len(data) > MAX_RELEASE_JSON_BYTES:
+                    raise ValueError("更新服务响应过大，已停止读取")
+                return json.loads(data.decode("utf-8"))
+        except ValueError:
+            raise
         except Exception as exc:
             last_err = exc
             _sleep_backoff(0.6, index)
@@ -202,7 +240,7 @@ def test_update_proxy_connectivity(
         base_n = normalize_proxy_base(base)
         url = base_n.rstrip("/") + api_path
         try:
-            release_json = get_json(url, timeout=6, retries=2)
+            release_json = _validate_release(get_json(url, timeout=6, retries=2))
             checks.append((base_n, True, "OK"))
             ok_bases.append(base_n)
             ok_api = True
@@ -213,7 +251,7 @@ def test_update_proxy_connectivity(
     if not ok_api:
         direct_url = "https://api.github.com" + api_path
         try:
-            release_json = get_json(direct_url, timeout=6, retries=2)
+            release_json = _validate_release(get_json(direct_url, timeout=6, retries=2))
             checks.append(("直连 api.github.com", True, "OK"))
             ok_api = True
         except Exception as exc:

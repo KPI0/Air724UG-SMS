@@ -79,6 +79,7 @@ class AppMenuRuntimeTests(unittest.TestCase):
             "open_cloud_control_window",
             "open_third_push_window",
             "open_serial_debug_window",
+            "open_firmware_update_window",
             "show_about",
             "check_update_and_prompt",
         ]
@@ -107,6 +108,8 @@ class AppMenuRuntimeTests(unittest.TestCase):
         settings_menu.items[2][3]()
         settings_menu.items[3][3]()
         settings_menu.items[7][2]()
+        firmware_entry = next(item for item in settings_menu.items if len(item) > 1 and item[1] == "固件更新")
+        firmware_entry[2]()
         help_menu = root.menu.items[6][2]
         help_menu.items[1][2]()
 
@@ -117,6 +120,7 @@ class AppMenuRuntimeTests(unittest.TestCase):
             "toggle_popup",
             "toggle_call_popup",
             "open_desktop_shortcut_dialog",
+            "open_firmware_update_window",
             "check_update_and_prompt",
         ])
 

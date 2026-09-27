@@ -226,6 +226,7 @@ class CoreHelperTests(unittest.TestCase):
         def fake_get_json(url, timeout=0, retries=0):
             calls.append(("json", url, timeout, retries))
             return {
+                "tag_name": "v1",
                 "assets": [
                     {
                         "name": "sms.zip",

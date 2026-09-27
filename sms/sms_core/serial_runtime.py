@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import codecs
 import inspect
+import re
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
@@ -168,15 +169,11 @@ class SerialLineDecoder:
         if self.text_buffer.strip() == ">":
             self.text_buffer = ""
             return [">"]
-        lines = []
-        pending = []
-        for part in self.text_buffer.splitlines(keepends=True):
-            if part.endswith(("\r", "\n")):
-                lines.append(part.rstrip("\r\n").strip())
-            else:
-                pending.append(part)
-        self.text_buffer = "".join(pending)
-        return lines
+        # Only CR/LF delimit serial frames. Unicode separators belong to the
+        # message body and must not split or reorder a callback frame.
+        parts = re.split(r"\r\n|[\r\n]", self.text_buffer)
+        self.text_buffer = parts.pop()
+        return [part.strip() for part in parts]
 
 
 def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=None):
