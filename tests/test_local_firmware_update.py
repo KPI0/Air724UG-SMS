@@ -95,11 +95,86 @@ class LocalFirmwareUpdateTests(unittest.TestCase):
 
     def test_bad_or_missing_file_clears_previous_ready_state(self):
         self.ready()
+        verified = self.updater.snapshot()
         self.updater.prepare(FIXTURES / "missing.bin")
         self.assertEqual(self.updater.snapshot()["phase"], "failed")
         self.assertFalse(self.updater.start())
+        self.assertEqual(self.updater.snapshot()["current_version"], verified["current_version"])
+        self.assertEqual(self.updater.snapshot()["device"], verified["device"])
         self.updater.prepare(__file__)
         self.assertEqual(self.updater.snapshot()["phase"], "failed")
+        self.assertEqual(self.updater.snapshot()["current_version"], verified["current_version"])
+        self.assertEqual(self.updater.snapshot()["device"], verified["device"])
+
+    def test_same_or_lower_package_keeps_verified_device_and_disables_install(self):
+        for suffix in ("dfota.bin", "air724ota"):
+            for version in ("1.0.8", "1.0.9"):
+                with self.subTest(suffix=suffix, current_version=version):
+                    self.capability["version"] = version
+                    self.updater.prepare()
+                    verified = self.updater.snapshot()
+                    self.updater.prepare(FIXTURES / ("synthetic." + suffix))
+                    state = self.updater.snapshot()
+                    self.assertEqual(state["phase"], "failed")
+                    self.assertIn("不支持同版本更新或降级", state["message"])
+                    self.assertEqual(state["current_version"], version)
+                    self.assertEqual(state["device"], verified["device"])
+                    self.assertFalse(state["can_start"])
+                    self.assertIsNone(self.updater.package)
+                    self.assertFalse(self.updater.start())
+                    self.assertEqual(state["target_version"], "")
+                    self.assertEqual(state["filename"], "")
+        self.assertTrue(all(request["action"] == "info" for request in self.requests))
+
+    def test_rejected_first_selection_still_shows_freshly_read_device(self):
+        self.capability["version"] = "1.0.8"
+        self.updater.prepare(FIXTURES / "synthetic.dfota.bin")
+        state = self.updater.snapshot()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["current_version"], "1.0.8")
+        self.assertTrue(state["device"].startswith("COM1"))
+        self.assertFalse(state["can_start"])
+
+    def test_selecting_package_keeps_device_visible_while_checking(self):
+        self.updater.prepare()
+        verified = self.updater.snapshot()
+        seen = []
+        def checking(transport, request, reply):
+            seen.append(self.updater.snapshot())
+            return reply
+        self.handler = checking
+        self.updater.prepare(FIXTURES / "synthetic.dfota.bin")
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0]["busy"])
+        self.assertFalse(seen[0]["can_start"])
+        self.assertEqual(seen[0]["current_version"], verified["current_version"])
+        self.assertEqual(seen[0]["device"], verified["device"])
+        self.assertEqual(self.updater.snapshot()["phase"], "ready")
+
+    def test_device_change_during_selection_does_not_keep_previous_identity(self):
+        self.updater.prepare()
+        def changed(transport, request, reply):
+            self.ns["serial_connection_generation"] += 1
+            return reply
+        self.handler = changed
+        self.updater.prepare(FIXTURES / "synthetic.dfota.bin")
+        state = self.updater.snapshot()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["current_version"], "")
+        self.assertEqual(state["device"], "")
+        self.assertFalse(state["can_start"])
+        self.assertIsNone(self.updater.context)
+
+    def test_explicit_read_failure_clears_old_device_information(self):
+        self.updater.prepare()
+        def timeout(transport, request, reply):
+            raise RelayError("usb_timeout")
+        self.handler = timeout
+        self.updater.prepare()
+        state = self.updater.snapshot()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["current_version"], "")
+        self.assertEqual(state["device"], "")
 
     def test_oversized_read_is_bounded_and_rejected(self):
         from io import BytesIO

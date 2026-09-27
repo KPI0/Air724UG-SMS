@@ -184,29 +184,46 @@ class LocalFirmwareUpdater:
         def operation():
             with self.lock:
                 self.package = None
-                self.context = None
-            self._set(filename="", target_version="", current_version="", device="", config_changed=False)
-            context = capture_local_context(self.namespace)
-            package = None
-            if path is not None:
-                try:
-                    with open(path, "rb") as stream:
-                        data = stream.read(MAX_PACKAGE_BYTES + 1)
-                except OSError:
-                    raise UpdateError("无法读取升级文件，请检查文件是否存在及读取权限") from None
-                package = parse_upload_package(data)
-                self._check_cancel()
-            capability = self._read_device(context)
-            changed = check_package(package, capability) if package else False
-            with self.lock:
-                self._check_cancel()
-                self.package, self.context = package, context
-                self.state.update(phase="ready" if package else "idle", filename=Path(path).name if path else "",
-                    target_version=package.manifest["version"] if package else "",
-                    current_version=capability["version"], device=f"{getattr(context.serial, 'port', '')} · IMEI 尾号 {context.imei[-6:]}",
-                    config_changed=changed,
-                    message=("预检通过，包内配置与设备不同，将随固件更新" if changed else "预检通过，可以开始更新")
-                            if package else "设备支持本地更新，请选择升级包")
+                self.state.update(filename="", target_version="", config_changed=False)
+                if path is None or not self._current(self.context):
+                    self.context = None
+                    self.state.update(current_version="", device="")
+            try:
+                context = capture_local_context(self.namespace)
+                package = None
+                if path is not None:
+                    try:
+                        with open(path, "rb") as stream:
+                            data = stream.read(MAX_PACKAGE_BYTES + 1)
+                    except OSError:
+                        raise UpdateError("无法读取升级文件，请检查文件是否存在及读取权限") from None
+                    package = parse_upload_package(data)
+                    self._check_cancel()
+                capability = self._read_device(context)
+                with self.lock:
+                    self._check_cancel()
+                    if not self._current(context):
+                        raise UpdateError(REASONS["connection_changed"])
+                    # Device information remains valid when only the selected
+                    # package fails its version or compatibility check.
+                    self.context = context
+                    self.state.update(current_version=capability["version"],
+                        device=f"{getattr(context.serial, 'port', '')} · IMEI 尾号 {context.imei[-6:]}")
+                changed = check_package(package, capability) if package else False
+                with self.lock:
+                    self._check_cancel()
+                    self.package = package
+                    self.state.update(phase="ready" if package else "idle", filename=Path(path).name if path else "",
+                        target_version=package.manifest["version"] if package else "", config_changed=changed,
+                        message=("预检通过，包内配置与设备不同，将随固件更新" if changed else "预检通过，可以开始更新")
+                                if package else "设备支持本地更新，请选择升级包")
+            finally:
+                with self.lock:
+                    if self.context is not None and not self._current(self.context):
+                        self.context = self.package = None
+                        self.state.update(current_version="", device="")
+                        self._check_cancel()
+                        raise UpdateError(REASONS["connection_changed"])
         return self._launch(operation, "checking" if path else "reading", "正在校验升级包并读取设备…" if path else "正在读取设备固件…")
 
     def _exchange(self, transport, action, job_id, *, attempts=3, **fields):

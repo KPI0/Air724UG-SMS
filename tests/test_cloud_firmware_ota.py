@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from sms_core.cloud_command_context import capture_cloud_serial_command_context
-from sms_core.cloud_firmware_ota import CloudFirmwareOtaRelay, RelayError, UsbOtaTransport, usb_at_candidates
+from sms_core.cloud_firmware_ota import CloudFirmwareOtaRelay, RelayError, UsbOtaTransport, usb_at_candidates, handle_firmware_ota
 from sms_core.cloud_message_runtime import handle_cloud_message_runtime
 from sms_core import serial_sender
 
@@ -144,6 +144,38 @@ class UsbOtaTransportTests(unittest.TestCase):
                  port("COM5", "LUAT USB Device 1 AT", vid=1)]
         self.assertEqual(usb_at_candidates(ports, "COM1"), ["COM2"])
         self.assertEqual(usb_at_candidates(ports, "COM3"), [])
+
+    def test_first_info_uses_identity_probe_but_next_info_reads_fresh_version(self):
+        usb = Usb()
+        transport = self.make({"COM2": usb})
+        first = transport.exchange(self.request("info"))
+        self.assertEqual(first["ota"]["version"], CAP["version"])
+        self.assertEqual(len(usb.requests), 1)
+        usb.handler = lambda req, reply: dict(reply, ota=dict(CAP, version="1.0.10"))
+        second = transport.exchange(self.request("info"))
+        self.assertEqual(second["ota"]["version"], "1.0.10")
+        self.assertEqual(len(usb.requests), 2)
+        self.assertNotEqual(usb.requests[0]["request_id"], usb.requests[1]["request_id"])
+
+    def test_info_accepts_delayed_usb_reply_within_response_timeout(self):
+        usb = Usb()
+        transport = self.make({"COM2": usb})
+        transport.response_timeout = 5
+        original_read = usb.read
+        def delayed_read(size):
+            return b"" if transport.clock.now < 1.5 else original_read(size)
+        usb.read = delayed_read
+        self.assertTrue(transport.exchange(self.request("info"))["ok"])
+        self.assertGreater(transport.clock.now, 1.5)
+
+    def test_unresponsive_candidates_have_one_bounded_scan_budget(self):
+        devices = {f"COM{n}": Usb(handler=lambda req, reply: None) for n in range(2, 10)}
+        transport = self.make(devices)
+        transport.response_timeout = 5
+        with self.assertRaisesRegex(RelayError, "usb_unavailable"):
+            transport.exchange(self.request("info"))
+        self.assertLess(transport.clock.now, 10)
+        self.assertTrue(all(devices[name].closed for name in self.opened))
 
     def test_wrong_device_is_closed_without_ever_receiving_a_secret(self):
         wrong, correct = Usb("000000000000002"), Usb(partial=True)
@@ -326,6 +358,55 @@ class CloudFirmwareOtaRelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.ns["cloud_connected"])
         self.assertEqual(self.created, [])
         self.assertEqual(self.ws.replies, [])
+
+    async def test_new_info_during_cleanup_waits_for_old_usb_handle_to_close(self):
+        entered, release = threading.Event(), threading.Event()
+        cleanup_current = []
+        def setup(transport):
+            def abort():
+                entered.set()
+                release.wait(2)
+                cleanup_current.append(transport.current())
+            transport.abort = abort
+        self.setup_transport = setup
+        self.ns["_firmware_ota_relay"] = self.relay
+        await self.relay.submit(self.request("abort"))
+        self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+        replacement = CloudFirmwareOtaRelay(self.ns, self.ws, transport_factory=ControlledTransport)
+        try:
+            with patch("sms_core.cloud_firmware_ota.CloudFirmwareOtaRelay", return_value=replacement):
+                pending = asyncio.create_task(handle_firmware_ota(
+                    self.ns, self.ws, self.request(request_id="3" * 32)))
+                await asyncio.sleep(0.02)
+                release.set()
+                await pending
+                await self.relay.task
+                await self.ws.received(2)
+            self.assertTrue(self.created[0].closed)
+            self.assertEqual(cleanup_current, [True])
+            self.assertEqual(self.ws.replies[-1]["request_id"], "3" * 32)
+            self.assertTrue(self.ws.replies[-1]["ok"])
+        finally:
+            release.set()
+            await replacement.stop()
+
+    async def test_request_queued_before_abort_gets_failure_instead_of_being_dropped(self):
+        self.setup_transport = lambda t: t.release.clear()
+        await self.relay.submit(self.request("abort"))
+        for _ in range(100):
+            if self.created:
+                break
+            await asyncio.sleep(0.001)
+        transport = self.created[0]
+        self.assertTrue(await asyncio.to_thread(transport.entered.wait, 1))
+        await self.relay.submit(self.request(request_id="3" * 32))
+        transport.release.set()
+        await self.relay.task
+        self.assertEqual(len(self.ws.replies), 2)
+        self.assertEqual(self.ws.replies[-1]["request_id"], "3" * 32)
+        self.assertFalse(self.ws.replies[-1]["ok"])
+        self.assertTrue(transport.closed)
+        self.assertFalse(self.relay.pending)
 
     async def test_changed_context_while_worker_waits_cancels_without_writing(self):
         self.setup_transport = lambda t: t.release.clear()

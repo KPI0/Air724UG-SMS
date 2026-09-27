@@ -165,6 +165,33 @@ class FirmwareUpdateWindowTests(unittest.TestCase):
         self.assertEqual(canvas.yview(), (0.0, 1.0))
         self.assertFalse(self.errors)
 
+    def test_rejected_package_keeps_actual_updater_device_labels(self):
+        from tests.test_local_firmware_update import LocalFirmwareUpdateTests, FIXTURES
+        fixture = LocalFirmwareUpdateTests()
+        fixture.setUp()
+        fixture.capability["version"] = "1.0.8"
+        self.updater = fixture.updater
+        self.namespace.update(fixture.ns, local_firmware_updater=self.updater)
+        win = self.open()
+        buttons = self.buttons(win)
+        buttons["读取设备"].invoke()
+        self.poll()
+        device = self.updater.snapshot()["device"]
+        with patch.object(ui.filedialog, "askopenfilename", return_value=str(FIXTURES / "synthetic.dfota.bin")):
+            buttons["选择固件…"].invoke()
+        self.poll()
+        labels = {widget.cget("text") for widget in descendants(win) if widget.winfo_class() == "TLabel"}
+        self.assertIn(device, labels)
+        self.assertIn("1.0.8", labels)
+        self.assertIn("目标版本必须高于当前版本；不支持同版本更新或降级", labels)
+        self.assertEqual(str(buttons["开始更新"]["state"]), "disabled")
+        buttons["关闭"].invoke()
+        reopened = self.open()
+        self.assertEqual(self.updater.snapshot()["device"], device)
+        self.assertEqual(self.updater.snapshot()["current_version"], "1.0.8")
+        self.assertEqual(str(self.buttons(reopened)["开始更新"]["state"]), "disabled")
+        self.assertFalse(self.errors)
+
     def test_closed_window_releases_tk_variables_on_ui_thread(self):
         gc.collect()
         gc_enabled = gc.isenabled()

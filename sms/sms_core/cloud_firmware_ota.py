@@ -99,10 +99,13 @@ class UsbOtaTransport:
             self.buffer.extend(self.port.read(1024))
         raise RelayError("usb_timeout")
 
-    def _probe(self):
+    def _probe(self, deadline=None):
         request = dict(type="firmware_ota", action="info", request_id=uuid.uuid4().hex)
         self._write(request)
-        reply = self._read(request, 1)
+        timeout = self.response_timeout
+        if deadline is not None:
+            timeout = min(timeout, max(0, deadline - self.clock()))
+        reply = self._read(request, timeout)
         if reply.get("ok") is not True or not isinstance(reply.get("ota"), dict):
             raise RelayError("unsupported")
         self.capability = {key: reply["ota"].get(key) for key in CAP_FIELDS}
@@ -110,7 +113,7 @@ class UsbOtaTransport:
 
     def connect(self):
         if self.port is not None:
-            return
+            return False
         self.check()
         if self.serial_factory is None:
             import serial
@@ -119,14 +122,19 @@ class UsbOtaTransport:
             from serial.tools.list_ports import comports
             self.list_ports = comports
         candidates = usb_at_candidates(self.list_ports(), getattr(self.context.serial, "port", ""))
+        # Share the original eight-port scan budget instead of multiplying the
+        # longer per-device response timeout by the number of USB interfaces.
+        deadline = self.clock() + 8
         for name in candidates:
+            if self.clock() >= deadline:
+                break
             try:
                 self.check()
                 self.port = self.serial_factory(name, baudrate=115200, timeout=0.1, write_timeout=2)
                 self.buffer.clear()
                 self.port.reset_input_buffer()
-                self._probe()
-                return
+                self._probe(deadline)
+                return True
             except Exception:
                 self._close_port()
                 self.check()
@@ -139,9 +147,9 @@ class UsbOtaTransport:
             raise RelayError("busy")
         if action not in {"info", "begin"} and not self.job_id:
             raise RelayError("session")
-        self.connect()
+        opened = self.connect()
         if action == "info":
-            capability = self._probe()
+            capability = self.capability if opened else self._probe()
             return dict(type="firmware_ota_reply", action="info", request_id=request["request_id"],
                         ok=True, ota=capability, imei=self.context.imei)
         if not reserve_serial_for_ota(self.context.serial, self):
@@ -216,6 +224,7 @@ class CloudFirmwareOtaRelay:
         self.task = None
         self.transport = None
         self.closed = False
+        self.closing = False
         self.pending = set()
 
     def _current(self, context):
@@ -260,7 +269,7 @@ class CloudFirmwareOtaRelay:
             return
         if data["request_id"] in self.pending:
             return  # An identical in-flight request gets its original reply.
-        if self.queue.full() or (self.transport and self.transport.commit_sent):
+        if self.closing or self.queue.full() or (self.transport and self.transport.commit_sent):
             await self._reply(dict(ok=False, reason="busy"), data, context)
             return
         request = {key: data[key] for key in ("type", "action", "request_id", "job_id", "secret",
@@ -324,13 +333,21 @@ class CloudFirmwareOtaRelay:
                     self.pending.discard(request["request_id"])
                     idle_since = time.monotonic()
         finally:
-            if self.transport:
-                await self._thread(self.transport.abort)
-                self.transport.close()
-            self.closed = True
-            self.pending.clear()
-            while not self.queue.empty():
-                self.queue.get_nowait()
+            self.closing = True
+            try:
+                if self.transport:
+                    try:
+                        await self._thread(self.transport.abort)
+                    finally:
+                        self.transport.close()
+                while not self.queue.empty():
+                    item = self.queue.get_nowait()
+                    if item is not None:
+                        request, context = item
+                        await self._reply(dict(ok=False, reason="usb_unavailable"), request, context)
+            finally:
+                self.closed = True
+                self.pending.clear()
 
     async def stop(self):
         self.closed = True
@@ -345,6 +362,10 @@ class CloudFirmwareOtaRelay:
 
 async def handle_firmware_ota(namespace, websocket, data):
     relay = namespace.get("_firmware_ota_relay")
+    if relay and relay.websocket is websocket and relay.closing and not relay.closed:
+        # Let a normal abort finish with its original identity, then reopen.
+        # Marking it closed first would invalidate the final USB cleanup write.
+        await asyncio.shield(relay.task)
     if relay and (relay.websocket is not websocket or relay.closed):
         await relay.stop()
         relay = None
