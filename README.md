@@ -226,3 +226,11 @@ Air724UG-SMS/
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/7.png)   
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/8.png)   
 ![](https://github.com/KPI0/Air724UG-SMS/blob/main/png/9.png) 
+
+## 许可证
+
+本项目原创代码采用仓库根目录 `LICENSE` 中的 **Air724UG-SMS Source-Available Non-Commercial License v1.0**（源码公开、非商业使用定制许可证）。允许个人、教育、研究和其他非商业用途使用、修改和分享；禁止商业用途，包括销售、收费服务、商业产品集成和商业机构内部业务使用。
+
+分发或公开任何修改版时，必须同时免费公开完整的对应源代码、构建脚本、配置和安装说明，并以相同许可证发布；还必须保留版权和许可证声明，并标明修改内容与日期。该许可证不是 OSI 批准的标准开源许可证，因为它包含非商业使用限制。
+
+依赖项及其他第三方材料遵循各自附带或声明的许可证；本项目定制许可证不会改变这些第三方组件的原有许可。许可证变更只适用于明确采用本许可证的版本，历史版本不会自动追溯变更。
