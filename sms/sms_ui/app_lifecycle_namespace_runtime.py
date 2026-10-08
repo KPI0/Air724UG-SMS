@@ -1,12 +1,13 @@
 import os
 
 from sms_core.autostart_instances import unregister_autostart_instance
+from sms_core.app_shutdown import _call_with_optional_log_error, wait_for_pending_cloud_events
 from sms_core.windows_runtime import acquire_mutex_with_error
 from sms_ui.app_autostart_runtime import set_autostart_runtime
 from sms_ui.app_instance_runtime import app_dir_mutex_name
-from sms_ui.app_restart_runtime import restart_software_app_runtime
+from sms_ui.app_restart_runtime import start_restart_software_app_runtime
 from sms_ui.call_popup_namespace_runtime import close_phone_popups_namespace_runtime
-from sms_ui.app_shutdown_runtime import cleanup_and_exit_app_runtime
+from sms_ui.app_shutdown_runtime import start_cleanup_and_exit_app_runtime
 from sms_ui.settings_runtime import (
     toggle_call_popup_runtime,
     toggle_multi_instance_runtime,
@@ -19,6 +20,7 @@ def _registered_worker_threads(namespace):
     threads = []
     for registry_name in (
         "UPDATE_THREAD_REGISTRY",
+        "MAINTENANCE_THREAD_REGISTRY",
         "SERIAL_COMMAND_THREAD_REGISTRY",
         "SMS_SEND_THREAD_REGISTRY",
     ):
@@ -48,6 +50,16 @@ def _shutdown_worker_threads(namespace):
     ) + _registered_worker_threads(namespace)
 
 
+def _flush_file_logs(namespace):
+    def flush(log_queue, *, log_error=None):
+        state = namespace.get("FILE_LOG_ERROR_STATE")
+        return _call_with_optional_log_error(
+            namespace["flush_log_queue"], log_queue,
+            log_error=state.report if state is not None else log_error,
+        )
+    return flush
+
+
 def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runtime=set_autostart_runtime):
     return set_autostart_app_runtime(
         enable,
@@ -62,7 +74,7 @@ def set_autostart_namespace_runtime(namespace, enable, *, set_autostart_app_runt
 def cleanup_and_exit_namespace_runtime(
     namespace,
     *,
-    cleanup_app_runtime=cleanup_and_exit_app_runtime,
+    cleanup_app_runtime=start_cleanup_and_exit_app_runtime,
     unregister_runtime=unregister_autostart_instance,
 ):
     def unregister_instance():
@@ -103,11 +115,18 @@ def cleanup_and_exit_namespace_runtime(
         stop_cloud_control=namespace["stop_cloud_control"],
         safe_close_serial=namespace["safe_close_serial"],
         stop_tray_icon=namespace["stop_tray_icon"],
-        flush_log_queue=namespace["flush_log_queue"],
+        flush_log_queue=_flush_file_logs(namespace),
+        notify_log_errors=namespace.get("notify_file_log_errors"),
         file_log_queue=namespace["FILE_LOG_Q"],
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
         worker_threads=lambda: _shutdown_worker_threads(namespace),
+        pre_cloud_worker_threads=lambda: (namespace.get("serial_thread"),),
+        before_stop_cloud=lambda: wait_for_pending_cloud_events(
+            namespace.get("CLOUD_SMS_EVENT_Q"),
+            lambda: bool(namespace.get("cloud_connected") and namespace.get("cloud_device_authorized")),
+            log_error=namespace.get("log_file_only"),
+        ),
         deferred_worker_stop_events=(namespace["third_push_stop"],),
         deferred_worker_threads=lambda: (namespace.get("third_push_thread"),),
         deferred_worker_queues=(namespace["THIRD_PUSH_Q"],),
@@ -253,7 +272,7 @@ def toggle_call_popup_namespace_runtime(
 def restart_software_namespace_runtime(
     namespace,
     *,
-    restart_app_runtime=restart_software_app_runtime,
+    restart_app_runtime=start_restart_software_app_runtime,
 ):
     os_module = namespace.get("os", os)
     return restart_app_runtime(
@@ -278,11 +297,18 @@ def restart_software_namespace_runtime(
         safe_close_serial=namespace["safe_close_serial"],
         app_mutex=namespace["app_mutex"],
         release_mutex=namespace["release_mutex_handle"],
-        flush_log_queue=namespace["flush_log_queue"],
+        flush_log_queue=_flush_file_logs(namespace),
+        notify_log_errors=namespace.get("notify_file_log_errors"),
         file_log_queue=namespace["FILE_LOG_Q"],
         file_log_thread=namespace.get("file_log_thread"),
         file_log_stop_event=namespace["file_log_stop"],
         worker_threads=lambda: _shutdown_worker_threads(namespace),
+        pre_cloud_worker_threads=lambda: (namespace.get("serial_thread"),),
+        before_stop_cloud=lambda: wait_for_pending_cloud_events(
+            namespace.get("CLOUD_SMS_EVENT_Q"),
+            lambda: bool(namespace.get("cloud_connected") and namespace.get("cloud_device_authorized")),
+            log_error=namespace.get("log_file_only"),
+        ),
         deferred_stop_events=(namespace["third_push_stop"],),
         deferred_worker_threads=lambda: (namespace.get("third_push_thread"),),
         deferred_worker_queues=(namespace["THIRD_PUSH_Q"],),

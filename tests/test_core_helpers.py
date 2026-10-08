@@ -450,7 +450,7 @@ class CoreHelperTests(unittest.TestCase):
 
     def test_lte_cell_parser(self):
         insights = parse_serial_debug_insights(
-            "[I]-[ril.proatc] +EEMLTESVC: 1120,17,0,12345,0,0,0,0,0,67890"
+            "[I]-[ril.proatc] +EEMLTESVC: 1120,2,17,12345,0,0,0,0,0,67890"
         )
 
         self.assertEqual(insights[0], ">>> \u89e3\u6790\u5230\u57fa\u7ad9\u5b9a\u4f4d\u6570\u636e\uff1a")

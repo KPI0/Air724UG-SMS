@@ -6,6 +6,7 @@ import sys
 import time
 from dataclasses import dataclass
 
+from sms_core.app_shutdown import _safe_log
 from sms_core.file_log_runtime import wait_for_file_log_worker
 from sms_core.threading_runtime import queues_are_drained, wait_for_worker_threads
 
@@ -205,6 +206,9 @@ def restart_software_runtime(
     deferred_worker_queues=(),
     wait_worker_threads=wait_for_worker_threads,
     wait_file_log_worker=wait_for_file_log_worker,
+    pre_cloud_worker_threads=(),
+    before_stop_cloud=None,
+    report_progress=None,
 ):
     if is_exiting:
         return RestartRuntimeResult("already_exiting")
@@ -212,6 +216,14 @@ def restart_software_runtime(
     if not confirm_restart():
         return RestartRuntimeResult("cancelled")
 
+    def progress(message):
+        if report_progress is not None:
+            try:
+                report_progress(message)
+            except Exception as exc:
+                _safe_log(log_error, f"Report restart progress failed: {exc!r}")
+
+    progress("正在准备重启…")
     helper_process = None
     restart_committed = False
     try:
@@ -243,6 +255,18 @@ def restart_software_runtime(
         safe_set_events(*tuple(stop_events or ()))
 
         try:
+            progress("正在停止接收并保存已收到的短信…")
+            receiver_threads = pre_cloud_worker_threads() if callable(pre_cloud_worker_threads) else pre_cloud_worker_threads
+            if receiver_threads and wait_worker_threads(receiver_threads, log_error=log_error) is False:
+                return RestartRuntimeResult("worker_wait_failed")
+            if before_stop_cloud is not None:
+                progress("正在确认云端事件并关闭连接…")
+                before_stop_cloud()
+        except Exception as exc:
+            _safe_log(log_error, f"Finish received SMS before cloud restart failed: {exc!r}")
+            return RestartRuntimeResult("worker_wait_failed", exc)
+
+        try:
             stop_cloud_control(update_status=False)
         except Exception:
             pass
@@ -257,6 +281,7 @@ def restart_software_runtime(
                 pass
             return RestartRuntimeResult("worker_wait_failed", exc)
         try:
+            progress("正在等待后台任务结束…")
             workers_stopped = wait_worker_threads(threads_to_wait, log_error=log_error)
         except Exception as exc:
             try:
@@ -311,6 +336,7 @@ def restart_software_runtime(
             or deferred_worker_threads
         )
         if has_deferred_workers:
+            progress("正在完成剩余推送，请稍候…")
             safe_set_events(*deferred_events)
             try:
                 deferred_threads_to_wait = (
@@ -345,6 +371,7 @@ def restart_software_runtime(
                 except Exception:
                     pass
                 return RestartRuntimeResult("worker_wait_failed")
+        progress("正在保存日志…")
         if file_log_stop_event is not None:
             safe_set_events(file_log_stop_event)
 

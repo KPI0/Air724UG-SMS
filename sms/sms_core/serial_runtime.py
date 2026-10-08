@@ -132,48 +132,50 @@ def _mark_call_connected(callback, call_session_id=""):
     return callback(session_id)
 
 
+MAX_SERIAL_LINE_CHARS = 256 * 1024
+
+
 class SerialLineDecoder:
-    def __init__(self, encoding="utf-8"):
+    def __init__(self, encoding="utf-8", *, max_line_chars=MAX_SERIAL_LINE_CHARS):
         self.encoding = encoding
         self.decoder = codecs.getincrementaldecoder(encoding)("replace")
         self.text_buffer = ""
-
-    def _ends_with_incomplete_character(self, raw, pending=b""):
-        combined = bytes(pending or b"") + bytes(raw or b"")
-        if not combined:
-            return False
-        try:
-            combined.decode(self.encoding, "strict")
-            return False
-        except UnicodeDecodeError as exc:
-            return exc.reason == "unexpected end of data" and exc.end == len(combined)
-
-    def _drop_artificial_newline_after_incomplete_character(self, raw):
-        pending = self.decoder.getstate()[0]
-        for suffix in (b"\r\n", b"\n", b"\r"):
-            if raw.endswith(suffix):
-                body = raw[:-len(suffix)]
-                if self._ends_with_incomplete_character(body, pending=pending):
-                    return body
-                break
-        return raw
+        self.max_line_chars = max(1, int(max_line_chars))
+        self._skip_lf = False
 
     def feed(self, raw):
         if not raw:
+            # A lone > at a chunk boundary may still be SMS body text. Wait
+            # for one idle read before treating an unterminated > as a prompt.
+            if self.text_buffer.strip() == ">" and not self.decoder.getstate()[0]:
+                self.text_buffer = ""
+                return [">"]
             if self.text_buffer or self.decoder.getstate()[0]:
                 return []
             return [""]
 
-        raw = self._drop_artificial_newline_after_incomplete_character(bytes(raw))
-        self.text_buffer += self.decoder.decode(raw, final=False)
-        if self.text_buffer.strip() == ">":
-            self.text_buffer = ""
-            return [">"]
-        # Only CR/LF delimit serial frames. Unicode separators belong to the
-        # message body and must not split or reorder a callback frame.
-        parts = re.split(r"\r\n|[\r\n]", self.text_buffer)
-        self.text_buffer = parts.pop()
-        return [part.strip() for part in parts]
+        lines = []
+        # Chunk boundaries are unrelated to frame boundaries. Preserve split
+        # CRLF and the firmware's artificial newline inside a UTF-8 character.
+        for index, part in enumerate(re.split(rb"(\r\n|[\r\n])", bytes(raw))):
+            if index % 2 == 0:
+                if not part:
+                    continue
+                self._skip_lf = False
+                self.text_buffer += self.decoder.decode(part, final=False)
+                if len(self.text_buffer) > self.max_line_chars:
+                    self.text_buffer = ""
+                    self.decoder.reset()
+                    raise ValueError("串口单行数据过长，已停止当前读取，请检查串口和波特率")
+            else:
+                if part == b"\n" and self._skip_lf:
+                    self._skip_lf = False
+                    continue
+                self._skip_lf = part == b"\r"
+                if not self.decoder.getstate()[0]:
+                    lines.append(self.text_buffer.strip())
+                    self.text_buffer = ""
+        return lines
 
 
 def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=None):
@@ -196,6 +198,25 @@ def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now
         assembler=state.sms_pipeline,
         now=now,
         concat_log=sms_diagnostic_log,
+    )
+
+
+def process_runtime_sms_items(pending, config, callbacks, ignore_repeat_state):
+    return process_pending_sms_items(
+        pending,
+        config.keywords,
+        config.log_unmatched_sms,
+        config.log_dir,
+        config.log_prefix,
+        ignore_repeat_state,
+        config.error_repeat_limit,
+        callbacks.enqueue_third_push,
+        callbacks.send_cloud_sms_event,
+        callbacks.port_ui,
+        callbacks.play_alert,
+        callbacks.show_sms_popup,
+        callbacks.file_log,
+        callbacks.system_ui,
     )
 
 
@@ -247,22 +268,7 @@ def handle_serial_runtime_line(
     sms_diagnostic_log = build_sms_diagnostic_log(config, callbacks)
     ready_sms = state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
     if ready_sms is not None:
-        process_pending_sms_items(
-            ready_sms,
-            config.keywords,
-            config.log_unmatched_sms,
-            config.log_dir,
-            config.log_prefix,
-            ignore_repeat_state,
-            config.error_repeat_limit,
-            callbacks.enqueue_third_push,
-            callbacks.send_cloud_sms_event,
-            callbacks.port_ui,
-            callbacks.play_alert,
-            callbacks.show_sms_popup,
-            callbacks.file_log,
-            callbacks.system_ui,
-        )
+        process_runtime_sms_items(ready_sms, config, callbacks, ignore_repeat_state)
     try:
         callbacks.observe_sms_send_line(line)
     except Exception:
@@ -415,6 +421,7 @@ def run_serial_runtime_thread(
     clock=None,
     run_loop=run_serial_thread_loop,
     handle_runtime_line=handle_serial_runtime_line,
+    settle_wait=time.sleep,
 ):
     state = SerialRuntimeState.create(parse_callback_head)
     now = clock or time.monotonic
@@ -450,25 +457,37 @@ def run_serial_runtime_thread(
         )
         sync_app_call_state()
 
-    def handle_error(error, target_port):
+    def finish_sms_session():
+        # Flush while the original device identity and log prefix still apply.
+        flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now())
+        ready = state.long_sms_assembler.finish_session(
+            now=now(), wait=settle_wait, log=build_sms_diagnostic_log(config, callbacks),
+        )
+        process_runtime_sms_items(ready, config, callbacks, ignore_repeat_state)
         state.reset_sms_state()
+
+    def handle_error(error, target_port):
+        finish_sms_session()
         state.reset_call_state()
         callbacks.reset_incoming_call()
         sync_app_call_state()
         return handle_disconnect(error, target_port)
 
-    run_loop(
-        should_continue=should_continue,
-        get_target_port=get_target_port,
-        resolve_target_port=resolve_target_port,
-        set_connecting_status=set_connecting_status,
-        open_and_initialize_serial=open_and_initialize_serial,
-        on_connected_port=handle_connected_port,
-        read_serial_line=read_serial_line,
-        handle_line=handle_line,
-        handle_error=handle_error,
-        wait_before_retry=wait_before_retry,
-        safe_close_serial=safe_close_serial,
-        is_stopping=lambda: not should_continue(),
-    )
+    try:
+        run_loop(
+            should_continue=should_continue,
+            get_target_port=get_target_port,
+            resolve_target_port=resolve_target_port,
+            set_connecting_status=set_connecting_status,
+            open_and_initialize_serial=open_and_initialize_serial,
+            on_connected_port=handle_connected_port,
+            read_serial_line=read_serial_line,
+            handle_line=handle_line,
+            handle_error=handle_error,
+            wait_before_retry=wait_before_retry,
+            safe_close_serial=safe_close_serial,
+            is_stopping=lambda: not should_continue(),
+        )
+    finally:
+        finish_sms_session()
     return state

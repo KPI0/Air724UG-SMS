@@ -125,13 +125,23 @@ class SerialParsersTests(unittest.TestCase):
 
     def test_parse_lte_cell_messages_extracts_cell_info(self):
         """Should extract MCC/MNC/TAC/CI from LTE cell info."""
-        # Format: +EEMLTESVC: MCC,MNC,?,TAC,?,?,?,?,?,CI,...
-        line = "+EEMLTESVC: 1120,1,0,12345,0,0,0,0,0,67890"
+        # Format: +EEMLTESVC: MCC,?,MNC,TAC,?,?,?,?,?,CI,...
+        line = "+EEMLTESVC: 1120,2,1,12345,0,0,0,0,0,67890"
         messages = parse_lte_cell_messages(line)
 
-        self.assertGreater(len(messages), 0)
-        self.assertTrue(any("基站定位" in msg for msg in messages))
-        self.assertTrue(any("460" in msg for msg in messages))  # MCC in hex
+        self.assertEqual(messages, [
+            ">>> 解析到基站定位数据：",
+            "    MCC (国家代码) : 460",
+            "    MNC (网络代码) : 01",
+            "    LAC/TAC (区域) : 12345",
+            "    CI  (小区ID)   : 67890",
+        ])
+
+    def test_parse_lte_cell_messages_rejects_missing_or_invalid_mnc(self):
+        for mnc in ("", "invalid"):
+            with self.subTest(mnc=mnc):
+                line = f"+EEMLTESVC: 1120,2,{mnc},12345,0,0,0,0,0,67890"
+                self.assertEqual(parse_lte_cell_messages(line), [])
 
     def test_parse_lte_cell_messages_returns_empty_for_insufficient_fields(self):
         """Should return empty list when fields < 10."""

@@ -129,7 +129,7 @@ class ConfigSyncRuntimeTests(unittest.TestCase):
             interval_ms=1000,
             root_after=root.after,
             root_after_cancel=root.after_cancel,
-            tk_alive=lambda: True,
+            tk_alive=lambda: not stopping["value"],
             is_stopping=lambda: stopping["value"],
             on_change=lambda: self.fail("must not reload while stopping"),
             signature_func=lambda _path: (1, 1, 1),

@@ -129,10 +129,12 @@ def open_firmware_update_window(namespace):
 
     def poll():
         nonlocal timer
-        if closed or namespace.get("is_exiting"):
+        shutdown = namespace.get("TK_SHUTDOWN")
+        if closed or (shutdown is not None and shutdown.is_set()):
             timer = None
             return
-        render()
+        if not namespace.get("is_exiting"):
+            render()
         timer = win.after(200, poll)
 
     def resize(event):

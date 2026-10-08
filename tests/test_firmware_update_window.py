@@ -138,6 +138,22 @@ class FirmwareUpdateWindowTests(unittest.TestCase):
         self.assertIs(self.namespace["local_firmware_updater"], self.updater)
         self.assertIs(ui.open_firmware_update_window(self.namespace), reopened)
 
+    def test_polling_pauses_for_restart_and_stops_on_permanent_shutdown(self):
+        self.namespace['TK_SHUTDOWN'] = threading.Event()
+        win = self.open()
+        self.namespace['is_exiting'] = True
+        self.updater.state.update(can_start=True)
+        self.poll()
+        self.assertEqual(str(self.buttons(win)['开始更新']['state']), 'disabled')
+        self.namespace['is_exiting'] = False
+        self.poll()
+        self.assertEqual(str(self.buttons(win)['开始更新']['state']), 'normal')
+        self.namespace['TK_SHUTDOWN'].set()
+        self.updater.state.update(can_start=False)
+        self.poll()
+        self.assertEqual(str(self.buttons(win)['开始更新']['state']), 'normal')
+        self.buttons(win)['关闭'].invoke()
+
     def test_overflow_scrolls_to_full_message_and_resets_after_resize(self):
         self.updater.state.update(phase="failed", message="设备空间不足或写入失败，更新已停止。" * 10)
         win = self.open(3.0)

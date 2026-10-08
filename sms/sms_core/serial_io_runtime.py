@@ -1,6 +1,9 @@
 from contextlib import nullcontext
 
 
+SERIAL_READ_CHUNK_BYTES = 4096
+
+
 def read_serial_line_safely_runtime(
     serial_lock,
     get_serial,
@@ -19,11 +22,12 @@ def _read_serial_line(serial_lock, get_serial, exception_cls, *, read_lock):
             serial_obj = get_serial()
             if serial_obj is None or not serial_obj.is_open:
                 raise exception_cls("serial_obj is None (closed)")
-        # Keep a separate read lease until readline() returns.  The normal
+        # Keep a separate read lease until this bounded read returns. The normal
         # serial lock remains available for writes and immediate reply
         # processing, while close/reconnect waits for this OS read to finish.
         try:
-            return serial_obj.readline()
+            size = min(SERIAL_READ_CHUNK_BYTES, max(1, serial_obj.in_waiting))
+            return serial_obj.read(size)
         except Exception as exc:
             raise exception_cls(f"并发读取被中断: {exc}")
 

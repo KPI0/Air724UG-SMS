@@ -23,7 +23,7 @@ _MISSING_CONFIG_SNAPSHOT = object()
 
 
 class ConfigInitializationError(RuntimeError):
-    """Raised when startup defaults cannot be persisted safely."""
+    """Raised when startup configuration cannot be loaded or saved safely."""
 
 
 @dataclass(frozen=True)
@@ -278,7 +278,17 @@ def initialize_config_runtime(
         created = True
 
     try:
-        config.read(config_file, encoding=encoding)
+        loaded_files = config.read(config_file, encoding=encoding)
+        if not created and loaded_files == []:
+            raise ConfigInitializationError(f"无法读取配置文件：{config_file}。请检查文件权限或是否被占用。")
+    except UnicodeError as exc:
+        config.clear()
+        raise ConfigInitializationError(
+            f"配置文件编码无效：{config_file}。原文件未修改，请先备份，再使用文本编辑器另存为 UTF-8 编码。"
+        ) from exc
+    except OSError as exc:
+        config.clear()
+        raise ConfigInitializationError(f"无法读取配置文件：{config_file}。请检查文件权限或是否被占用。") from exc
     except configparser.Error as exc:
         backup_path = f"{config_file}.broken.{int(time_func())}.bak"
         try:

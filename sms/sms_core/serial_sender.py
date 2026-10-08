@@ -4,6 +4,7 @@ import threading
 import time
 
 from sms_core.serial_debug import build_serial_command_payload
+from sms_core.phone_numbers import normalize_sms_destination
 from sms_core.sms_pdu import encode_text_sms_pdus
 from sms_core.threading_runtime import WorkerThreadRegistry, start_daemon_thread
 
@@ -852,6 +853,7 @@ def write_text_sms_pdu_locked(
     prompt_timeout=None,
 ):
     try:
+        phone = normalize_sms_destination(phone)
         pdus = encode_text_sms_pdus(phone, message)
         if prompt_timeout is None:
             prompt_timeout = min(float(segment_timeout), SMS_PDU_PROMPT_TIMEOUT)

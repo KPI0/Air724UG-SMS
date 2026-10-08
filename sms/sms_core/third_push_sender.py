@@ -15,7 +15,13 @@ from sms_core.third_push_format import apply_vars, template_vars
 
 
 ALLOWED_PUSH_SCHEMES = ("http", "https")
+MAX_PUSH_RESPONSE_BYTES = 256 * 1024
+PUSH_RESPONSE_TOO_LARGE = "渠道响应超过 256 KiB，无法确认推送结果"
 WXPUSHER_API_URL = "https://wxpusher.zjiecode.com/api/send/message"
+JSON_RESULT_CHANNELS = frozenset((
+    "dingtalk", "wecom", "feishu", "pushdeer", "serverchan",
+    "telegram", "bark", "pushover", "gotify", "wxpusher",
+))
 WXPUSHER_UID_RE = re.compile(r"^UID_[A-Za-z0-9_-]{1,120}$")
 EMAIL_ADDRESS_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+$")
 SENSITIVE_TEXT_RE = re.compile(
@@ -49,7 +55,10 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read(4096).decode("utf-8", "replace")
+            raw_body = resp.read(MAX_PUSH_RESPONSE_BYTES + 1)
+            if len(raw_body) > MAX_PUSH_RESPONSE_BYTES:
+                return False, resp.getcode(), PUSH_RESPONSE_TOO_LARGE
+            body = raw_body.decode("utf-8", "replace")
             return True, resp.getcode(), body
     except urllib.error.HTTPError as exc:
         try:
@@ -61,43 +70,73 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
         return False, None, redact_sensitive_text(str(exc))
 
 
-def api_ok(channel: str, http_ok: bool, code, body: str):
+def api_ok(channel: str, http_ok: bool, code, body: str, *, expected_uids=None):
     try:
         status_code = int(code) if code is not None else None
     except (TypeError, ValueError):
         status_code = None
     status_text = str(status_code) if status_code is not None else "-"
     if not http_ok or status_code is None or not (200 <= status_code < 300):
+        if not http_ok and body == PUSH_RESPONSE_TOO_LARGE:
+            return False, PUSH_RESPONSE_TOO_LARGE
         return False, f"HTTP {status_text} 请求失败"
 
-    text = (body or "").strip()
-    if not text:
-        if channel == "wxpusher":
-            return False, f"HTTP {status_text} API 响应格式无效"
-        return True, f"HTTP {code}"
-
+    if channel not in JSON_RESULT_CHANNELS:
+        return True, f"HTTP {status_text}"
+    invalid_result = (False, f"HTTP {status_text} API 响应格式无效，无法确认推送结果")
     try:
-        data = json.loads(text)
-    except Exception:
-        if channel == "wxpusher":
-            return False, f"HTTP {status_text} API 响应格式无效"
-        return True, f"HTTP {code}"
+        data = json.loads((body or "").strip())
+    except (ValueError, TypeError, RecursionError):
+        return invalid_result
+    if not isinstance(data, dict):
+        return invalid_result
 
     if channel == "wxpusher":
-        if not isinstance(data, dict) or str(data.get("code", "")) != "1000":
+        if str(data.get("code", "")) != "1000":
             return False, f"HTTP {status_text} 渠道返回业务错误"
+        results = data.get("data")
+        if not isinstance(results, list) or not results or any(
+            not isinstance(item, dict) or "code" not in item for item in results
+        ):
+            return False, f"HTTP {status_text} 接收方结果缺失或格式无效，无法确认推送结果"
+        if expected_uids is not None:
+            returned_uids = [item.get("uid") for item in results]
+            if len(returned_uids) != len(expected_uids) or any(
+                returned_uids.count(uid) != 1 for uid in expected_uids
+            ):
+                return False, f"HTTP {status_text} 接收方结果不完整或不匹配，无法确认推送结果"
+        failed = sum(str(item["code"]) != "1000" for item in results)
+        if failed:
+            return False, f"HTTP {status_text} 接收方任务受理 {len(results) - failed}，失败 {failed}"
 
     if channel in ("dingtalk", "wecom"):
-        errcode = data.get("errcode", 0)
-        if str(errcode) not in ("0", ""):
-            return False, f"HTTP {status_text} 渠道返回业务错误"
+        fields, expected = ("errcode",), "0"
     elif channel == "feishu":
-        errcode = data.get("code", data.get("StatusCode", 0))
-        if str(errcode) not in ("0", ""):
-            return False, f"HTTP {status_text} 渠道返回业务错误"
+        fields, expected = ("code", "StatusCode"), "0"
     elif channel in ("pushdeer", "serverchan"):
-        errcode = data.get("code", 0)
-        if str(errcode) not in ("0", ""):
+        fields, expected = ("code",), "0"
+    elif channel == "bark":
+        fields, expected = ("code",), "200"
+    elif channel == "pushover":
+        fields, expected = ("status",), "1"
+    elif channel == "telegram":
+        if type(data.get("ok")) is not bool:
+            return invalid_result
+        if not data["ok"]:
+            return False, f"HTTP {status_text} 渠道返回业务错误"
+        fields, expected = (), ""
+    elif channel == "gotify":
+        if type(data.get("id")) is not int or data["id"] <= 0:
+            return invalid_result
+        fields, expected = (), ""
+    else:
+        fields, expected = (), ""  # WxPusher was validated per recipient above.
+
+    if fields:
+        present = [data[field] for field in fields if field in data]
+        if not present or any(type(value) not in (int, str) for value in present):
+            return invalid_result
+        if any(str(value) != expected for value in present):
             return False, f"HTTP {status_text} 渠道返回业务错误"
 
     return True, f"HTTP {status_text}"
@@ -437,7 +476,7 @@ def send_wxpusher(message: str, settings: dict, user_agent="Air724UG-SMS", port:
         data,
         user_agent=user_agent,
     )
-    return api_ok("wxpusher", http_ok, code, body)
+    return api_ok("wxpusher", http_ok, code, body, expected_uids=uids)
 
 
 def send_email(message: str, settings: dict, user_agent="Air724UG-SMS", port: str = ""):
@@ -477,7 +516,7 @@ def send_email(message: str, settings: dict, user_agent="Air724UG-SMS", port: st
                 client.starttls(context=context)
                 client.ehlo()
             client.login(username, password)
-            client.send_message(email)
+            refused = client.send_message(email)
         finally:
             if client is not None:
                 try:
@@ -487,16 +526,21 @@ def send_email(message: str, settings: dict, user_agent="Air724UG-SMS", port: st
                         client.close()
                     except Exception:
                         pass
+        if refused:
+            return False, f"SMTP 接收方已接受 {len(to_addresses) - len(refused)}，拒收 {len(refused)}"
         return True, "SMTP 邮件已发送"
     except ValueError as exc:
         return False, str(exc)
     except Exception as exc:
-        detail = redact_sensitive_text(str(exc)).strip()
+        if isinstance(exc, smtplib.SMTPRecipientsRefused):
+            return False, f"SMTP 接收方已接受 0，拒收 {len(exc.recipients)}"
         if isinstance(exc, (smtplib.SMTPAuthenticationError, smtplib.SMTPNotSupportedError)):
             return False, "SMTP 认证或加密协商失败"
+        if isinstance(exc, smtplib.SMTPResponseException):
+            return False, "SMTP 服务器拒绝发送邮件"
         if isinstance(exc, (TimeoutError, smtplib.SMTPConnectError, OSError)):
             return False, "SMTP 连接失败"
-        return False, detail or "SMTP 邮件发送失败"
+        return False, "SMTP 邮件发送失败"
 
 
 CHANNEL_HANDLERS = {

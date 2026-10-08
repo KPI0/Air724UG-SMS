@@ -1,5 +1,6 @@
+import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_core.config_schema import normalize_log_retention_days
@@ -28,6 +29,9 @@ def _save_config_or_raise(save_config):
 @dataclass
 class AutoLogCleanupState:
     after_id: object = None
+    running: bool = False
+    next_delay_ms: object = None
+    results: object = field(default_factory=lambda: queue.Queue(maxsize=1))
 
 
 def normalized_retention_days(days):
@@ -68,26 +72,76 @@ def run_auto_log_cleanup_tick_runtime(
     tick_callback,
     is_main_thread=lambda: threading.current_thread() is threading.main_thread(),
     ui_post,
+    is_stopping=lambda: False,
+    thread_registry=None,
+    thread_factory=threading.Thread,
 ):
     def run_tick():
-        if not is_enabled():
-            state.after_id = None
+        if state.running:
+            return
+        state.after_id = None
+        if not tk_alive() or not is_enabled():
+            return
+        if is_stopping():
+            # Preparing a restart can fail while Tk and reception stay active.
+            state.after_id = root_after(100, tick_callback)
             return
 
         days = normalized_retention_days(retention_days())
-        try:
-            deleted = cleanup_old_logs(days)
-            system_ui(f"🧹 自动日志清理：已删除 {deleted} 个旧日志文件（保留 {days} 天）", "normal")
-        except Exception as exc:
-            system_ui(f"⚠️ 自动日志清理失败：{exc}")
+        state.running = True
+        state.next_delay_ms = None
+
+        def schedule_next():
+            delay = state.next_delay_ms
+            state.next_delay_ms = None
+            if is_stopping() or not tk_alive() or not is_enabled():
+                return
+            if delay is None:
+                delay = interval_hours() * 3600 * 1000
+            state.after_id = root_after(delay, tick_callback)
+
+        def worker():
+            try:
+                result = (True, cleanup_old_logs(days)) if not is_stopping() else (None, None)
+            except Exception as exc:
+                result = (False, str(exc))
+            state.results.put_nowait(result)
+
+        def poll_result():
+            state.after_id = None
+            if not tk_alive():
+                # The worker is still joined by the shutdown registry.
+                return
+            if is_stopping():
+                state.after_id = root_after(100, poll_result)
+                return
+            try:
+                ok, result = state.results.get_nowait()
+            except queue.Empty:
+                state.after_id = root_after(100, poll_result)
+                return
+            state.results.task_done()
+            state.running = False
+            if ok is True:
+                system_ui(f"🧹 自动日志清理：已删除 {result} 个旧日志文件（保留 {days} 天）", "normal")
+            elif ok is False:
+                system_ui(f"⚠️ 自动日志清理失败：{result}")
+            schedule_next()
 
         try:
-            if tk_alive():
-                state.after_id = root_after(interval_hours() * 3600 * 1000, tick_callback)
-            else:
-                state.after_id = None
-        except Exception:
-            state.after_id = None
+            start_registered_daemon_thread(
+                "auto_log_cleanup", worker, thread_registry=thread_registry,
+                thread_factory=thread_factory,
+            )
+        except Exception as exc:
+            state.running = False
+            system_ui(f"⚠️ 自动日志清理失败：{exc}")
+            schedule_next()
+            return
+
+        # Poll the bounded result mailbox on Tk's timer, so a full general UI
+        # task queue cannot lose completion or stop the recurring schedule.
+        poll_result()
 
     post_to_ui_thread(run_tick, is_main_thread=is_main_thread, ui_post=ui_post)
 
@@ -104,8 +158,13 @@ def schedule_auto_log_cleanup_runtime(
     tick_callback,
     is_main_thread=lambda: threading.current_thread() is threading.main_thread(),
     ui_post,
+    is_stopping=lambda: False,
 ):
     def schedule():
+        if state.running:
+            if restart:
+                state.next_delay_ms = first_delay_sec * 1000 if is_enabled() else None
+            return
         if restart and state.after_id is not None:
             if tk_alive():
                 try:
@@ -114,13 +173,15 @@ def schedule_auto_log_cleanup_runtime(
                     pass
             state.after_id = None
 
-        if not is_enabled():
+        if is_stopping() or not is_enabled():
             return
 
         if not tk_alive():
             state.after_id = None
             return
 
+        if state.after_id is not None:
+            return
         try:
             state.after_id = root_after(first_delay_sec * 1000, tick_callback)
         except Exception:
@@ -223,6 +284,8 @@ def run_auto_log_cleanup_tick_app_runtime(
     root_after,
     tick_callback,
     ui_post,
+    is_stopping=lambda: False,
+    thread_registry=None,
     run_tick_runtime=run_auto_log_cleanup_tick_runtime,
 ):
     return run_tick_runtime(
@@ -236,6 +299,8 @@ def run_auto_log_cleanup_tick_app_runtime(
         root_after=root_after,
         tick_callback=tick_callback,
         ui_post=ui_post,
+        is_stopping=is_stopping,
+        thread_registry=thread_registry,
     )
 
 
@@ -250,6 +315,7 @@ def schedule_auto_log_cleanup_app_runtime(
     root_after_cancel,
     tick_callback,
     ui_post,
+    is_stopping=lambda: False,
     schedule_runtime=schedule_auto_log_cleanup_runtime,
 ):
     return schedule_runtime(
@@ -262,6 +328,7 @@ def schedule_auto_log_cleanup_app_runtime(
         root_after_cancel=root_after_cancel,
         tick_callback=tick_callback,
         ui_post=ui_post,
+        is_stopping=is_stopping,
     )
 
 

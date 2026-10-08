@@ -1,5 +1,7 @@
 import re
 
+from sms_core.phone_numbers import normalize_sms_destination
+
 
 SERIAL_DEBUG_MAX_STORE_LINES = 20000
 SERIAL_DEBUG_MAX_VISIBLE_LINES = 5000
@@ -53,27 +55,37 @@ def build_serial_command_payload(command: str, append_crlf: bool = True):
     return (text + suffix).encode("utf-8", "ignore"), display_suffix
 
 
+def _normalize_pin(value, *, puk=False):
+    text = str(value or "").strip()
+    pattern = r"[0-9]{8}" if puk else r"[0-9]{4,8}"
+    if not re.fullmatch(pattern, text):
+        raise ValueError("PUK 码必须为 8 位半角数字" if puk else "PIN 码必须为 4-8 位半角数字")
+    return text
+
+
 def build_pin_unlock_command(pin: str) -> str:
-    return f'AT+CPIN="{str(pin or "").strip()}"'
+    return f'AT+CPIN="{_normalize_pin(pin)}"'
 
 
 def build_puk_unlock_command(puk: str, new_pin: str) -> str:
-    return f'AT+CPIN="{str(puk or "").strip()}","{str(new_pin or "").strip()}"'
+    return f'AT+CPIN="{_normalize_pin(puk, puk=True)}","{_normalize_pin(new_pin)}"'
 
 
 def build_pin_lock_command(pin: str, enable: bool) -> str:
     mode = "1" if enable else "0"
-    return f'AT+CLCK="SC",{mode},"{str(pin or "").strip()}"'
+    return f'AT+CLCK="SC",{mode},"{_normalize_pin(pin)}"'
 
 
 def build_pin_change_command(old_pin: str, new_pin: str) -> str:
-    return f'AT+CPWD="SC","{str(old_pin or "").strip()}","{str(new_pin or "").strip()}"'
+    return f'AT+CPWD="SC","{_normalize_pin(old_pin)}","{_normalize_pin(new_pin)}"'
 
 
 def normalize_own_number(phone: str) -> str:
     text = str(phone or "").strip()
     if text and not text.startswith("+"):
         text = "+86" + text
+    if not re.fullmatch(r"\+[1-9][0-9]{6,14}", text):
+        raise ValueError("本机号码需为 7-15 位半角数字，并带有效的 + 国际前缀")
     return text
 
 
@@ -87,7 +99,7 @@ def normalize_information_center_number(phone: str) -> str:
     if not raw:
         raise ValueError("信息中心号码不能为空")
     normalized = re.sub(r"[\s\-().（）]", "", raw)
-    if not re.fullmatch(r"\+[1-9]\d{6,14}", normalized):
+    if not re.fullmatch(r"\+[1-9][0-9]{6,14}", normalized):
         raise ValueError("信息中心号码需以 + 开头，并包含 7-15 位数字")
     return normalized
 
@@ -101,9 +113,9 @@ def normalize_call_forward_number(phone: str) -> str:
     raw = str(phone or "").strip()
     normalized = re.sub(r"[\s\-().（）]", "", raw)
     if normalized.startswith("+"):
-        valid = bool(re.fullmatch(r"\+[1-9]\d{4,14}", normalized))
+        valid = bool(re.fullmatch(r"\+[1-9][0-9]{4,14}", normalized))
     else:
-        valid = bool(re.fullmatch(r"\d{5,15}", normalized))
+        valid = bool(re.fullmatch(r"[0-9]{5,15}", normalized))
     if not valid:
         raise ValueError("呼叫转移号码需为 5-15 位数字，可使用 + 国际前缀")
     return normalized
@@ -117,7 +129,7 @@ def build_call_forward_enable_command(phone: str) -> str:
 
 def normalize_operator_plmn(plmn: str) -> str:
     normalized = str(plmn or "").strip()
-    if not re.fullmatch(r"\d{5,6}", normalized):
+    if not re.fullmatch(r"[0-9]{5,6}", normalized):
         raise ValueError("运营商 PLMN 必须为 5-6 位数字")
     return normalized
 
@@ -128,13 +140,23 @@ def build_manual_operator_command(plmn: str) -> str:
 
 
 def build_sn_command(sn: str) -> str:
-    return f'AT+WISN={str(sn or "").strip()}'
+    text = str(sn or "").strip()
+    if not 1 <= len(text) <= 64 or any(
+        not "!" <= char <= "~" or char in "\"'\\;," for char in text
+    ):
+        raise ValueError("SN 码需为 1-64 位半角字符，不能包含空白、引号、反斜杠、逗号或分号")
+    return f'AT+WISN={text}'
 
 
 def normalize_dial_number(phone: str) -> str:
     text = str(phone or "").strip()
+    if text.startswith(("*", "#")):
+        if not re.fullmatch(r"[*#][0-9*#+]{1,63}", text) or not re.search(r"[0-9]", text):
+            raise ValueError("拨号代码仅支持半角数字、*、# 和 +，最长 64 位")
+        return text
+    text = normalize_sms_destination(text)
     if text.startswith("+86"):
-        return text[3:]
+        return normalize_sms_destination(text[3:])
     if text.startswith("86") and len(text) == 13:
         return text[2:]
     return text

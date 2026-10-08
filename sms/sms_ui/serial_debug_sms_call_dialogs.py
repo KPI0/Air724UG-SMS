@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from sms_core.sms_pdu import measure_text_sms_pdus
+from sms_core.phone_numbers import normalize_sms_destination
+from sms_core.serial_debug import normalize_dial_number
 from sms_ui.serial_debug_dialog_helpers import (
     create_debug_dialog,
     ensure_debug_enabled,
@@ -76,6 +78,11 @@ def open_send_sms_dialog(parent, enabled_var, send_sms, center_window):
         if not phone or not msg.strip():
             messagebox.showerror("错误", "手机号和短信内容不能为空！", parent=win)
             return
+        try:
+            phone = normalize_sms_destination(phone)
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
+            return
         info = measure_text_sms_pdus(msg)
         if info.too_long:
             messagebox.showerror(
@@ -127,9 +134,10 @@ def open_dial_dialog(parent, enabled_var, dial, hangup, close_active_call, cente
         nonlocal is_dialing
         if not ensure_debug_enabled(enabled_var, win):
             return
-        phone = phone_var.get().strip()
-        if not phone:
-            messagebox.showerror("错误", "号码不能为空", parent=win)
+        try:
+            phone = normalize_dial_number(phone_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         is_dialing = True
         dial(phone)

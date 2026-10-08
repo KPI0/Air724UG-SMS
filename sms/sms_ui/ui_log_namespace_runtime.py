@@ -9,6 +9,21 @@ from sms_ui.ui_log_runtime import (
 )
 
 
+def notify_file_log_errors_namespace_runtime(namespace, *, force=False):
+    state = namespace.get("FILE_LOG_ERROR_STATE")
+    if state is None:
+        return None
+    if not force and (namespace.get("is_exiting") or not namespace["main_text_available"]()):
+        return None
+    message = state.take_notice(force=force)
+    if message:
+        if force:
+            namespace["messagebox"].showwarning("日志保存异常", message, parent=namespace["root"])
+        else:
+            namespace["ui_only"](message)
+    return message
+
+
 def ui_post_namespace_runtime(namespace, fn, *args, ui_post_runtime_func=ui_post_runtime, **kwargs):
     log_error = namespace.get("log_file_only")
     return ui_post_runtime_func(

@@ -32,8 +32,8 @@ from sms_core.cloud_security import (
 )
 
 
-CLOUD_SMS_PHONE_RE = re.compile(r"(?:\+\d{7,15}|\d{3,20})\Z")
-CLOUD_OWN_NUMBER_RE = re.compile(r"\+[1-9]\d{6,14}\Z")
+CLOUD_SMS_PHONE_RE = re.compile(r"(?:\+[0-9]{7,15}|[0-9]{3,20})\Z")
+CLOUD_OWN_NUMBER_RE = re.compile(r"\+[1-9][0-9]{6,14}\Z")
 CLOUD_SMS_MESSAGE_MAX_LENGTH = 70
 DEVICE_SESSION_REVOKE_PROOF_CONTEXT = b"air724ug-sms:device-session-revoke:v1"
 
@@ -115,7 +115,9 @@ async def send_cloud_register_runtime(
                 payload["serial_connection_generation"] = 0
         previous_secret = str(previous_session_secret or "").strip()
         current_secret = str(secret or "").strip()
-        if previous_secret and not hmac.compare_digest(previous_secret, current_secret):
+        if previous_secret and not hmac.compare_digest(
+            previous_secret.encode("utf-8"), current_secret.encode("utf-8")
+        ):
             proof = cloud_session_revoke_proof(previous_secret, runtime_imei())
             if proof:
                 payload["previous_session_proof"] = proof

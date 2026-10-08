@@ -55,11 +55,13 @@ class CloudImeiQueryOrderingTests(unittest.TestCase):
         decisions, errors = [], []
 
         class ReplySerial(FakeSerial):
+            in_waiting = 17
+
             def write(self, data):
                 sent.set()
                 return len(data)
 
-            def readline(self):
+            def read(self, size):
                 if not sent.wait(2):
                     raise RuntimeError("synthetic command was not written")
                 return b"000000000000001\r\n"

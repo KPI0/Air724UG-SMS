@@ -168,7 +168,7 @@ def parse_lte_cell_messages(line: str):
         if len(parts) < 10:
             return []
         raw_mcc = int(parts[0].strip())
-        raw_mnc = int(parts[1].strip())
+        raw_mnc = int(parts[2].strip())
         tac = parts[3].strip()
         ci = parts[9].strip()
     except Exception:

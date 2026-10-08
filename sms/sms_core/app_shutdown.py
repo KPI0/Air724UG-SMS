@@ -1,5 +1,6 @@
 import inspect
 import queue
+import time
 
 from sms_core.file_log_runtime import wait_for_file_log_worker
 from sms_core.threading_runtime import (
@@ -92,6 +93,21 @@ def _threads_added_after_snapshot(previous_threads, current_threads):
     )
 
 
+def wait_for_pending_cloud_events(event_queue, is_connected, *, timeout=10.0, log_error=None):
+    """Give the existing ACK drain a bounded chance before closing its socket."""
+    if event_queue is None:
+        return True
+    deadline = time.monotonic() + timeout
+    with event_queue.all_tasks_done:
+        while event_queue.unfinished_tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not is_connected():
+                _safe_log(log_error, "退出时仍有云端事件未确认，请查看本地短信日志；云端未确认送达。")
+                return False
+            event_queue.all_tasks_done.wait(min(0.1, remaining))
+    return True
+
+
 def cleanup_and_exit_runtime(
     *,
     is_exiting,
@@ -117,6 +133,9 @@ def cleanup_and_exit_runtime(
     wait_worker_threads=wait_for_worker_threads,
     wait_file_log_worker=wait_for_file_log_worker,
     log_error=None,
+    pre_cloud_worker_threads=(),
+    before_stop_cloud=None,
+    report_progress=None,
 ):
     if is_exiting:
         return "already_exiting"
@@ -125,12 +144,34 @@ def cleanup_and_exit_runtime(
         return "cancelled"
 
     set_exiting(True)
+
+    def progress(message):
+        if report_progress is not None:
+            try:
+                report_progress(message)
+            except Exception as exc:
+                _safe_log(log_error, f"Report shutdown progress failed: {exc!r}")
+
+    progress("正在停止接收并保存已收到的短信…")
     _call_with_optional_log_error(safe_set_events, *tuple(shutdown_events or ()), log_error=log_error)
     set_serial_running(False)
     producer_stop_events = tuple(worker_stop_events or ())
     if tts_stop_event is not None:
         producer_stop_events += (tts_stop_event,)
     _call_with_optional_log_error(safe_set_events, *producer_stop_events, log_error=log_error)
+
+    try:
+        receiver_threads = pre_cloud_worker_threads() if callable(pre_cloud_worker_threads) else pre_cloud_worker_threads
+        if receiver_threads and _call_with_optional_log_error(
+            wait_worker_threads, receiver_threads, log_error=log_error,
+        ) is False:
+            return "worker_wait_failed"
+        if before_stop_cloud is not None:
+            progress("正在确认云端事件并关闭连接…")
+            before_stop_cloud()
+    except Exception as exc:
+        _safe_log(log_error, f"Finish received SMS before cloud shutdown failed: {exc!r}")
+        return "worker_wait_failed"
 
     try:
         stop_cloud_control(update_status=False)
@@ -153,6 +194,7 @@ def cleanup_and_exit_runtime(
         _safe_log(log_error, f"Snapshot shutdown worker threads failed: {exc!r}")
         return "worker_wait_failed"
     try:
+        progress("正在等待后台任务结束…")
         workers_stopped = _call_with_optional_log_error(
             wait_worker_threads,
             threads_to_wait,
@@ -203,6 +245,7 @@ def cleanup_and_exit_runtime(
         or deferred_worker_threads
     )
     if has_deferred_workers:
+        progress("正在完成剩余推送，请稍候…")
         _call_with_optional_log_error(
             safe_set_events,
             *deferred_stop_events,
@@ -231,6 +274,7 @@ def cleanup_and_exit_runtime(
             _safe_log(log_error, "Deferred worker queues were not fully drained; final cleanup was aborted")
             return "worker_wait_failed"
 
+    progress("正在保存日志…")
     if file_log_stop_event is not None:
         _call_with_optional_log_error(safe_set_events, file_log_stop_event, log_error=log_error)
     try:

@@ -508,7 +508,9 @@ class ThirdPushDispatchTests(unittest.TestCase):
 
         def fake_http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
             requests.append((url, method, headers, json.loads(data)))
-            return True, 200, '{"code":1000,"msg":"ok"}'
+            return True, 200, json.dumps({"code": 1000, "data": [
+                {"uid": "UID_one", "code": 1000}, {"uid": "UID_two", "code": 1000},
+            ]})
 
         original = third_push_sender.http_request
         third_push_sender.http_request = fake_http_request

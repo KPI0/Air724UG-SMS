@@ -233,13 +233,15 @@ class SerialRuntimeTests(unittest.TestCase):
     def test_serial_line_decoder_emits_modem_sms_prompt_without_newline(self):
         decoder = SerialLineDecoder()
 
-        self.assertEqual(decoder.feed(b"> "), [">"])
+        self.assertEqual(decoder.feed(b"> "), [])
+        self.assertEqual(decoder.feed(b""), [">"])
 
     def test_serial_line_decoder_emits_prompt_when_prompt_arrives_in_chunks(self):
         decoder = SerialLineDecoder()
 
         self.assertEqual(decoder.feed(b"\r\n"), [""])
-        self.assertEqual(decoder.feed(b"> "), [">"])
+        self.assertEqual(decoder.feed(b"> "), [])
+        self.assertEqual(decoder.feed(b""), [">"])
 
     def test_blank_line_flushes_expired_sms(self):
         calls = []

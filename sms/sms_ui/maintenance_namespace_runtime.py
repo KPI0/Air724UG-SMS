@@ -79,6 +79,8 @@ def run_auto_log_cleanup_tick_namespace_runtime(
         root_after=namespace["root"].after,
         tick_callback=namespace["_auto_log_cleanup_tick"],
         ui_post=namespace["ui_post"],
+        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set() or bool(namespace.get("is_exiting")),
+        thread_registry=namespace.get("MAINTENANCE_THREAD_REGISTRY"),
     )
 
 
@@ -99,6 +101,7 @@ def schedule_auto_log_cleanup_namespace_runtime(
         root_after_cancel=namespace["root"].after_cancel,
         tick_callback=namespace["_auto_log_cleanup_tick"],
         ui_post=namespace["ui_post"],
+        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set() or bool(namespace.get("is_exiting")),
     )
 
 

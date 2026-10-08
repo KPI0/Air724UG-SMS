@@ -95,10 +95,84 @@ class ThirdPushFormController:
         self.channel_list = tk.Listbox(list_box, width=16, height=14, exportselection=False)
         self.channel_list.grid(row=0, column=0, sticky="ns")
         self.channel_list.bind("<<ListboxSelect>>", self._on_channel_select)
+        list_scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.channel_list.yview)
+        list_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.channel_list.configure(yscrollcommand=list_scrollbar.set)
 
         self.param_box = ttk.LabelFrame(body_frame, text="参数", padding=10)
         self.param_box.grid(row=0, column=1, sticky="nsew")
-        self.param_box.grid_columnconfigure(1, weight=1)
+        self.param_box.grid_columnconfigure(0, weight=1)
+        self.param_box.grid_rowconfigure(0, weight=1)
+        self.param_canvas = tk.Canvas(
+            self.param_box, width=1, height=1, highlightthickness=0,
+            background=ttk.Style(self.win).lookup("TFrame", "background"),
+        )
+        self.param_canvas.grid(row=0, column=0, sticky="nsew")
+        self.param_scrollbar = ttk.Scrollbar(
+            self.param_box, orient="vertical", command=self.param_canvas.yview,
+        )
+        self.param_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self.param_canvas.configure(yscrollcommand=self.param_scrollbar.set)
+        self.param_content = ttk.Frame(self.param_canvas)
+        self.param_content.grid_columnconfigure(1, weight=1)
+        self.param_window = self.param_canvas.create_window(
+            (0, 0), window=self.param_content, anchor="nw",
+        )
+        self.param_canvas.bind("<Configure>", self._resize_parameters)
+        self.param_content.bind("<Configure>", self._update_parameter_scroll)
+        self._bind_parameter_scroll(self.param_canvas)
+        self._bind_parameter_scroll(self.param_content)
+
+    def _resize_parameters(self, event):
+        self.param_canvas.itemconfigure(self.param_window, width=event.width)
+        self._wrap_parameter_labels(event.width)
+        self._update_parameter_scroll()
+
+    def _wrap_parameter_labels(self, width):
+        for child in self.param_content.winfo_children():
+            if isinstance(child, ttk.Label):
+                is_tip = int(child.grid_info().get("columnspan", 1)) == 2
+                child.configure(wraplength=max(1, width if is_tip else width // 2))
+
+    def _update_parameter_scroll(self, _event=None):
+        self.param_canvas.configure(scrollregion=self.param_canvas.bbox("all"))
+
+    def _bind_parameter_scroll(self, widget):
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, self._scroll_parameters)
+        if isinstance(widget, (ttk.Entry, tk.Text)):
+            widget.bind("<FocusIn>", self._reveal_parameter_focus)
+        else:
+            widget.configure(takefocus=False)
+
+    def _scroll_parameters(self, event):
+        if event.num in (4, 5):
+            units = -1 if event.num == 4 else 1
+        elif event.delta:
+            units = (-1 if event.delta > 0 else 1) * max(1, abs(int(event.delta / 120)))
+        else:
+            return
+        # Let the body editor scroll its own text until it reaches the edge.
+        if isinstance(event.widget, tk.Text):
+            first, last = event.widget.yview()
+            if (units < 0 and first > 0) or (units > 0 and last < 1):
+                return
+        if self.param_content.winfo_height() > self.param_canvas.winfo_height():
+            self.param_canvas.yview_scroll(units, "units")
+        # Consume before Combobox's class binding can change the selected value.
+        return "break"
+
+    def _reveal_parameter_focus(self, event):
+        widget = event.widget
+        top = widget.winfo_rooty() - self.param_content.winfo_rooty()
+        bottom = top + widget.winfo_height()
+        visible_top = self.param_canvas.canvasy(0)
+        height = self.param_canvas.winfo_height()
+        content_height = max(1, self.param_content.winfo_height())
+        if top < visible_top or widget.winfo_height() > height:
+            self.param_canvas.yview_moveto(top / content_height)
+        elif bottom > visible_top + height:
+            self.param_canvas.yview_moveto((bottom - height) / content_height)
 
     def _populate_channels(self):
         for idx, (channel, label) in enumerate(THIRD_PUSH_CHANNELS):
@@ -106,12 +180,25 @@ class ThirdPushFormController:
             self.channel_list.insert("end", label)
             var = tk.BooleanVar(self.win, value=channel in self.state_provider()["channels"])
             self.channel_vars[channel] = var
-            ttk.Checkbutton(
+            checkbox = ttk.Checkbutton(
                 self.channel_box,
                 text=label,
                 variable=var,
                 command=lambda ch=channel: self._channel_toggled(ch),
-            ).grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(4, 4))
+            )
+            checkbox.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(4, 4))
+            checkbox.bind("<ButtonPress-1>", lambda event, ch=channel: self._channel_pointer_pressed(event, ch))
+
+    def _channel_pointer_pressed(self, event, channel):
+        checkbox = event.widget
+        if checkbox.instate(["disabled"]):
+            return "break"
+        if "indicator" in checkbox.identify(event.x, event.y):
+            return None
+        # Leave the native indicator and keyboard bindings intact; text only previews.
+        checkbox.state(["!pressed"])
+        self.select_channel(channel)
+        return "break"
 
     def _option_toggled(self, option, var):
         value = bool(var.get())
@@ -164,7 +251,7 @@ class ThirdPushFormController:
 
     def render_channel(self, channel):
         self.store_custom_body_text()
-        for child in self.param_box.winfo_children():
+        for child in self.param_content.winfo_children():
             child.destroy()
         self.custom_body_text = None
 
@@ -172,11 +259,15 @@ class ThirdPushFormController:
         self.param_box.configure(text=f"{label} 参数")
         spec = THIRD_PUSH_CHANNEL_PARAM_DEFS.get(channel, {})
         render_channel_fields(
-            self.param_box,
+            self.param_content,
             self.entry_vars,
             spec,
             lambda widget: setattr(self, "custom_body_text", widget),
         )
+        for child in self.param_content.winfo_children():
+            self._bind_parameter_scroll(child)
+        self._wrap_parameter_labels(self.param_canvas.winfo_width())
+        self.param_canvas.yview_moveto(0)
 
     def select_channel(self, channel, update_list=True):
         if channel not in self.channel_index:
@@ -383,10 +474,16 @@ def render_channel_fields(param_box, entry_vars, spec, set_custom_text_widget):
 def build_action_buttons(frame, save_command, test_command, close_command, status_var=None):
     btn_frame = ttk.Frame(frame)
     btn_frame.grid(row=3, column=0, sticky="ew")
-    if status_var is not None:
-        ttk.Label(btn_frame, textvariable=status_var, foreground="#666666").pack(side="left")
     button_group = ttk.Frame(btn_frame)
     button_group.pack(side="right")
+    if status_var is not None:
+        status_label = ttk.Label(
+            btn_frame, textvariable=status_var, foreground="#666666", wraplength=240, takefocus=False,
+        )
+        status_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        status_label.bind(
+            "<Configure>", lambda event: status_label.configure(wraplength=max(1, event.width)),
+        )
     save_button = ttk.Button(button_group, text="保存", width=10, command=save_command)
     save_button.pack(side="left", padx=(0, 8))
     ttk.Button(button_group, text="测试推送", width=10, command=test_command).pack(side="left", padx=(0, 8))

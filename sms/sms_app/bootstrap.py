@@ -71,7 +71,7 @@ from sms_core.autostart_instances import (
 )
 from sms_core.app_paths import get_app_dir, resource_path
 from sms_core.app_shutdown import flush_log_queue, safe_set_events
-from sms_core.file_log_runtime import start_file_log_worker
+from sms_core.file_log_runtime import FileLogErrorState, FileLogQueue, start_file_log_worker
 from sms_core.cloud_protocol import (
     auth_status_from_ack as _cloud_auth_status_from_ack,
     normalize_imei as _normalize_imei,
@@ -426,6 +426,7 @@ def _initialize_worker_state():
     global TTS_LOCK, TTS_REQ_Q, TTS_STOP, TTS_THREAD, THIRD_PUSH_Q, third_push_stop
     global third_push_thread, serial_thread
     global UI_TASK_QUEUE, FILE_LOG_Q, file_log_stop, file_log_thread
+    global FILE_LOG_ERROR_STATE, MAINTENANCE_THREAD_REGISTRY
     global TK_SHUTDOWN, current_port_mutex, app_mutex
     global instance_number_mutex, SMS_SEND_COORDINATOR, SMS_SEND_THREAD_REGISTRY
     global autostart_spawn_thread, autostart_launcher_mutex
@@ -443,9 +444,12 @@ def _initialize_worker_state():
     third_push_thread = None
     serial_thread = None
     UI_TASK_QUEUE = queue.Queue(maxsize=10000)
-    FILE_LOG_Q = queue.Queue(maxsize=50000)
+    FILE_LOG_ERROR_STATE = FileLogErrorState()
+    FILE_LOG_Q = FileLogQueue(maxsize=50000, log_error=FILE_LOG_ERROR_STATE.report)
     file_log_stop = threading.Event()
-    file_log_thread = start_file_log_worker(log_queue=FILE_LOG_Q, stop_event=file_log_stop)
+    file_log_thread = start_file_log_worker(
+        log_queue=FILE_LOG_Q, stop_event=file_log_stop, log_error=FILE_LOG_ERROR_STATE.report
+    )
     TK_SHUTDOWN = threading.Event()
     current_port_mutex = None
     app_mutex = None
@@ -460,6 +464,7 @@ def _initialize_worker_state():
     SMS_SEND_THREAD_REGISTRY = DEFAULT_SMS_SEND_THREAD_REGISTRY
     SERIAL_COMMAND_THREAD_REGISTRY = DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY
     UPDATE_THREAD_REGISTRY = WorkerThreadRegistry()
+    MAINTENANCE_THREAD_REGISTRY = WorkerThreadRegistry()
     UPDATE_CHECK_TASK_STATE = SingleFlightTaskState()
 
 

@@ -49,7 +49,11 @@ def secret_match_result(data: dict, expected_secret: str):
         return False, "已拒绝云端指令：本机云端控制密码为空"
     if not incoming:
         return False, "已拒绝云端指令：缺少密码"
-    if not hmac.compare_digest(incoming, expected):
+    try:
+        matched = hmac.compare_digest(incoming.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        matched = False
+    if not matched:
         return False, "已拒绝云端指令：密码错误"
     return True, ""
 

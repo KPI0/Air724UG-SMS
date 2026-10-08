@@ -1,4 +1,4 @@
-from sms_core.third_push import third_push_state
+from sms_core.third_push import dispatch_push_item, third_push_state
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_core.third_push_config import ThirdPushSettings, update_third_push_settings, write_third_push_settings
 from sms_core.third_push_runtime import enqueue_third_push_runtime, third_push_worker_runtime
@@ -140,6 +140,7 @@ def third_push_worker_app_runtime(
     system_ui,
     show_result,
     shutdown_event=None,
+    log_error=None,
     worker_runtime=third_push_worker_runtime,
 ):
     result_shutdown_event = stop_event if shutdown_event is None else shutdown_event
@@ -149,6 +150,18 @@ def third_push_worker_app_runtime(
             return bool(result_shutdown_event.is_set())
         except AttributeError:
             return False
+
+    def dispatch_item(item, send_channel_func, format_message_func=None):
+        variables = item.get("variables") or {}
+        source_port = variables.get("{port}", variables.get("port"))
+        if source_port is not None:
+            def send_from_source(channel, message, settings):
+                return send_third_push_channel_runtime(
+                    channel, message, settings,
+                    get_log_prefix=lambda: str(source_port), app_version=app_version,
+                )
+            send_channel_func = send_from_source
+        return dispatch_push_item(item, send_channel_func, format_message_func=format_message_func)
 
     return worker_runtime(
         stop_event=stop_event,
@@ -169,6 +182,8 @@ def third_push_worker_app_runtime(
             variables=variables,
         ),
         should_emit_results=lambda: not is_shutdown(),
+        dispatch_func=dispatch_item,
+        log_error=log_error,
     )
 
 

@@ -18,10 +18,14 @@ class FakeSerial:
         self.line = line
         self.error = error
 
-    def readline(self):
+    @property
+    def in_waiting(self):
+        return len(self.line)
+
+    def read(self, size):
         if self.error is not None:
             raise self.error
-        return self.line
+        return self.line[:size]
 
 
 class ClosableSerial:
@@ -36,13 +40,15 @@ class ClosableSerial:
 
 
 class BlockingSerial:
+    in_waiting = 4
+
     def __init__(self):
         self.is_open = True
         self.readline_started = threading.Event()
         self.allow_readline = threading.Event()
         self.closed = False
 
-    def readline(self):
+    def read(self, size):
         self.readline_started.set()
         self.allow_readline.wait(1)
         return b"OK\r\n"

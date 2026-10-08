@@ -40,12 +40,13 @@ def open_modify_number_dialog(parent, enabled_var, send_commands, center_window)
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        phone = num_var.get().strip()
-        if not phone:
-            messagebox.showerror("错误", "手机号码不能为空", parent=win)
+        try:
+            commands = build_own_number_commands(num_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        send_commands(build_own_number_commands(phone))
+        send_commands(commands)
 
     finish_debug_dialog(win, center_window, parent, ent, submit)
 
@@ -193,14 +194,12 @@ def open_modify_sn_dialog(parent, enabled_var, quick_send, center_window):
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        new_sn = sn_var.get().strip()
-        if not new_sn:
-            messagebox.showerror("错误", "SN码不能为空", parent=win)
-            return
-        if len(new_sn) > 64:
-            messagebox.showerror("错误", "SN码最长不能超过64位", parent=win)
+        try:
+            command = build_sn_command(sn_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        quick_send(build_sn_command(new_sn))
+        quick_send(command)
 
     finish_debug_dialog(win, center_window, parent, ent, submit)

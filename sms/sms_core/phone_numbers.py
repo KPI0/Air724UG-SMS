@@ -4,6 +4,15 @@ import re
 CALL_FILTER_NUMBER_RE = re.compile(r"^\+?[0-9]+$")
 
 
+def normalize_sms_destination(number: str, *, allow_empty=False) -> str:
+    text = str(number or "").strip()
+    if allow_empty and not text:
+        return ""
+    if not re.fullmatch(r"\+?[0-9]{1,20}", text):
+        raise ValueError("号码需为 1-20 位半角数字，可在开头加 +")
+    return text
+
+
 def normalize_call_number(number: str) -> str:
     """Normalize caller ID for local whitelist/blacklist matching."""
     text = str(number or "").strip()

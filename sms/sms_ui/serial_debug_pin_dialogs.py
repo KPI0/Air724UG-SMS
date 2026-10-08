@@ -39,12 +39,13 @@ def open_input_pin_dialog(parent, enabled_var, quick_send, center_window):
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        pin = pin_var.get().strip()
-        if not pin:
-            messagebox.showerror("错误", "PIN码不能为空", parent=win)
+        try:
+            command = build_pin_unlock_command(pin_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        quick_send(build_pin_unlock_command(pin))
+        quick_send(command)
 
     finish_debug_dialog(win, center_window, parent, ent, submit)
 
@@ -79,13 +80,13 @@ def open_input_puk_dialog(parent, enabled_var, quick_send, center_window):
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        puk = puk_var.get().strip()
-        new_pin = new_pin_var.get().strip()
-        if not puk or not new_pin:
-            messagebox.showerror("错误", "PUK码和新PIN码都不能为空！", parent=win)
+        try:
+            command = build_puk_unlock_command(puk_var.get(), new_pin_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        quick_send(build_puk_unlock_command(puk, new_pin))
+        quick_send(command)
 
     finish_debug_dialog(win, center_window, parent, ent_puk, submit)
 
@@ -114,12 +115,13 @@ def open_pin_lock_dialog(parent, enabled_var, quick_send, center_window, enable:
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        pin = pin_var.get().strip()
-        if not pin:
-            messagebox.showerror("错误", "PIN码不能为空", parent=win)
+        try:
+            command = build_pin_lock_command(pin_var.get(), enable=enable)
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        quick_send(build_pin_lock_command(pin, enable=enable))
+        quick_send(command)
 
     finish_debug_dialog(win, center_window, parent, ent, submit)
 
@@ -147,12 +149,12 @@ def open_modify_pin_dialog(parent, enabled_var, quick_send, center_window):
     def submit():
         if not ensure_debug_enabled(enabled_var, win):
             return
-        old_pin = old_pin_var.get().strip()
-        new_pin = new_pin_var.get().strip()
-        if not old_pin or not new_pin:
-            messagebox.showerror("错误", "旧PIN码和新PIN码都不能为空", parent=win)
+        try:
+            command = build_pin_change_command(old_pin_var.get(), new_pin_var.get())
+        except ValueError as exc:
+            messagebox.showerror("错误", str(exc), parent=win)
             return
         win.destroy()
-        quick_send(build_pin_change_command(old_pin, new_pin))
+        quick_send(command)
 
     finish_debug_dialog(win, center_window, parent, ent_old, submit)

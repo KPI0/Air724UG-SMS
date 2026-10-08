@@ -160,6 +160,7 @@ class MaintenanceRuntimeTests(unittest.TestCase):
         calls = []
 
         run_auto_log_cleanup_tick_runtime(
+            thread_factory=ImmediateThread,
             state=state,
             is_enabled=lambda: True,
             retention_days=lambda: -3,
@@ -199,20 +200,21 @@ class MaintenanceRuntimeTests(unittest.TestCase):
 
         messages = []
         run_auto_log_cleanup_tick_runtime(
+            thread_factory=ImmediateThread,
             state=state,
             is_enabled=lambda: True,
             retention_days=lambda: 1,
             interval_hours=lambda: 1,
             cleanup_old_logs=lambda days: (_ for _ in ()).throw(RuntimeError("boom")),
             system_ui=lambda message, tag="normal": messages.append((message, tag)),
-            tk_alive=lambda: False,
+            tk_alive=lambda: True,
             root_after=lambda delay_ms, callback: "after",
             tick_callback="tick",
             is_main_thread=lambda: True,
             ui_post=lambda callback: callback(),
         )
 
-        self.assertIsNone(state.after_id)
+        self.assertEqual(state.after_id, "after")
         self.assertIn("boom", messages[0][0])
 
     def test_apply_log_cleanup_runtime_updates_config_and_schedules_cleanup(self):

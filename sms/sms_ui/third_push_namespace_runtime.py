@@ -115,6 +115,7 @@ def third_push_worker_namespace_runtime(namespace):
         system_ui=namespace["system_ui"],
         show_result=namespace["show_third_push_test_result"],
         shutdown_event=namespace.get("TK_SHUTDOWN"),
+        log_error=namespace.get("log_file_only"),
     )
 
 
@@ -142,6 +143,8 @@ def enqueue_third_push_namespace_runtime(
     event_type="sms",
 ):
     merged_variables = dict(variables or {})
+    if "port" not in merged_variables and "{port}" not in merged_variables:
+        merged_variables["port"] = str(namespace.get("LOG_PREFIX") or "")
     local_number = str(namespace.get("LOCAL_NUMBER") or "").strip()
     if local_number:
         if not str(merged_variables.get("local_number") or "").strip():

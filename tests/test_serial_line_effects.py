@@ -77,6 +77,22 @@ class SerialLineEffectsTests(unittest.TestCase):
 
         self.assertEqual(calls, [])
 
+    def test_push_serial_debug_insights_decodes_lte_mnc_from_modem_response(self):
+        for prefix in ("", "[I]-[ril.proatc] "):
+            with self.subTest(prefix=prefix):
+                calls = []
+                line = prefix + "+EEMLTESVC: 1120, 2, 17, 12345, 0, 0, 0, 0, 0, 67890"
+
+                push_serial_debug_insights(line, calls.append)
+
+                self.assertEqual(calls, [
+                    ">>> 解析到基站定位数据：",
+                    "    MCC (国家代码) : 460",
+                    "    MNC (网络代码) : 11",
+                    "    LAC/TAC (区域) : 12345",
+                    "    CI  (小区ID)   : 67890",
+                ])
+
 
 
 if __name__ == "__main__":

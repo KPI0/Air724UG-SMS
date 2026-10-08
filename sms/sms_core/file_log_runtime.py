@@ -7,6 +7,50 @@ import time
 from sms_core.threading_runtime import start_daemon_thread, task_done_safely
 
 
+class FileLogErrorState:
+    """A bounded, independent mailbox consumed by the UI, including at exit."""
+
+    def __init__(self, *, monotonic=time.monotonic, interval=60.0):
+        self._pending = queue.Queue(maxsize=1)
+        self._monotonic = monotonic
+        self._interval = interval
+        self._last_notice = None
+
+    def report(self, _detail):
+        # Never retain paths, log contents or remote error text in the notice.
+        try:
+            self._pending.put_nowait(True)
+        except queue.Full:
+            pass
+
+    def take_notice(self, *, force=False):
+        now = self._monotonic()
+        if not force and self._last_notice is not None and now - self._last_notice < self._interval:
+            return None
+        try:
+            self._pending.get_nowait()
+        except queue.Empty:
+            return None
+        self._pending.task_done()
+        self._last_notice = now
+        return "⚠️ 日志保存失败，部分记录可能未写入文件。请检查磁盘空间、日志目录权限和文件占用；失败记录不会自动补写。"
+
+
+class FileLogQueue(queue.Queue):
+    """Retain Queue semantics while reporting rejected log entries independently."""
+
+    def __init__(self, maxsize, *, log_error):
+        super().__init__(maxsize)
+        self._log_error = log_error
+
+    def put(self, item, block=True, timeout=None):
+        try:
+            return super().put(item, block=block, timeout=timeout)
+        except queue.Full:
+            self._log_error("File log queue is full")
+            raise
+
+
 def drain_available_log_lines(log_queue, first_item):
     path, line = first_item
     batches = {path: [line]}

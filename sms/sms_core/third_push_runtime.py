@@ -140,7 +140,15 @@ def third_push_worker_runtime(
     result_status_message=push_result_status_message,
     poll_timeout=0.5,
     should_emit_results=None,
+    log_error=None,
 ):
+    def log_shutdown_failure(message):
+        if log_error is not None:
+            try:
+                log_error(message)
+            except Exception:
+                pass
+
     should_emit_results = should_emit_results or (lambda: True)
     while True:
         stop_requested = bool(stop_event.is_set())
@@ -167,9 +175,13 @@ def third_push_worker_runtime(
                     _safe_system_ui(system_ui, fail_message)
                     if isinstance(item, dict) and item.get("show_result"):
                         _safe_show_result(show_result, [], [fail_message])
+                else:
+                    log_shutdown_failure("退出时三方推送任务异常，本条通知未确认送达。")
                 continue
 
             if not should_emit_results():
+                if getattr(result, "fail_infos", None):
+                    log_shutdown_failure("退出时" + push_result_status_message(result))
                 continue
 
             try:

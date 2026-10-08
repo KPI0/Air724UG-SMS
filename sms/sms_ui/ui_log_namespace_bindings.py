@@ -9,6 +9,7 @@ from sms_ui.ui_log_namespace_runtime import (
     log_file_only_namespace_runtime,
     log_namespace_runtime,
     main_text_available_namespace_runtime,
+    notify_file_log_errors_namespace_runtime,
     safe_insert_main_text_namespace_runtime,
     system_ui_namespace_runtime,
     ui_only_namespace_runtime,
@@ -23,6 +24,7 @@ def install_ui_log_namespace_bindings(namespace):
         return tk_alive_runtime(namespace.get("root"), namespace["TK_SHUTDOWN"])
 
     def ui_pump(max_batch=200):
+        notify_file_log_errors_namespace_runtime(namespace)
         return ui_pump_runtime(
             namespace["UI_TASK_QUEUE"],
             namespace["root"],
@@ -47,6 +49,7 @@ def install_ui_log_namespace_bindings(namespace):
         "tk_alive": tk_alive,
         "ui_post": bind("ui_post_namespace_runtime"),
         "ui_pump": ui_pump,
+        "notify_file_log_errors": bind("notify_file_log_errors_namespace_runtime"),
         "get_log_file": get_log_file,
         "log_file_only": bind("log_file_only_namespace_runtime"),
         "_cloud_repeat_filter": cloud_repeat_filter,

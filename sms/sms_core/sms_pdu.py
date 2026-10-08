@@ -3,6 +3,8 @@ import re
 import secrets
 from typing import Optional
 
+from sms_core.phone_numbers import normalize_sms_destination
+
 
 SINGLE_SMS_UCS2_BYTES = 140
 CONCAT_SMS_UCS2_BYTES = 134
@@ -54,15 +56,13 @@ class ReceivedSmsPdu:
 
 
 def _encode_phone_number(phone: str):
-    phone_text = str(phone or "").strip()
+    phone_text = normalize_sms_destination(phone, allow_empty=True)
     if phone_text.startswith("+"):
         number_type = "91"
         number = phone_text[1:]
     else:
         number_type = "81"
         number = phone_text
-    if phone_text and (not number or not number.isdigit()):
-        raise ValueError("手机号只能包含数字和可选开头 +")
     number_len = f"{len(number):02X}"
 
     if len(number) % 2 != 0:

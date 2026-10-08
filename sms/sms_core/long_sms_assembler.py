@@ -157,6 +157,22 @@ class LongSmsAssembler:
             self._enforce_completed_limit(log=log)
         return _pack_pending_results(ready)
 
+    def finish_session(self, now=None, *, wait=time.sleep, log=None):
+        """Settle received candidates before their device session is discarded.
+
+        No new serial frames can enter this assembler during the wait. Keep
+        the normal ambiguity grace instead of moving candidates into the next
+        device's session or forcing an early completion.
+        """
+        current = time.monotonic() if now is None else now
+        deadline = max(
+            (float(entry["deadline"]) for entry in self._deferred.values()),
+            default=current,
+        )
+        if deadline > current:
+            wait(deadline - current)
+        return self.drain_ready(now=max(current, deadline), log=log)
+
     def _add_candidate_segments(self, segments, *, now=None, log=None, strict_timestamp=False):
         results = []
         for item in list(segments or []):

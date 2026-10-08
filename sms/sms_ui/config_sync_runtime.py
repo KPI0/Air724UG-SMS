@@ -118,7 +118,9 @@ def schedule_config_file_watch_runtime(
             pass
 
     def schedule_next():
-        if generation != state.generation or is_stopping() or not tk_alive():
+        if generation != state.generation:
+            return
+        if not tk_alive():
             state.after_id = None
             return
         try:
@@ -128,11 +130,15 @@ def schedule_config_file_watch_runtime(
             safe_log(f"Schedule config file watch failed: {exc!r}")
 
     def tick():
-        if generation != state.generation or is_stopping() or not tk_alive():
+        if generation != state.generation:
+            return
+        if not tk_alive():
             state.after_id = None
             return
         state.after_id = None
         try:
+            if is_stopping():
+                return
             next_signature = signature_func(config_file)
             if next_signature != state.signature:
                 if next_signature is None:
