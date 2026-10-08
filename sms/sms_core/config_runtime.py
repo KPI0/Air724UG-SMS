@@ -547,11 +547,13 @@ def safe_save_config_runtime(
     load_snapshot=load_config_snapshot,
     lock_timeout_ms=10000,
     defaults_by_section=None,
+    run_io=None,
+    updates=None,
 ):
     tmp_file = f"{config_file}.{getpid()}.{get_thread_id()}.tmp"
-    process_lock = None
-    try:
-        with config_lock:
+    def persist(current_snapshot, baseline_snapshot):
+        process_lock = None
+        try:
             process_lock, lock_result = acquire_process_lock(
                 config_mutex_name(config_file),
                 timeout_ms=lock_timeout_ms,
@@ -559,8 +561,6 @@ def safe_save_config_runtime(
             if not process_lock:
                 raise RuntimeError(f"配置文件跨进程锁获取失败，结果码：{lock_result}")
 
-            current_snapshot = snapshot_config_runtime(config)
-            baseline_snapshot = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
             if defaults_by_section is not None and path_exists(config_file):
                 disk_snapshot = load_snapshot(config_file)
                 output_snapshot = merge_config_defaults(
@@ -582,28 +582,57 @@ def safe_save_config_runtime(
             with open_file(tmp_file, "w", encoding="utf-8") as file_obj:
                 output_config.write(file_obj)
             replace_file(tmp_file, config_file)
-            restore_config_runtime(config, output_snapshot)
+            return output_snapshot
+        except Exception:
+            try:
+                if path_exists(tmp_file):
+                    remove_file(tmp_file)
+            except Exception:
+                pass
+            raise
+        finally:
+            if process_lock:
+                try:
+                    release_process_lock(process_lock)
+                except Exception as exc:
+                    _safe_log(log_error, f"配置文件跨进程锁释放失败: {exc}")
+
+    try:
+        # Preserve the UI's requested changes while an earlier writer finishes
+        # and restores its own snapshot under CONFIG_LOCK.
+        requested = snapshot_config_runtime(config) if run_io is not None and updates is None else None
+        baseline = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
+        if baseline is not None:
+            baseline = {section: dict(values) for section, values in baseline.items()}
+        with config_lock:
+            current_snapshot = requested if requested is not None else snapshot_config_runtime(config)
+            baseline_snapshot = baseline if requested is not None else getattr(config, CONFIG_SNAPSHOT_ATTR, None)
+            if updates is not None:
+                if defaults_by_section is not None:
+                    raise ValueError("默认值补齐与配置更新不能同时提交")
+                # A background transaction stages only its own changes. Shared
+                # memory may already contain an unrelated UI draft.
+                staged_base = baseline_snapshot if baseline_snapshot is not None else current_snapshot
+                current_snapshot = {
+                    section: dict(values)
+                    for section, values in staged_base.items()
+                }
+                for section, values in updates.items():
+                    current_snapshot.setdefault(str(section), {}).update(
+                        {str(option): str(value) for option, value in values.items()}
+                    )
+            operation = lambda: persist(current_snapshot, baseline_snapshot)
+            output_snapshot = run_io(operation) if run_io is not None else operation()
+            memory_snapshot = output_snapshot
+            if updates is not None and baseline_snapshot is not None:
+                # Keep unrelated drafts in memory; only the committed values
+                # become the baseline for the next save.
+                memory_snapshot = merge_config_changes(
+                    output_snapshot, baseline_snapshot, snapshot_config_runtime(config),
+                )
+            restore_config_runtime(config, memory_snapshot)
             remember_config_snapshot(config, output_snapshot)
         return True
     except Exception as exc:
-        try:
-            if path_exists(tmp_file):
-                remove_file(tmp_file)
-        except Exception:
-            pass
-        try:
-            if log_error is not None:
-                log_error(f"配置保存失败: {exc}")
-        except Exception:
-            pass
+        _safe_log(log_error, f"配置保存失败: {exc}")
         return False
-    finally:
-        if process_lock:
-            try:
-                release_process_lock(process_lock)
-            except Exception as exc:
-                try:
-                    if log_error is not None:
-                        log_error(f"配置文件跨进程锁释放失败: {exc}")
-                except Exception:
-                    pass

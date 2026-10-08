@@ -629,17 +629,15 @@ class HttpRequestSchemeTests(unittest.TestCase):
             opened.append(req.full_url)
             return FakeResp(req.full_url)
 
-        import urllib.request as _u
-
-        original = _u.urlopen
-        _u.urlopen = fake_urlopen
+        original = third_push_sender.urlopen_with_deadline
+        third_push_sender.urlopen_with_deadline = fake_urlopen
         try:
             for url in ("http://example.test/hook", "https://example.test/hook"):
                 ok, code, body = http_request(url, method="GET")
                 self.assertTrue(ok, f"scheme should be allowed: {url!r}")
                 self.assertEqual(code, 200)
         finally:
-            _u.urlopen = original
+            third_push_sender.urlopen_with_deadline = original
 
         self.assertEqual(opened, ["http://example.test/hook", "https://example.test/hook"])
 
@@ -658,12 +656,12 @@ class HttpRequestSchemeTests(unittest.TestCase):
                 fp=io.BytesIO(response_body),
             )
 
-        original = third_push_sender.urllib.request.urlopen
-        third_push_sender.urllib.request.urlopen = fake_urlopen
+        original = third_push_sender.urlopen_with_deadline
+        third_push_sender.urlopen_with_deadline = fake_urlopen
         try:
             ok, code, body = http_request("https://example.test/hook")
         finally:
-            third_push_sender.urllib.request.urlopen = original
+            third_push_sender.urlopen_with_deadline = original
 
         self.assertFalse(ok)
         self.assertEqual(code, 500)

@@ -26,7 +26,7 @@ class PushResponseSizeTests(unittest.TestCase):
         body = json.dumps({"code": 1000, "msg": "success", "data": rows}).encode()
         self.assertGreater(len(body), 4096)
         response = Response(body)
-        with patch.object(sender.urllib.request, "urlopen", return_value=response):
+        with patch.object(sender, "urlopen_with_deadline", return_value=response):
             ok, info = sender.send_wxpusher("synthetic", {
                 "wxpusher_app_token": "AT_test", "wxpusher_uids": ",".join(row["uid"] for row in rows),
             })
@@ -36,7 +36,7 @@ class PushResponseSizeTests(unittest.TestCase):
     def test_response_limit_is_bounded_and_oversize_is_explicit(self):
         for extra in (0, 1, 1024):
             response = Response(b" " * (sender.MAX_PUSH_RESPONSE_BYTES + extra))
-            with self.subTest(extra=extra), patch.object(sender.urllib.request, "urlopen", return_value=response):
+            with self.subTest(extra=extra), patch.object(sender, "urlopen_with_deadline", return_value=response):
                 result = sender.http_request("https://example.test/")
             self.assertEqual(result[0], extra == 0)
             self.assertTrue(response.closed)
@@ -48,7 +48,7 @@ class PushResponseSizeTests(unittest.TestCase):
 
     def test_malformed_or_business_failure_is_still_a_failure(self):
         for body in (b'{"code":1000,', b'{"code":1001}', b''):
-            with self.subTest(body=body), patch.object(sender.urllib.request, "urlopen", return_value=Response(body)):
+            with self.subTest(body=body), patch.object(sender, "urlopen_with_deadline", return_value=Response(body)):
                 ok, _info = sender.send_wxpusher("synthetic", {
                     "wxpusher_app_token": "AT_test", "wxpusher_uids": "UID_test",
                 })

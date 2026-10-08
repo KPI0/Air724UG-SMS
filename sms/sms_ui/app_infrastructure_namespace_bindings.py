@@ -2,6 +2,7 @@ from sms_core.namespace_binding import make_namespace_runtime_binder
 from sms_ui.app_infrastructure_namespace_runtime import (
     check_single_instance_namespace_runtime,
     lock_port_mutex_namespace_runtime,
+    run_config_transaction_namespace_runtime,
     safe_close_serial_namespace_runtime,
     safe_save_config_namespace_runtime,
     show_sms_popup_namespace_runtime,
@@ -18,6 +19,7 @@ def install_app_infrastructure_namespace_bindings(namespace):
 
     namespace.update({
         "safe_save_config": bind("safe_save_config_namespace_runtime"),
+        "run_config_transaction": bind("run_config_transaction_namespace_runtime"),
         "safe_close_serial": bind("safe_close_serial_namespace_runtime"),
         "auto_connect_ui": auto_connect_ui,
         "lock_port_mutex": bind("lock_port_mutex_namespace_runtime"),

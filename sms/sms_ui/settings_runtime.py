@@ -272,7 +272,7 @@ def open_voice_text_dialog_runtime(
     log_error=None,
 ):
     def preview(text):
-        generate_voice(force=True, text=text, play_after=True)
+        generate_voice(force=True, text=text, play_after=True, preview=True)
 
     def save(text):
         if save_ui_config_values(config, {"voice_text": text}, safe_save, log_error=log_error):

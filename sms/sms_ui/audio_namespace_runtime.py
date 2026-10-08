@@ -21,6 +21,7 @@ def tts_worker_namespace_runtime(namespace, *, worker_loop=tts_worker_loop):
         namespace["play_alert"],
         lambda exc: namespace["log_file_only"](f"TTS 生成失败，使用系统声音兜底：{exc}"),
         fallback_beep=lambda: namespace["winsound"].MessageBeep(namespace["winsound"].MB_ICONASTERISK),
+        preview_play_callback=lambda path: play_alert_namespace_runtime(namespace, force=True, tts_file=path),
     )
 
 
@@ -45,8 +46,10 @@ def generate_alert_voice_namespace_runtime(
     force=False,
     text=None,
     play_after=False,
+    preview=False,
     generate_runtime=generate_alert_voice_runtime,
 ):
+    options = {"preview": True} if preview else {}
     return generate_runtime(
         force=force,
         text=text,
@@ -56,16 +59,20 @@ def generate_alert_voice_namespace_runtime(
         ensure_worker=namespace["ensure_tts_worker"],
         request_queue=namespace["TTS_REQ_Q"],
         log_queue_full=lambda: namespace["log_file_only"]("⚠️ TTS 请求队列已满，已丢弃一次生成请求"),
+        **options,
     )
 
 
-def play_alert_namespace_runtime(namespace, *, force=False, play_runtime=play_alert_runtime):
+def play_alert_namespace_runtime(namespace, *, force=False, play_runtime=play_alert_runtime, tts_file=None):
     return play_runtime(
         force=force,
         voice_enabled=namespace["VOICE_ENABLED"],
-        tts_file=namespace["TTS_FILE"],
+        tts_file=namespace["TTS_FILE"] if tts_file is None else tts_file,
         get_last_play_time=lambda: namespace["_last_play_time"],
-        set_last_play_time=lambda value: namespace.__setitem__("_last_play_time", value),
+        # An explicit file is a preview; it must not delay a real notification.
+        set_last_play_time=lambda value: (
+            namespace.__setitem__("_last_play_time", value) if tts_file is None else None
+        ),
         play_sound=namespace["winsound"].PlaySound,
         beep=namespace["winsound"].MessageBeep,
         filename_flag=namespace["winsound"].SND_FILENAME,

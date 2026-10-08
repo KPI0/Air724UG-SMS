@@ -9,6 +9,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from sms_core.http_deadline import urlopen_with_deadline
 from email.message import EmailMessage
 
 from sms_core.third_push_format import apply_vars, template_vars
@@ -54,7 +56,7 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
         return False, None, f"不支持的 URL 协议：{scheme or '(空)'}（仅允许 http/https）"
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urlopen_with_deadline(req, timeout=timeout) as resp:
             raw_body = resp.read(MAX_PUSH_RESPONSE_BYTES + 1)
             if len(raw_body) > MAX_PUSH_RESPONSE_BYTES:
                 return False, resp.getcode(), PUSH_RESPONSE_TOO_LARGE
@@ -66,6 +68,12 @@ def http_request(url, method="POST", headers=None, data=None, timeout=15, user_a
         except Exception:
             pass
         return False, exc.code, ""
+    except TimeoutError:
+        return False, None, "推送请求超时，无法确认是否送达"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            return False, None, "推送请求超时，无法确认是否送达"
+        return False, None, redact_sensitive_text(str(exc))
     except Exception as exc:
         return False, None, redact_sensitive_text(str(exc))
 

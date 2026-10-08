@@ -130,6 +130,8 @@ async def replay_receive_loop(mode):
                 cloud_control_enabled=lambda: True, monotonic=time.monotonic,
                 schedule_pending_sms_events=schedule,
             ), 3)
+            if uploader._task is not None:
+                await asyncio.wait_for(asyncio.shield(uploader._task), 1)
             metadata = json.loads(Path(recording.metadata_path).read_text(encoding="utf-8"))
             return offers, metadata["upload_status"], Path(recording.path).read_bytes()
         finally:
@@ -237,7 +239,7 @@ class RecordingRetrySchedulingTests(unittest.IsolatedAsyncioTestCase):
         original = self.repository.mark_uploading
 
         def mark_uploading(recording):
-            attempts.append(asyncio.get_running_loop().time())
+            attempts.append(time.monotonic())
             if len(attempts) == 1:
                 return False
             return original(recording)

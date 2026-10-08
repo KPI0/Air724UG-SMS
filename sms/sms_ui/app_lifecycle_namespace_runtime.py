@@ -47,6 +47,7 @@ def _shutdown_worker_threads(namespace):
         namespace.get("cloud_ws_thread"),
         namespace.get("tray_thread"),
         namespace.get("autostart_spawn_thread"),
+        namespace.get("_CONFIG_SAVE_THREAD"),
     ) + _registered_worker_threads(namespace)
 
 
@@ -77,6 +78,11 @@ def cleanup_and_exit_namespace_runtime(
     cleanup_app_runtime=start_cleanup_and_exit_app_runtime,
     unregister_runtime=unregister_autostart_instance,
 ):
+    if namespace.get("_CONFIG_SAVE_ACTIVE"):
+        namespace["_CONFIG_SAVE_DEFERRED_ACTION"] = lambda: cleanup_and_exit_namespace_runtime(
+            namespace, cleanup_app_runtime=cleanup_app_runtime, unregister_runtime=unregister_runtime
+        )
+        return "saving_config"
     def unregister_instance():
         if not namespace.get("AUTOSTART_INSTANCE_REGISTERED"):
             return None
@@ -274,6 +280,11 @@ def restart_software_namespace_runtime(
     *,
     restart_app_runtime=start_restart_software_app_runtime,
 ):
+    if namespace.get("_CONFIG_SAVE_ACTIVE"):
+        namespace["_CONFIG_SAVE_DEFERRED_ACTION"] = lambda: restart_software_namespace_runtime(
+            namespace, restart_app_runtime=restart_app_runtime
+        )
+        return "saving_config"
     os_module = namespace.get("os", os)
     return restart_app_runtime(
         root=namespace["root"],

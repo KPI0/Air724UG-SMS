@@ -50,6 +50,8 @@ def refresh_third_push_settings_namespace_runtime(
     *,
     reload_config=reload_config_runtime,
 ):
+    if namespace.get("_CONFIG_SAVE_ACTIVE"):
+        return False
     defaults_changed = False
 
     def prepare_config(staged_config):

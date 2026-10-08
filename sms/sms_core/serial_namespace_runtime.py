@@ -1,3 +1,6 @@
+import configparser
+
+from sms_core.config_runtime import CONFIG_SNAPSHOT_ATTR
 from sms_core.connected_log_runtime import start_delayed_connected_log_runtime
 from sms_core.serial_ports import choose_luat_modem_port
 from sms_core.serial_reconnect import is_serial_port_gone_error
@@ -15,6 +18,19 @@ def try_rebind_manual_port_namespace_runtime(
     *,
     rebind_runtime=try_rebind_manual_port_runtime,
 ):
+    # Keep a failed rebind out of the shared configuration while UI saves wait.
+    staged_config = configparser.ConfigParser(interpolation=None)
+
+    def current_state():
+        baseline = getattr(namespace["config"], CONFIG_SNAPSHOT_ATTR, None)
+        serial = baseline.get("serial", {}) if baseline is not None else {}
+        return (
+            namespace["MODE"], namespace["PORT"], namespace["BAUD"],
+            namespace.get("serial_connection_generation"),
+            tuple(serial.get(key) for key in ("mode", "port", "baud")),
+        )
+
+    expected_state = current_state()
     return rebind_runtime(
         reason,
         mode=namespace["MODE"],
@@ -23,15 +39,20 @@ def try_rebind_manual_port_namespace_runtime(
         find_luat_best_port=namespace["find_luat_best_port"],
         list_ports=namespace["list_ports"].comports,
         choose_candidate=namespace["choose_manual_rebind_candidate"],
-        config=namespace["config"],
+        config=staged_config,
         config_lock=namespace["CONFIG_LOCK"],
-        save_config=namespace["safe_save_config"],
+        save_config=lambda: namespace["safe_save_config"](
+            updates={"serial": dict(staged_config["serial"])},
+        ),
         set_port=lambda port: namespace.__setitem__("PORT", port),
         system_ui=namespace["system_ui"],
         set_status=namespace["set_status"],
         wake_serial=namespace["serial_wakeup_event"].set,
         reset_rebind_hint=namespace["_rebind_hint_notice"].reset,
         hint_formatter=namespace["manual_rebind_hint"],
+        is_current=lambda: current_state() == expected_state,
+        **({"run_transaction": namespace["run_config_transaction"]}
+           if "run_config_transaction" in namespace else {}),
     )
 
 

@@ -45,6 +45,8 @@ def manual_rebind_runtime(
     wake_serial,
     reset_rebind_hint,
     hint_formatter,
+    is_current=None,
+    run_transaction=None,
 ):
     if mode != "Manual":
         return False
@@ -65,35 +67,35 @@ def manual_rebind_runtime(
     new_port = candidate.device
     lock_context = config_lock if config_lock is not None else nullcontext()
 
-    with lock_context:
-        config_snapshot = snapshot_config_section(config, "serial")
+    def commit():
+        with lock_context:
+            if is_current is not None and not is_current():
+                return False
+            config_snapshot = snapshot_config_section(config, "serial")
+            try:
+                if not config.has_section("serial"):
+                    config["serial"] = {}
+                config.set("serial", "mode", "Manual")
+                config.set("serial", "port", new_port)
+                config.set("serial", "baud", str(baud))
+                if save_config() is False:
+                    raise RuntimeError("配置保存失败")
+            except Exception as exc:
+                restore_config_section(config, "serial", config_snapshot)
+                system_ui(f"⚠️ 串口重绑定已取消，配置保存失败：{exc}", "normal")
+                return False
+
+            set_port(new_port)
+        system_ui(hint_formatter(old_port, new_port, candidate.description, reason), "normal")
+        set_status(format_connecting_status(new_port), "orange")
         try:
-            if not config.has_section("serial"):
-                config["serial"] = {}
-            config.set("serial", "mode", "Manual")
-            config.set("serial", "port", new_port)
-            config.set("serial", "baud", str(baud))
-            if save_config() is False:
-                raise RuntimeError("配置保存失败")
+            wake_serial()
         except Exception as exc:
-            restore_config_section(config, "serial", config_snapshot)
-            system_ui(f"⚠️ 串口重绑定已取消，配置保存失败：{exc}", "normal")
-            return False
+            system_ui(f"⚠️ 串口重绑定到 {new_port} 后唤醒失败：{exc}", "normal")
+        reset_rebind_hint()
+        return True
 
-    set_port(new_port)
-    system_ui(hint_formatter(old_port, new_port, candidate.description, reason), "normal")
-    set_status(format_connecting_status(new_port), "orange")
-
-    try:
-        wake_serial()
-    except Exception as exc:
-        # wake_serial is the action that actually reconnects to the new port.
-        # If it fails silently the device looks offline with no explanation,
-        # which is the worst case for diagnosis. Report and keep going so the
-        # status/hint already shown to the user stays consistent.
-        system_ui(f"⚠️ 串口重绑定到 {new_port} 后唤醒失败：{exc}", "normal")
-    reset_rebind_hint()
-    return True
+    return commit() if run_transaction is None else run_transaction(commit)
 
 
 def is_serial_open_denied(error_text: str) -> bool:

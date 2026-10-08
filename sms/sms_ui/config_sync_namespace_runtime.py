@@ -77,6 +77,8 @@ def reload_shared_ui_config_namespace_runtime(
     load_snapshot=load_config_snapshot,
     read_values=read_startup_config_values,
 ):
+    if namespace.get("_CONFIG_SAVE_ACTIVE"):
+        return False
     try:
         values = reload_config_runtime(
             config=namespace["config"],
@@ -267,7 +269,7 @@ def start_config_file_watch_namespace_runtime(
         root_after=namespace["root"].after,
         root_after_cancel=namespace["root"].after_cancel,
         tk_alive=namespace["tk_alive"],
-        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set() or bool(namespace.get("is_exiting")),
+        is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set() or bool(namespace.get("is_exiting")) or bool(namespace.get("_CONFIG_SAVE_ACTIVE")),
         on_change=namespace["reload_shared_ui_config"],
         log_error=namespace.get("log_file_only"),
     )

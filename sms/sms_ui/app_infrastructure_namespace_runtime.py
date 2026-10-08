@@ -2,6 +2,7 @@ import datetime
 import time
 
 from sms_core.config_runtime import safe_save_config_runtime
+from sms_ui.config_save_runtime import run_config_transaction_for_ui, save_config_for_ui
 from sms_core.serial_io_runtime import safe_close_serial_runtime
 from sms_core.windows_runtime import close_windows_handle, create_named_mutex, port_mutex_name
 from sms_ui.app_instance_runtime import check_single_instance_app_runtime
@@ -19,14 +20,19 @@ def _safe_log(namespace, message):
         pass
 
 
-def safe_save_config_namespace_runtime(namespace, *, defaults_by_section=None):
-    return safe_save_config_runtime(
+def run_config_transaction_namespace_runtime(namespace, operation):
+    return run_config_transaction_for_ui(namespace, operation)
+
+
+def safe_save_config_namespace_runtime(namespace, *, defaults_by_section=None, updates=None):
+    return save_config_for_ui(namespace, safe_save_config_runtime, dict(
         config=namespace["config"],
         config_file=namespace["CONFIG_FILE"],
         config_lock=namespace["CONFIG_LOCK"],
         log_error=lambda message: namespace["log_file_only"](message),
         defaults_by_section=defaults_by_section,
-    )
+        **({"updates": updates} if updates is not None else {}),
+    ))
 
 
 def safe_close_serial_namespace_runtime(namespace):

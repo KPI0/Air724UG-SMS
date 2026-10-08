@@ -14,6 +14,44 @@ from sms_core.serial_ports import ManualRebindCandidate
 
 
 class SerialReconnectTests(unittest.TestCase):
+    def test_rebind_checks_staleness_and_publishes_state_under_lock(self):
+        class Lock:
+            held = False
+
+            def __enter__(lock):
+                lock.held = True
+
+            def __exit__(lock, *_args):
+                lock.held = False
+
+        for current in (True, False):
+            with self.subTest(current=current):
+                config = configparser.ConfigParser(interpolation=None)
+                lock = Lock()
+                calls = []
+
+                def is_current():
+                    self.assertTrue(lock.held)
+                    return current
+
+                def set_port(port):
+                    self.assertTrue(lock.held)
+                    calls.append(("port", port))
+
+                result = manual_rebind_runtime(
+                    mode="Manual", current_port="COM5", baud=115200, reason="synthetic",
+                    find_luat_best_port=lambda: ("COM7", "LUAT"), list_ports=lambda: [],
+                    choose_candidate=lambda *_a, **_k: ManualRebindCandidate("COM7", "LUAT"),
+                    config=config, config_lock=lock, save_config=lambda: calls.append(("save",)),
+                    set_port=set_port, system_ui=lambda *_a: None, set_status=lambda *_a: None,
+                    wake_serial=lambda: calls.append(("wake",)), reset_rebind_hint=lambda: None,
+                    hint_formatter=lambda *_a: "synthetic", is_current=is_current,
+                )
+                self.assertEqual(result, current)
+                self.assertFalse(lock.held)
+                self.assertEqual(calls, [("save",), ("port", "COM7"), ("wake",)] if current else [])
+                self.assertEqual(config.has_section("serial"), current)
+
     def test_serial_open_denied_detection_and_repeat_key(self):
         self.assertTrue(is_serial_open_denied("Access is denied."))
         self.assertTrue(is_serial_open_denied("拒绝访问"))

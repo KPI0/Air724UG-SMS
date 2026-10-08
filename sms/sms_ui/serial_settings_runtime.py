@@ -1,4 +1,9 @@
-from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_core.config_runtime import (
+    CONFIG_SNAPSHOT_ATTR,
+    merge_config_changes,
+    restore_config_section,
+    snapshot_config_section,
+)
 from sms_ui.serial_settings_dialog import open_serial_setting_dialog, parse_positive_baud
 
 
@@ -34,6 +39,7 @@ def apply_serial_setting_runtime(
         return False
 
     config_snapshot = snapshot_config_section(config, "serial")
+    baseline = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
     if not config.has_section("serial"):
         config["serial"] = {}
     config.set("serial", "mode", mode)
@@ -43,6 +49,16 @@ def apply_serial_setting_runtime(
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception:
+        latest_baseline = getattr(config, CONFIG_SNAPSHOT_ATTR, None)
+        if baseline is not None and latest_baseline is not None:
+            previous = dict(baseline)
+            if config_snapshot is None:
+                previous.pop("serial", None)
+            else:
+                previous["serial"] = config_snapshot
+            # A rebind may have committed while this UI save waited for the
+            # lock. Roll back our draft without undoing that newer commit.
+            config_snapshot = merge_config_changes(latest_baseline, baseline, previous).get("serial")
         restore_config_section(config, "serial", config_snapshot)
         system_ui(serial_settings_save_failed_status())
         return False

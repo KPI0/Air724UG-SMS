@@ -2,6 +2,7 @@ import os
 import queue
 import re
 import uuid
+import wave
 
 from sms_core.threading_runtime import start_daemon_thread, task_done_safely
 
@@ -64,6 +65,7 @@ def generate_alert_voice_runtime(
     force=False,
     text=None,
     play_after=False,
+    preview=False,
     get_voice_text,
     default_text,
     ensure_worker,
@@ -81,7 +83,10 @@ def generate_alert_voice_runtime(
 
     try:
         ensure_worker()
-        enqueue_request(request_queue, text_snapshot, force=force, play_after=play_after)
+        options = {"force": force, "play_after": play_after}
+        if preview:
+            options["preview"] = True
+        enqueue_request(request_queue, text_snapshot, **options)
         return "queued"
     except queue.Full:
         log_queue_full()
@@ -139,20 +144,39 @@ def clear_tts_queue(request_queue):
     return cleared
 
 
-def enqueue_tts_request(request_queue, text, force=False, play_after=False, clear_existing=True):
-    if clear_existing:
+def enqueue_tts_request(request_queue, text, force=False, play_after=False, clear_existing=True, *, preview=False):
+    # A preview must not discard a pending update of the saved alert.
+    if clear_existing and not preview:
         clear_tts_queue(request_queue)
-    request_queue.put_nowait((text, bool(force), bool(play_after)))
+    task = (text, bool(force), bool(play_after))
+    request_queue.put_nowait(task + (True,) if preview else task)
     return True
 
 
 def _unpack_tts_task(task, default_text):
-    if len(task) == 3:
+    preview = False
+    if len(task) == 4:
+        text, force, play_after, preview = task
+    elif len(task) == 3:
         text, force, play_after = task
     else:
         text, force = task
         play_after = False
-    return normalize_voice_text(text, default_text), bool(force), bool(play_after)
+    return normalize_voice_text(text, default_text), bool(force), bool(play_after), bool(preview)
+
+
+def validate_tts_wave(path):
+    """Reject empty, malformed and truncated output before publishing a cache."""
+    with wave.open(str(path), "rb") as audio:
+        remaining = audio.getnframes()
+        frame_size = audio.getnchannels() * audio.getsampwidth()
+        if remaining <= 0 or frame_size <= 0 or audio.getframerate() <= 0:
+            raise ValueError("语音引擎未生成有效音频")
+        while remaining:
+            frames = min(remaining, 32768)
+            if len(audio.readframes(frames)) != frames * frame_size:
+                raise ValueError("语音引擎生成的音频不完整")
+            remaining -= frames
 
 
 def _safe_tts_error(error_callback, exc):
@@ -193,6 +217,7 @@ def generate_tts_file(
             engine.setProperty("rate", 150)
             engine.save_to_file(text, tmp_path)
             engine.runAndWait()
+            validate_tts_wave(tmp_path)
         except Exception:
             try:
                 if os.path.exists(tmp_path):
@@ -209,19 +234,23 @@ def generate_tts_file(
                 pass
             del engine
 
-        if not os.path.exists(tmp_path):
-            return tts_file
-
         try:
-            os.replace(tmp_path, tts_file)
-            return tts_file
-        except PermissionError:
-            fallback_file = os.path.join(
-                tts_dir,
-                f"{tts_file_family(tts_file)}_alt_{token}.wav",
-            )
-            os.replace(tmp_path, fallback_file)
-            return fallback_file
+            try:
+                os.replace(tmp_path, tts_file)
+                return tts_file
+            except PermissionError:
+                fallback_file = os.path.join(
+                    tts_dir,
+                    f"{tts_file_family(tts_file)}_alt_{token}.wav",
+                )
+                os.replace(tmp_path, fallback_file)
+                return fallback_file
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def tts_worker_loop(
@@ -237,12 +266,14 @@ def tts_worker_loop(
     fallback_beep=None,
     engine_factory=None,
     poll_timeout=0.5,
+    preview_play_callback=None,
 ):
     if engine_factory is None:
         import pyttsx3
 
         engine_factory = pyttsx3.init
 
+    preview_file = None
     while not stop_event.is_set():
         try:
             task = request_queue.get(timeout=poll_timeout)
@@ -254,14 +285,25 @@ def tts_worker_loop(
                 break
 
             try:
-                text, force, play_after = _unpack_tts_task(task, default_text)
+                text, force, play_after, preview = _unpack_tts_task(task, default_text)
                 current_file = get_tts_file()
+                if preview:
+                    if preview_file is None:
+                        preview_file = os.path.join(tts_dir, "preview", tts_file_family(current_file) + ".wav")
+                    current_file = preview_file
             except Exception as exc:
                 if not stop_event.is_set():
                     _safe_tts_error(error_callback, exc)
                 continue
 
-            if (not force) and os.path.exists(current_file):
+            cached = False
+            if not force and not preview:
+                try:
+                    validate_tts_wave(current_file)
+                    cached = True
+                except (OSError, ValueError, EOFError, wave.Error):
+                    cached = False
+            if cached:
                 if play_after:
                     _safe_play_after(play_after_callback, error_callback)
                 continue
@@ -270,11 +312,13 @@ def tts_worker_loop(
                 new_file = generate_tts_file(
                     text,
                     current_file,
-                    tts_dir,
+                    os.path.dirname(current_file) if preview else tts_dir,
                     tts_lock,
                     engine_factory,
                 )
-                if new_file != current_file:
+                if preview:
+                    preview_file = new_file
+                elif new_file != current_file:
                     set_tts_file(new_file)
             except Exception as exc:
                 if not stop_event.is_set():
@@ -284,10 +328,15 @@ def tts_worker_loop(
                         fallback_beep()
                     except Exception:
                         pass
-                    play_after = False
+                play_after = False
 
             if play_after and not stop_event.is_set():
-                _safe_play_after(play_after_callback, error_callback)
+                if preview:
+                    if preview_play_callback is None:
+                        raise RuntimeError("未配置语音试听播放回调")
+                    preview_play_callback(preview_file)
+                else:
+                    _safe_play_after(play_after_callback, error_callback)
         except Exception as exc:
             # A malformed request or callback failure must not terminate the
             # only TTS worker; report it and continue with the next request.

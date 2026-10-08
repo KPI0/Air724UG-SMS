@@ -734,5 +734,91 @@ class ConfigRuntimeTests(unittest.TestCase):
             self.assertTrue(final.has_option("cloud_control", "device_secret"))
 
 
+class ScopedConfigUpdateTests(unittest.TestCase):
+    def make_config(self, path):
+        config = configparser.ConfigParser(interpolation=None)
+        config["serial"] = {"port": "COM901", "unknown": "keep"}
+        config["ui"] = {"voice_enabled": "1", "popup_enabled": "1"}
+        self.assertTrue(safe_save_config_runtime(config=config, config_file=path, config_lock=DummyLock()))
+        return config
+
+    def test_scoped_update_preserves_ui_drafts_without_persisting_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.ini")
+            config = self.make_config(path)
+            config.set("ui", "voice_enabled", "0")
+
+            def replace(source, target):
+                self.assertEqual(config.get("serial", "port"), "COM901")
+                config.set("ui", "popup_enabled", "0")
+                os.replace(source, target)
+
+            self.assertTrue(safe_save_config_runtime(
+                config=config, config_file=path, config_lock=DummyLock(),
+                updates={"serial": {"port": "COM902"}}, replace_file=replace,
+            ))
+            disk = configparser.ConfigParser(interpolation=None)
+            disk.read(path, encoding="utf-8")
+            self.assertEqual(disk.get("serial", "port"), "COM902")
+            self.assertEqual(disk.get("serial", "unknown"), "keep")
+            for key in ("voice_enabled", "popup_enabled"):
+                self.assertEqual(disk.get("ui", key), "1")
+                self.assertEqual(config.get("ui", key), "0")
+            self.assertEqual(config.get("serial", "port"), "COM902")
+            self.assertTrue(safe_save_config_runtime(config=config, config_file=path, config_lock=DummyLock()))
+            disk.read(path, encoding="utf-8")
+            for key in ("voice_enabled", "popup_enabled"):
+                self.assertEqual(disk.get("ui", key), "0")
+
+    def test_failed_scoped_update_preserves_shared_config_and_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.ini")
+            config = self.make_config(path)
+            config.set("ui", "voice_enabled", "0")
+
+            def reject(*_args):
+                raise PermissionError("synthetic locked file")
+
+            self.assertFalse(safe_save_config_runtime(
+                config=config, config_file=path, config_lock=DummyLock(),
+                updates={"serial": {"port": "COM902"}}, replace_file=reject,
+            ))
+            self.assertEqual(config.get("serial", "port"), "COM901")
+            self.assertEqual(config.get("ui", "voice_enabled"), "0")
+            disk = configparser.ConfigParser(interpolation=None)
+            disk.read(path, encoding="utf-8")
+            self.assertEqual(disk.get("serial", "port"), "COM901")
+            self.assertEqual(disk.get("ui", "voice_enabled"), "1")
+            self.assertEqual(os.listdir(folder), ["config.ini"])
+            self.assertTrue(safe_save_config_runtime(
+                config=config, config_file=path, config_lock=DummyLock(), updates={"serial": {"port": "COM903"}},
+            ))
+            self.assertEqual(config.get("serial", "port"), "COM903")
+            self.assertEqual(config.get("ui", "voice_enabled"), "0")
+
+    def test_scoped_update_merges_newer_disk_values_and_adds_missing_section(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.ini")
+            config = self.make_config(path)
+            other = configparser.ConfigParser(interpolation=None)
+            other.read(path, encoding="utf-8")
+            remember_config_snapshot(other)
+            other.set("serial", "unknown", "newer disk value")
+            other.set("ui", "popup_enabled", "0")
+            self.assertTrue(safe_save_config_runtime(config=other, config_file=path, config_lock=DummyLock()))
+            self.assertTrue(safe_save_config_runtime(
+                config=config, config_file=path, config_lock=DummyLock(),
+                updates={"serial": {"port": "COM902"}, "synthetic": {"value": "100%"}},
+            ))
+            self.assertEqual(config.get("serial", "unknown"), "newer disk value")
+            self.assertEqual(config.get("ui", "popup_enabled"), "0")
+            self.assertEqual(config.get("synthetic", "value"), "100%")
+            disk = configparser.ConfigParser(interpolation=None)
+            disk.read(path, encoding="utf-8")
+            self.assertEqual(disk.get("serial", "port"), "COM902")
+            self.assertEqual(disk.get("serial", "unknown"), "newer disk value")
+            self.assertEqual(disk.get("synthetic", "value"), "100%")
+
+
 if __name__ == "__main__":
     unittest.main()

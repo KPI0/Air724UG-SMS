@@ -19,6 +19,8 @@ def refresh_cloud_control_settings_namespace_runtime(
     *,
     reload_config=reload_config_runtime,
 ):
+    if namespace.get("_CONFIG_SAVE_ACTIVE"):
+        return False
     try:
         settings = reload_config(
             config=namespace["config"],

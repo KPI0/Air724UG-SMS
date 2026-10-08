@@ -316,7 +316,7 @@ class SettingsRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(calls[0], ("open", "root", "current", "center"))
-        self.assertEqual(calls[1], ("generate", {"force": True, "text": "preview text", "play_after": True}))
+        self.assertEqual(calls[1], ("generate", {"force": True, "text": "preview text", "play_after": True, "preview": True}))
         self.assertEqual(calls[2], ("save_config",))
         self.assertEqual(config.get("ui", "voice_text"), "saved text")
         self.assertEqual(calls[3], ("voice_text", "saved text"))

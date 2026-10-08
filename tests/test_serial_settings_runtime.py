@@ -1,6 +1,7 @@
 import configparser
 import unittest
 
+from sms_core.config_runtime import remember_config_snapshot
 from sms_ui.serial_settings_runtime import (
     apply_serial_setting_runtime,
     open_serial_setting_runtime,
@@ -9,6 +10,29 @@ from sms_ui.serial_settings_runtime import (
 
 
 class SerialSettingsRuntimeTests(unittest.TestCase):
+    def test_failed_save_keeps_newer_commit_and_original_draft(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config["serial"] = {"mode": "Manual", "port": "COM3", "baud": "9600", "extra": "old"}
+        remember_config_snapshot(config)
+        config.set("serial", "draft", "pending")
+
+        def save():
+            remember_config_snapshot(config, {"serial": {
+                "mode": "Manual", "port": "COM7", "baud": "9600", "extra": "new",
+            }})
+            return False
+
+        result = apply_serial_setting_runtime(
+            "Auto", "", 115200, config=config, save_config=save,
+            set_serial_state=lambda *_a: self.fail("Failed save changed runtime state"),
+            set_status=lambda *_a: None, safe_close_serial=lambda: self.fail("Failed save closed serial"),
+            wake_serial=lambda: self.fail("Failed save woke serial"), system_ui=lambda *_a: None,
+        )
+        self.assertFalse(result)
+        self.assertEqual(dict(config["serial"]), {
+            "mode": "Manual", "port": "COM7", "baud": "9600", "extra": "new", "draft": "pending",
+        })
+
     def test_serial_settings_status_formats_auto_port(self):
         self.assertEqual(
             serial_settings_status("Auto", "", 115200),

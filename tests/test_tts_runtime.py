@@ -1,8 +1,10 @@
 import os
+import io
 import queue
 import tempfile
 import threading
 import unittest
+import wave
 from unittest.mock import patch
 
 from sms_core.tts_runtime import (
@@ -19,6 +21,16 @@ from sms_core.tts_runtime import (
 )
 
 
+def wave_bytes():
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x00\x00" * 80)
+    return output.getvalue()
+
+
 class FakeEngine:
     def __init__(self):
         self.rate = None
@@ -32,7 +44,7 @@ class FakeEngine:
     def save_to_file(self, text, path):
         self.saved = (text, path)
         with open(path, "wb") as file:
-            file.write(b"wav")
+            file.write(wave_bytes())
 
     def runAndWait(self):
         pass
@@ -194,7 +206,7 @@ class TtsRuntimeTests(unittest.TestCase):
             self.assertEqual(engine.rate, 150)
             self.assertTrue(engine.stopped)
             with open(target, "rb") as file:
-                self.assertEqual(file.read(), b"wav")
+                self.assertEqual(file.read(), wave_bytes())
 
     def test_generate_tts_file_uses_unique_temp_paths_across_instances(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,6 +20,8 @@ def try_rebind_manual_port_runtime(
     reset_rebind_hint,
     hint_formatter,
     runtime=manual_rebind_runtime,
+    is_current=None,
+    run_transaction=None,
 ):
     return runtime(
         mode=mode,
@@ -38,4 +40,6 @@ def try_rebind_manual_port_runtime(
         wake_serial=wake_serial,
         reset_rebind_hint=reset_rebind_hint,
         hint_formatter=hint_formatter,
+        **({"is_current": is_current} if is_current is not None else {}),
+        **({"run_transaction": run_transaction} if run_transaction is not None else {}),
     )
