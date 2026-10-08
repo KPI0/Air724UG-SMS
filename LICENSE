@@ -1,21 +1,105 @@
-MIT License
+AIR724UG-SMS SOURCE-AVAILABLE NON-COMMERCIAL LICENSE
+Version 1.0, 6 October 2026
 
 Copyright (c) 2026 KPI0
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Definitions
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+"Original Work" means the source code, build scripts, documentation, and other
+materials in this repository that are identified as being covered by this License
+and that were created by the copyright holder. Third-party components are not
+included in the Original Work merely because they are distributed with it.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+"Modified Version" means the Original Work or a portion of it that has been
+changed, translated, adapted, or combined with code that forms a derivative work
+under applicable copyright law.
+
+"Corresponding Source" means the preferred form of a Modified Version for making
+further modifications. It includes all source code, build scripts, configuration,
+assets, and installation or generation instructions needed to build, install, run,
+and modify the Modified Version, excluding independent third-party components.
+
+"Commercial Use" means use primarily intended for or directed toward commercial
+advantage or monetary compensation. It includes selling, licensing, renting, or
+sublicensing the work; including it in a product or service offered for payment;
+providing paid hosting, software-as-a-service, consulting, support, or other paid
+services based on it; using it in the internal operations of a for-profit business
+or other commercial organization; or using it for commercial advertising,
+promotion, or lead generation. Private, personal, educational, research, and
+non-profit use are not Commercial Use when they are not part of a commercial
+activity.
+
+2. Permission
+
+Subject to the conditions below, the copyright holder grants you a worldwide,
+non-exclusive, royalty-free license to use, reproduce, study, modify, and share
+the Original Work and Modified Versions solely for non-commercial purposes.
+
+3. Conditions
+
+You may exercise the permission in section 2 only if all of the following
+conditions are met:
+
+(a) No Commercial Use. You must not make any Commercial Use of the Original Work
+or a Modified Version. You must not charge a fee for a copy, access to, or service
+substantially based on the Original Work or a Modified Version.
+
+(b) Source publication for Modified Versions. If you distribute or otherwise make
+a Modified Version available to any other person or entity, in source or compiled
+form, you must at the same time make its complete Corresponding Source available
+at no charge under this License. The source must be available from the same place
+or from a clearly identified, durable public location, and must remain available
+for as long as the Modified Version is distributed or made available.
+
+(c) Same terms. A Modified Version must be licensed as a whole under this License.
+You may not impose additional restrictions on the rights granted by this License.
+
+(d) Notices and changes. You must retain all copyright, license, warranty, and
+attribution notices. You must clearly identify that you changed the work and state
+the date of each change.
+
+(e) License copy. You must provide a copy of this License with every distribution
+or public availability of the Original Work or a Modified Version.
+
+4. Third-party components
+
+This License does not change the license of any third-party component. You must
+follow the applicable third-party terms. In particular, the YuNet model and its
+license are identified in `models/LICENSE`; dependencies and other third-party
+materials remain under their own licenses. A third-party component's separate
+license does not grant permission to make Commercial Use of the Original Work or
+a Modified Version.
+
+5. Trademarks
+
+This License does not grant permission to use the names, logos, or trademarks of
+the copyright holder except as needed to make truthful statements about the
+origin of the work.
+
+6. Termination
+
+Your rights under this License terminate automatically if you fail to comply with
+its conditions. They may be restored if you permanently cure the violation and
+receive express written permission from the copyright holder, or if applicable
+law provides for reinstatement. Persons who received a compliant copy from you
+retain the rights they received before your termination, subject to this License.
+
+7. Disclaimer of warranty
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. YOU BEAR ALL RISKS AS TO THE QUALITY
+AND PERFORMANCE OF THE WORK.
+
+8. Limitation of liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL THE COPYRIGHT
+HOLDER OR ANY CONTRIBUTOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING FROM THE WORK OR THE USE OF
+THE WORK, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+9. Acceptance
+
+By exercising any permission granted by this License, you agree to be bound by
+its conditions. If you do not accept these conditions, you may not use, modify,
+distribute, or make the Original Work or a Modified Version available.
