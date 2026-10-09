@@ -33,6 +33,7 @@ from sms_ui.config_save_runtime import UiConfigSave
 from sms_ui.settings_runtime import open_voice_text_dialog_runtime, toggle_voice_broadcast_runtime
 from sms_ui.shutdown_progress import ShutdownProgress
 from sms_ui.utility_dialogs import open_voice_text_dialog
+from sms_ui.window_icon_runtime import install_window_icon_runtime
 
 
 def wave_data(text="saved"):
@@ -221,6 +222,90 @@ class TkQualityTests(unittest.TestCase):
         self.assertEqual(config.get("ui", "voice_text"), "saved")
         self.assertEqual(namespace["VOICE_TEXT"], "saved")
         self.assertEqual(saves, [])
+        self.assertEqual(self.errors, [])
+
+    def test_voice_text_save_failure_then_retry_with_startup_window_icon_wrapper(self):
+        namespace = self.namespace()
+        namespace.update(VOICE_TEXT="saved", DEFAULT_VOICE_TEXT="default", TTS_REQ_Q=queue.Queue(),
+                         ensure_tts_worker=lambda: None)
+        logs, messages = [], []
+        namespace["log_file_only"] = logs.append
+        namespace["config"].set("ui", "voice_text", "saved")
+        self.assertTrue(safe_save_config_namespace_runtime(namespace))
+        original = Path(namespace["CONFIG_FILE"]).read_bytes()
+        plays = []
+        target = Path(self.temp.name) / "alert.wav"
+        menu_bar = tk.Menu(self.root)
+        settings_menu = tk.Menu(menu_bar, tearoff=False)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Voice")
+        self.root.configure(menu=menu_bar)
+        messagebox = SimpleNamespace(**{
+            name: lambda *_args, **_kwargs: None
+            for name in ("showinfo", "showwarning", "showerror", "askyesno")
+        })
+        with patch.object(tk, "Toplevel", tk.Toplevel):
+            self.assertTrue(install_window_icon_runtime(
+                self.root, tk, messagebox, icon_path="", path_exists=lambda _path: False,
+                log_error=logs.append,
+            ))
+            open_voice_text_dialog_runtime(
+                self.root, "saved", config=namespace["config"],
+                safe_save=lambda: safe_save_config_namespace_runtime(namespace),
+                set_voice_text=lambda text: namespace.__setitem__("VOICE_TEXT", text),
+                generate_voice=lambda **kwargs: generate_alert_voice_namespace_runtime(namespace, **kwargs),
+                system_ui=lambda text, _tag: messages.append(text),
+                center_window=lambda *_args: None, open_dialog=open_voice_text_dialog,
+                log_error=logs.append,
+            )
+            window = self.root.grab_current()
+            editor = next(w for w in window.winfo_children() if isinstance(w, tk.Text))
+            buttons = {w.cget("text"): w for w in window.winfo_children() if isinstance(w, tk.Button)}
+            editor.delete("1.0", "end")
+            editor.insert("1.0", "注意短信")
+            buttons["试听"].invoke()
+            drain_tts(namespace["TTS_REQ_Q"], target, preview=plays)
+            self.assertEqual(plays, [wave_data("注意短信")])
+            self.assertEqual(Path(namespace["CONFIG_FILE"]).read_bytes(), original)
+            self.assertEqual(namespace["VOICE_TEXT"], "saved")
+
+            def fail_save(**kwargs):
+                def fail_replace(*_args):
+                    time.sleep(0.15)
+                    raise PermissionError("synthetic write failure")
+
+                return safe_save_config_runtime(**kwargs, replace_file=fail_replace)
+
+            with patch("sms_ui.app_infrastructure_namespace_runtime.safe_save_config_runtime", new=fail_save):
+                buttons["保存"].invoke()
+            self.assertTrue(window.winfo_exists())
+            self.assertIs(self.root.grab_current(), window)
+            if self.root.tk.call("tk", "windowingsystem") == "win32":
+                self.assertFalse(window.attributes("-disabled"))
+                self.assertFalse(self.root.attributes("-disabled"))
+            self.assertFalse(namespace["_CONFIG_SAVE_ACTIVE"])
+            self.assertEqual(Path(namespace["CONFIG_FILE"]).read_bytes(), original)
+            self.assertEqual(namespace["config"].get("ui", "voice_text"), "saved")
+            self.assertEqual(namespace["VOICE_TEXT"], "saved")
+            self.assertTrue(namespace["TTS_REQ_Q"].empty())
+            self.assertTrue(any("synthetic write failure" in message for message in logs), logs)
+            self.assertEqual(messages, ["❌ 配置保存失败，已保留原设置"])
+            logs.clear()
+            messages.clear()
+            buttons["保存"].invoke()
+            self.assertFalse(window.winfo_exists(), logs)
+        stored = configparser.ConfigParser(interpolation=None)
+        stored.read(namespace["CONFIG_FILE"], encoding="utf-8")
+        self.assertEqual(stored.get("ui", "voice_text"), "注意短信")
+        self.assertEqual(namespace["VOICE_TEXT"], "注意短信")
+        self.assertFalse(namespace["_CONFIG_SAVE_ACTIVE"])
+        if self.root.tk.call("tk", "windowingsystem") == "win32":
+            self.assertFalse(self.root.attributes("-disabled"))
+        drain_tts(namespace["TTS_REQ_Q"], target, preview=plays)
+        self.assertEqual(target.read_bytes(), wave_data("注意短信"))
+        self.assertEqual(plays, [wave_data("注意短信")])
+        self.assertEqual(messages, ["🔊 已更新语音播报内容：注意短信"])
+        self.assertEqual(logs, [])
         self.assertEqual(self.errors, [])
 
     def test_named_mutex_wait_keeps_tk_alive_and_restores_dialog_grab(self):

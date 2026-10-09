@@ -44,8 +44,27 @@ class ThirdPushFormController:
         self._build_channel_selector(frame)
         self._build_parameter_area(frame)
         self._populate_channels()
+        self._variable_traces = []
         for var in self.entry_vars.values():
-            var.trace_add("write", lambda *_args: self._notify_dirty())
+            callback = var.trace_add("write", lambda *_args: self._notify_dirty())
+            self._variable_traces.append((var, callback))
+        win.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_destroy(self, event):
+        if event.widget is not self.win:
+            return
+        # Variable traces belong to the Tcl interpreter, not the window. Remove
+        # them here so closed forms and their Tk variables are released on Tk's thread.
+        for var, callback in self._variable_traces:
+            try:
+                var.trace_remove("write", callback)
+            except tk.TclError:
+                # The interpreter or callback may already have been destroyed.
+                pass
+        self._variable_traces.clear()
+        for name in ("_sync_form_from_globals", "_force_sync_form_from_globals"):
+            if getattr(getattr(self.win, name, None), "__self__", None) is self:
+                delattr(self.win, name)
 
     def _build_push_options(self, frame):
         push_opts = ttk.Frame(frame)

@@ -235,7 +235,11 @@ class StructuredFormTests(unittest.TestCase):
         ]
         for opening, values, valid_values, button_text in cases:
             sent.clear()
-            with self.subTest(values=values), patch('tkinter.messagebox.showerror') as error:
+            errors = []
+            # Mock call histories would retain the Tk parent after destruction.
+            with self.subTest(values=values), patch(
+                'tkinter.messagebox.showerror', new=lambda *_args, **_kwargs: errors.append(True),
+            ):
                 opening()
                 win = self.root.winfo_children()[0]
                 win.withdraw()
@@ -251,7 +255,7 @@ class StructuredFormTests(unittest.TestCase):
                     button.invoke()
                     self.assertTrue(win.winfo_exists())
                     self.assertEqual([entry.get() for entry in entries], values)
-                    error.assert_called_once()
+                    self.assertEqual(errors, [True])
                     self.assertEqual(sent, [])
                     for entry, value in zip(entries, valid_values):
                         entry.delete(0, 'end')

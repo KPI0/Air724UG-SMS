@@ -1,5 +1,7 @@
 import tkinter as tk
+import threading
 import unittest
+import weakref
 from tkinter import ttk
 from unittest.mock import patch
 
@@ -26,7 +28,7 @@ class ThirdPushWindowScrollTests(unittest.TestCase):
         self.addCleanup(self.root.tk.call, "tk", "scaling", previous_scale)
         self.root.tk.call("tk", "scaling", 4 / 3)
         self.errors = []
-        self.root.report_callback_exception = lambda *args: self.errors.append(args)
+        self.root.report_callback_exception = lambda *args, errors=self.errors: errors.append(args)
         for name in ("TkDefaultFont", "TkTextFont"):
             self.root.tk.call("font", "configure", name, "-size", 12)
         state = dict(enabled=False, sms_enabled=True, call_enabled=True,
@@ -189,6 +191,35 @@ class ThirdPushWindowScrollTests(unittest.TestCase):
         self.win.destroy()
         self.root.update()
         self.assertEqual(self.root.bind_all("<MouseWheel>"), global_binding)
+
+    def test_closed_forms_release_variables_and_callbacks_on_ui_thread(self):
+        owner = threading.get_ident()
+        finalized = []
+        original = tk.Variable.__del__
+
+        def finalize(variable):
+            finalized.append(threading.get_ident())
+            original(variable)
+
+        with patch.object(tk.Variable, "__del__", new=finalize):
+            for _ in range(3):
+                reference = weakref.ref(self.form)
+                variable_count = len(self.root.tk.call("info", "globals", "PY_VAR*"))
+                self.form = None
+                self.win.destroy()
+                self.assertIsNone(reference())
+                self.assertFalse(self.root.tk.call("info", "globals", "PY_VAR*"))
+                self.assertEqual(len(finalized), variable_count)
+                self.assertEqual(set(finalized), {owner})
+                finalized.clear()
+                state = dict(enabled=False, sms_enabled=True, call_enabled=True,
+                             channels=[], settings=dict(THIRD_PUSH_DEFAULTS))
+                self.win = ui.open_third_push_window_dialog(
+                    self.root, lambda: state, lambda *_: True, lambda *_: False,
+                    lambda window: window.destroy(), lambda *_: None)
+                self.form = self.win._sync_form_from_globals.__self__
+                self.form.entry_vars["wecom_webhook"].set("synthetic draft")
+                self.assertTrue(self.form.is_dirty())
 
 
 if __name__ == "__main__":

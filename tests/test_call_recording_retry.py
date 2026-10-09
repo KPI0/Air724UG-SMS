@@ -191,6 +191,16 @@ class RecordingRetrySchedulingTests(unittest.IsolatedAsyncioTestCase):
     def schedule(self, send_payload=None):
         return self.uploader.schedule(asyncio.get_running_loop(), self.current_ws, **self.args(send_payload))
 
+    async def repeatedly_schedule_until_complete(self, send_payload=None):
+        async def repeat():
+            while not self.completed.is_set():
+                self.assertTrue(self.schedule(send_payload))
+                await asyncio.sleep(0.01)
+
+        # File I/O runs in workers. Wait for the upload result, not a fixed
+        # number of event-loop turns before the first offer can be sent.
+        await asyncio.wait_for(repeat(), 5)
+
     async def send_success(self, ws, payload):
         kind = payload["type"]
         if kind == "call_recording_offer":
@@ -216,10 +226,14 @@ class RecordingRetrySchedulingTests(unittest.IsolatedAsyncioTestCase):
         return True
 
     async def test_repeated_schedules_cannot_bypass_backoff(self):
-        for _ in range(6):
-            self.schedule(self.reject)
-            await asyncio.sleep(0.01)
-        self.assertEqual(len(self.offers), 1)
+        async def reject_once(ws, payload):
+            if not self.offers:
+                return await self.reject(ws, payload)
+            return await self.send_success(ws, payload)
+
+        await self.repeatedly_schedule_until_complete(reject_once)
+        self.assertEqual(len(self.offers), 2)
+        self.assertGreaterEqual(self.offers[1][1] - self.offers[0][1], RETRY_SECONDS - 0.01)
 
     async def test_failed_recording_does_not_block_other_pending_recording(self):
         second = create_recording(self.repository, "z-second")
@@ -229,10 +243,10 @@ class RecordingRetrySchedulingTests(unittest.IsolatedAsyncioTestCase):
                 return await self.reject(ws, payload)
             return await self.send_success(ws, payload)
 
-        self.schedule(send)
-        await asyncio.wait_for(self.completed.wait(), 1)
-        self.assertEqual([item[0] for item in self.offers[:2]], [self.recording.recording_id, second.recording_id])
-        self.assertLess(self.offers[1][1] - self.offers[0][1], RETRY_SECONDS)
+        # Both records must be processed in this pass, regardless of disk speed.
+        await asyncio.wait_for(self.uploader._drain(self.ws, **self.args(send)), 5)
+        self.assertTrue(self.completed.is_set())
+        self.assertEqual([item[0] for item in self.offers], [self.recording.recording_id, second.recording_id])
 
     async def test_sidecar_failure_keeps_memory_backoff(self):
         attempts = []
@@ -247,11 +261,7 @@ class RecordingRetrySchedulingTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.repository, "mark_uploading", side_effect=mark_uploading), patch.object(
             self.repository, "mark_pending", side_effect=OSError("synthetic sidecar failure")
         ):
-            for _ in range(6):
-                self.schedule()
-                await asyncio.sleep(0.01)
-            self.assertEqual(len(attempts), 1)
-            await asyncio.wait_for(self.completed.wait(), 1)
+            await self.repeatedly_schedule_until_complete()
         self.assertEqual(len(attempts), 2)
         self.assertGreaterEqual(attempts[1] - attempts[0], RETRY_SECONDS - 0.01)
 

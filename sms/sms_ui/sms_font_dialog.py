@@ -149,8 +149,23 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
     tk.Button(buttons, text="保存", width=10, command=save).pack(side=tk.LEFT, padx=(0, 8))
     tk.Button(buttons, text="取消", width=10, command=win.destroy).pack(side=tk.LEFT)
 
-    size_var.trace_add("write", lambda *_: refresh_preview())
-    color_var.trace_add("write", lambda *_: refresh_preview())
+    traces = [
+        (variable, variable.trace_add("write", lambda *_: refresh_preview()))
+        for variable in (size_var, color_var)
+    ]
+
+    def release_preview_traces(event):
+        if event.widget is not win:
+            return
+        # Tcl variable traces outlive the widgets unless explicitly removed.
+        for variable, callback in traces:
+            try:
+                variable.trace_remove("write", callback)
+            except tk.TclError:
+                pass
+        traces.clear()
+
+    win.bind("<Destroy>", release_preview_traces, add="+")
 
     win.update_idletasks()
     center_window(win, parent)

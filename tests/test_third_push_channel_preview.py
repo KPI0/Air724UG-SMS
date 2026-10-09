@@ -25,7 +25,7 @@ class ThirdPushChannelPreviewTests(unittest.TestCase):
         self.state = dict(enabled=True, sms_enabled=True, call_enabled=True,
                           channels=['wecom'], settings=dict(THIRD_PUSH_DEFAULTS))
         self.option_calls, self.errors = [], []
-        self.root.report_callback_exception = lambda *args: self.errors.append(args)
+        self.root.report_callback_exception = lambda *args, errors=self.errors: errors.append(args)
         self.form = ThirdPushFormController(self.win, frame, self.state, lambda: self.state,
                                            on_option_changed=lambda *args: self.option_calls.append(args))
         self.form.select_channel('wecom')

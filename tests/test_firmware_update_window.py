@@ -43,7 +43,7 @@ class FirmwareUpdateWindowTests(unittest.TestCase):
             self.skipTest("Tk display is unavailable")
         self.root.withdraw()
         self.errors = []
-        self.root.report_callback_exception = lambda *args: self.errors.append(args)
+        self.root.report_callback_exception = lambda *args, errors=self.errors: errors.append(args)
         native_toplevel = tk.Toplevel
 
         class InvisibleWindow(native_toplevel):

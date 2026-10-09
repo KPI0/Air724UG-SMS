@@ -1,3 +1,6 @@
+import gc
+import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest.mock import patch
 
@@ -116,6 +119,61 @@ class CloudControlWindowFormTests(unittest.TestCase):
 
         self.assertEqual(result, "opened")
         self.assertEqual(calls, ["opened"])
+
+
+class CloudControlFormRefreshTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        self.root.withdraw()
+        self.state = {"enabled": False, "auto_upload": False, "url": "", "secret": "",
+                      "reconnect_interval": 5}
+        state = self.state
+        self.form = CloudControlFormController(
+            self.root, ttk.Frame(self.root), state, lambda: state,
+            tk.StringVar(self.root), lambda *_: None,
+        )
+
+    def tearDown(self):
+        self.root.destroy()
+        self.form = self.state = self.root = None
+        gc.collect()
+
+    def refresh_credentials(self):
+        self.state.update(url="wss://example.test/ws/device", secret="synthetic-test-value")
+        self.form.sync_from_state()
+
+    def test_refresh_of_placeholder_restores_password_mask(self):
+        self.assertTrue(self.form.secret_field.placeholder_active)
+        self.refresh_credentials()
+        self.assertEqual(self.form.secret_field.get(), "synthetic-test-value")
+        self.assertEqual(self.form.secret_field.entry.cget("show"), "*")
+        self.assertFalse(self.form.secret_field.placeholder_active)
+
+    def test_focus_after_refresh_does_not_clear_credentials(self):
+        self.refresh_credentials()
+        self.form.secret_field.entry.event_generate("<FocusIn>")
+        self.form.url_field.entry.event_generate("<FocusIn>")
+        self.root.update()
+        self.assertEqual(self.form.secret_field.get(), "synthetic-test-value")
+        self.assertEqual(self.form.url_field.get(), "wss://example.test/ws/device")
+
+    def test_refresh_preserves_explicit_visibility_and_empty_values(self):
+        self.form.secret_field.eye_button.invoke()
+        self.refresh_credentials()
+        self.assertEqual(self.form.secret_field.entry.cget("show"), "")
+        self.assertTrue(self.form.secret_field.visible_var.get())
+        self.form.secret_field.eye_button.invoke()
+        self.form.sync_from_state()
+        self.assertEqual(self.form.secret_field.entry.cget("show"), "*")
+        self.state.update(url="", secret="")
+        self.form.sync_from_state()
+        self.form.secret_field.entry.event_generate("<FocusOut>")
+        self.form.url_field.entry.event_generate("<FocusOut>")
+        self.assertEqual(self.form.secret_field.get(), "")
+        self.assertEqual(self.form.url_field.get(), "")
 
 
 if __name__ == "__main__":

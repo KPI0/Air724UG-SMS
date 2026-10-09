@@ -94,7 +94,8 @@ class UiConfigSave:
         except tk.TclError:
             pass
         for child in window.winfo_children():
-            if isinstance(child, tk.Toplevel):
+            # Wm stays a type after Toplevel is wrapped; menus are not Wm windows.
+            if isinstance(child, tk.Wm):
                 self._disable_window(child)
 
     def __enter__(self):

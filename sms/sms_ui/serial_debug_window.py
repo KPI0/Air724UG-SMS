@@ -118,7 +118,18 @@ def open_serial_debug_window_dialog(
         filter_var.set("")
         redraw_by_filter()
 
-    filter_var.trace_add("write", lambda *_: redraw_by_filter())
+    filter_trace = filter_var.trace_add("write", lambda *_: redraw_by_filter())
+
+    def release_filter_trace(event):
+        if event.widget is not win:
+            return
+        # Tcl traces otherwise retain the closed window and its debug buffer.
+        try:
+            filter_var.trace_remove("write", filter_trace)
+        except tk.TclError:
+            pass
+
+    win.bind("<Destroy>", release_filter_trace, add="+")
     ttk.Button(right_frame, text="清除筛选", width=8, command=clear_filter).grid(row=0, column=2)
 
     serial_status_bar = ttk.Frame(win)

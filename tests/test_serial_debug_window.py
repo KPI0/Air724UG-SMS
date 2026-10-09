@@ -1,4 +1,9 @@
+import gc
+import queue
+import threading
+import tkinter as tk
 import unittest
+import weakref
 from unittest.mock import patch
 
 from sms_ui.serial_debug_window import open_serial_debug_window_dialog
@@ -160,6 +165,34 @@ class SerialDebugDialCallbackTests(unittest.TestCase):
         self.assertEqual(sent[0][0][2], "ATH")
         self.assertTrue(status)
         self.assertEqual(dial_state, [""])
+
+
+class SerialDebugWindowLifecycleTests(unittest.TestCase):
+    def test_repeated_close_releases_windows_and_filter_variables(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        references = []
+        baseline = set(root.tk.call("info", "vars", "PY_VAR*"))
+        try:
+            for _ in range(3):
+                win, text = open_serial_debug_window_dialog(
+                    root, None, None, False, lambda: 0, queue.Queue(), threading.Lock(),
+                    lambda: None, lambda *_: None, lambda *_: None, lambda *_: None,
+                    lambda port: str(port), lambda: "", lambda *_: None,
+                    lambda *_: None, lambda *_: None, lambda: None, lambda *_: None,
+                )
+                references.append(weakref.ref(win))
+                root.tk.call(win.protocol("WM_DELETE_WINDOW"))
+                del win, text
+                root.update()
+            gc.collect()
+            self.assertEqual(sum(ref() is not None for ref in references), 0)
+            self.assertEqual(set(root.tk.call("info", "vars", "PY_VAR*")), baseline)
+        finally:
+            root.destroy()
 
 
 if __name__ == "__main__":

@@ -156,8 +156,8 @@ class CloudControlFormController:
         latest = self.state_provider()
         self.enabled_var.set(latest["enabled"])
         self.auto_upload_var.set(latest["auto_upload"])
-        self.url_var.set(latest["url"])
-        self.secret_var.set(latest["secret"])
+        self.url_field.set_value(latest["url"])
+        self.secret_field.set_value(latest["secret"])
         self.reconnect_var.set(str(latest["reconnect_interval"]))
 
     def read(self, force_enabled=False):
