@@ -23,7 +23,7 @@ class FakeWidget:
     def pack(self, **kwargs):
         self.pack_calls.append(kwargs)
 
-    def bind(self, sequence, callback):
+    def bind(self, sequence, callback, **_kwargs):
         self.bind_calls.append((sequence, callback))
 
     def tag_add(self, tag, start, end):

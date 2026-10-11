@@ -63,6 +63,9 @@ class FakeWindow:
     def geometry(self, value):
         self.geometry_value = value
 
+    def minsize(self):
+        return 1, 1
+
 
 class FakeParent:
     def winfo_rootx(self):

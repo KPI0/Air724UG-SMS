@@ -42,6 +42,7 @@ def _fit_security_window(win, frame, *, min_width=620, min_height=285):
 
     width = max(min_width, requested_width)
     height = max(min_height, requested_height)
+    win.minsize(width, height)
     win.geometry(f"{width}x{height}")
 
 
@@ -50,16 +51,19 @@ def open_security_settings_dialog(
     current_permissions,
     on_change,
     center_window,
+    *,
+    register_external_refresh=None,
+    get_permissions=None,
 ):
     global _active_security_settings_refs
     active_refs = _focus_active_security_settings_dialog()
     if active_refs is not None:
+        active_refs["refresh"]()
         return active_refs
 
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("安全设置")
-    win.geometry("620x285")
     win.resizable(False, False)
 
     frame = ttk.Frame(win, padding=12)
@@ -71,6 +75,37 @@ def open_security_settings_dialog(
         for spec in CLOUD_COMMAND_PERMISSION_SPECS
     }
     status_var = tk.StringVar(value=cloud_sensitive_commands_status(permissions))
+    unregister_external_refresh = None
+
+    def window_exists():
+        try:
+            return bool(win.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def refresh_external_config():
+        nonlocal permissions
+        if get_permissions is not None:
+            permissions = normalize_cloud_command_permissions(get_permissions())
+        for category, value in permissions.items():
+            permission_vars[category].set(value)
+        status_var.set(cloud_sensitive_commands_status(permissions))
+
+    def release_on_destroy(event):
+        global _active_security_settings_refs
+        if event.widget is not win:
+            return
+        if unregister_external_refresh is not None:
+            unregister_external_refresh()
+        if (
+            isinstance(_active_security_settings_refs, dict)
+            and _active_security_settings_refs.get("window") is win
+        ):
+            _active_security_settings_refs = None
+
+    if register_external_refresh is not None:
+        unregister_external_refresh = register_external_refresh(refresh_external_config)
+    win.bind("<Destroy>", release_on_destroy, add="+")
 
     def close():
         global _active_security_settings_refs
@@ -83,11 +118,15 @@ def open_security_settings_dialog(
 
     def apply_permissions(next_permissions):
         nonlocal permissions
+        if not window_exists():
+            return False
         previous_permissions = dict(permissions)
         try:
             if on_change(next_permissions) is False:
                 raise RuntimeError("配置保存失败")
         except Exception as exc:
+            if not window_exists():
+                return False
             for category, value in previous_permissions.items():
                 permission_vars[category].set(value)
             messagebox.showerror(
@@ -98,9 +137,8 @@ def open_security_settings_dialog(
             return False
 
         permissions = dict(next_permissions)
-        for category, value in permissions.items():
-            permission_vars[category].set(value)
-        status_var.set(cloud_sensitive_commands_status(permissions))
+        if window_exists():
+            refresh_external_config()
         return True
 
     def set_all(enabled):
@@ -146,7 +184,6 @@ def open_security_settings_dialog(
         options_frame.grid_columnconfigure(column, weight=1)
 
     def toggle(category):
-        nonlocal permissions
         next_enabled = bool(permission_vars[category].get())
         previous_enabled = bool(permissions[category])
         if next_enabled == previous_enabled:
@@ -162,8 +199,10 @@ def open_security_settings_dialog(
                 f"即将允许云端执行：{spec.label}\n\n{spec.description}\n\n确认继续开启吗？",
                 parent=win,
             )
+            if not window_exists():
+                return False
             if not confirmed:
-                permission_vars[category].set(previous_enabled)
+                permission_vars[category].set(permissions[category])
                 return False
 
         next_permissions = dict(permissions)
@@ -199,6 +238,7 @@ def open_security_settings_dialog(
         "toggle": toggle,
         "set_all": set_all,
         "close": close,
+        "refresh": refresh_external_config,
     }
     _active_security_settings_refs = refs
 

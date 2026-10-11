@@ -69,6 +69,10 @@ def open_security_settings_namespace_runtime(
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_security_settings_dialog"],
         log_error=namespace.get("log_file_only"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "security", callback,
+        ),
+        get_permissions=lambda: namespace.get("CLOUD_SENSITIVE_COMMAND_PERMISSIONS", {}),
     )
 
 

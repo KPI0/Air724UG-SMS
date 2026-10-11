@@ -5,6 +5,7 @@ from sms_core.cloud_command_security import (
     LEGACY_PERMISSION_OPTIONS,
     cloud_sensitive_commands_status,
     normalize_cloud_command_permissions,
+    read_cloud_command_permissions,
 )
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
 from sms_ui.sms_font_dialog import validated_tk_color
@@ -101,6 +102,8 @@ def open_security_settings_runtime(
     center_window,
     open_dialog,
     log_error=None,
+    register_external_refresh=None,
+    get_permissions=None,
 ):
     def change(permissions):
         normalized = normalize_cloud_command_permissions(permissions)
@@ -112,15 +115,22 @@ def open_security_settings_runtime(
         ):
             system_ui(_save_failed_status(), "normal")
             return False
-        set_permissions(normalized)
-        system_ui("🔐 " + cloud_sensitive_commands_status(normalized), "normal")
+        committed = read_cloud_command_permissions(config)
+        set_permissions(committed)
+        system_ui("🔐 " + cloud_sensitive_commands_status(committed), "normal")
         return True
 
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+    if get_permissions is not None:
+        refresh_options["get_permissions"] = get_permissions
     return open_dialog(
         parent,
         normalize_cloud_command_permissions(current_permissions),
         change,
         center_window,
+        **refresh_options,
     )
 
 

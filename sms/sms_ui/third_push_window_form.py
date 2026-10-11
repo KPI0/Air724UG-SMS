@@ -507,4 +507,23 @@ def build_action_buttons(frame, save_command, test_command, close_command, statu
     save_button.pack(side="left", padx=(0, 8))
     ttk.Button(button_group, text="测试推送", width=10, command=test_command).pack(side="left", padx=(0, 8))
     ttk.Button(button_group, text="关闭", width=10, command=close_command).pack(side="left")
+    if status_var is not None:
+        stacked = None
+
+        def arrange_status(event):
+            nonlocal stacked
+            next_stacked = event.width < button_group.winfo_reqwidth() + 240 + 8
+            if next_stacked == stacked:
+                return
+            stacked = next_stacked
+            status_label.pack_forget()
+            button_group.pack_forget()
+            if stacked:
+                status_label.pack(side="top", fill="x", pady=(0, 4))
+                button_group.pack(side="right")
+            else:
+                button_group.pack(side="right")
+                status_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        btn_frame.bind("<Configure>", arrange_status)
     return {"frame": btn_frame, "save_button": save_button}

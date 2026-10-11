@@ -1,6 +1,12 @@
 ﻿import unittest
 
 from types import SimpleNamespace
+from datetime import datetime, timedelta
+import threading
+
+from sms_core.call_session import IncomingCallSessionTracker
+from sms_core.cloud_message_runtime import handle_device_call_state_runtime
+from sms_ui.thread_runtime import run_on_ui_thread
 
 from sms_ui.call_popup_namespace_runtime import (
     close_call_popup_namespace_runtime,
@@ -28,6 +34,90 @@ from sms_ui.call_popup_namespace_runtime import (
 
 
 class CallPopupNamespaceRuntimeTests(unittest.TestCase):
+    def queued_terminal_case(self, *, local_session=True, show_popup=True, peer_session=""):
+        now = [datetime(2026, 1, 1)]
+        tracker = IncomingCallSessionTracker(now_func=lambda: now[0])
+        tracker.start("10086")
+        queued, destroyed, missed = [], [], []
+
+        def make_popup(session):
+            return SimpleNamespace(
+                _call_popup_session_id=session,
+                _call_popup_caller_num="10086",
+                winfo_exists=lambda: True,
+                destroy=lambda: destroyed.append(session),
+            )
+
+        session = "incoming:desktop:old" if local_session else ""
+        namespace = {
+            "INCOMING_CALL_SESSION": tracker,
+            "current_call_popup": make_popup(session) if show_popup else None,
+            "call_popup_active_session_id": session,
+            "ui_post": queued.append,
+            "run_on_ui_thread": run_on_ui_thread,
+            "show_missed_call_popup": missed.append,
+        }
+        if peer_session:
+            register_peer_incoming_call_namespace_runtime(namespace, peer_session, "10086")
+
+        def receive():
+            handle_device_call_state_runtime(
+                {"type": "device_call_state", "direction": "incoming", "phase": "ended",
+                 "phone": "10086", "call_session_id": peer_session},
+                runtime_imei=lambda: "123456789012345",
+                finish_call=lambda *args, **kwargs: finish_remote_incoming_call_namespace_runtime(
+                    namespace, *args, **kwargs),
+            )
+
+        worker = threading.Thread(target=receive)
+        worker.start()
+        worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(queued), 1)
+        return namespace, now, queued, destroyed, missed, make_popup
+
+    def test_queued_legacy_terminal_preserves_same_number_redial(self):
+        for local_session, show_popup in ((True, True), (False, True), (False, False)):
+            with self.subTest(local_session=local_session, show_popup=show_popup):
+                namespace, now, queued, destroyed, missed, make_popup = self.queued_terminal_case(
+                    local_session=local_session, show_popup=show_popup)
+                tracker = namespace["INCOMING_CALL_SESSION"]
+                tracker.finish()
+                now[0] += timedelta(seconds=1)
+                tracker.start("10086")
+                new_id = "incoming:desktop:new" if local_session else ""
+                new_popup = make_popup(new_id) if show_popup else None
+                namespace.update(current_call_popup=new_popup, call_popup_active_session_id=new_id)
+                self.assertFalse(queued.pop()())
+                self.assertIs(namespace["current_call_popup"], new_popup)
+                self.assertEqual(namespace["call_popup_active_session_id"], new_id)
+                self.assertEqual(tracker.snapshot().started_at, now[0])
+                self.assertEqual(destroyed, [])
+                self.assertEqual(missed, [])
+
+    def test_queued_terminal_finishes_unchanged_call_and_late_popup(self):
+        for peer, show_popup in (("", True), ("", False), ("incoming:firmware:old", True)):
+            with self.subTest(peer=peer, show_popup=show_popup):
+                namespace, _now, queued, destroyed, missed, make_popup = self.queued_terminal_case(
+                    show_popup=show_popup, peer_session=peer)
+                if not show_popup:
+                    namespace["current_call_popup"] = make_popup("incoming:desktop:old")
+                self.assertTrue(queued.pop()())
+                self.assertIsNone(namespace["current_call_popup"])
+                self.assertEqual(namespace["INCOMING_CALL_SESSION"].snapshot().caller_num, "")
+                self.assertEqual(destroyed, ["incoming:desktop:old"])
+                self.assertEqual(len(missed), 1)
+
+    def test_queued_peer_terminal_preserves_replaced_local_session(self):
+        namespace, _now, queued, destroyed, missed, make_popup = self.queued_terminal_case(
+            peer_session="incoming:firmware:old")
+        new_popup = make_popup("incoming:desktop:new")
+        namespace.update(current_call_popup=new_popup, call_popup_active_session_id="incoming:desktop:new")
+        self.assertFalse(queued.pop()())
+        self.assertIs(namespace["current_call_popup"], new_popup)
+        self.assertEqual(destroyed, [])
+        self.assertEqual(missed, [])
+
     def base_namespace(self):
         tracker = SimpleNamespace(
             start=lambda caller_num: ("start", caller_num),

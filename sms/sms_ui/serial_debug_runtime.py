@@ -119,7 +119,21 @@ def start_serial_debug_append_loop(
     get_drop_count,
     interval_ms=100,
 ):
+    timer = None
+
+    def schedule_next():
+        nonlocal timer
+        timer = window.after(interval_ms, append_lines)
+
+    def cancel_on_destroy(event):
+        nonlocal timer
+        if event.widget is window and timer is not None:
+            window.after_cancel(timer)
+            timer = None
+
     def append_lines():
+        nonlocal timer
+        timer = None
         text_widget = get_text_widget()
         if text_widget is None or not text_widget.winfo_exists():
             return
@@ -128,7 +142,7 @@ def start_serial_debug_append_loop(
         if paused_var.get():
             _update_drop_label(drop_label, drop_count)
             try:
-                window.after(interval_ms, append_lines)
+                schedule_next()
             except Exception:
                 return
             return
@@ -145,10 +159,11 @@ def start_serial_debug_append_loop(
         _update_drop_label(drop_label, drop_count)
 
         try:
-            window.after(interval_ms, append_lines)
+            schedule_next()
         except Exception:
             return
 
+    window.bind("<Destroy>", cancel_on_destroy, add="+")
     append_lines()
     return append_lines
 

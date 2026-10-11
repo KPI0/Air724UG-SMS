@@ -107,6 +107,12 @@ class SettingsNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["open_dialog"], "security_dialog")
         forwarded["set_permissions"]({"sms": True})
         self.assertEqual(namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"], {"sms": True})
+        self.assertEqual(forwarded["get_permissions"](), {"sms": True})
+        refresh = lambda: None
+        self.assertEqual(
+            forwarded["register_external_refresh"](refresh),
+            ("unregister", "security", refresh),
+        )
 
     def test_open_serial_setting_namespace_runtime_forwards_and_sets_serial_state(self):
         namespace = self.base_namespace()

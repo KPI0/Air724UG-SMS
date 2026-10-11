@@ -345,6 +345,29 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(refreshes, ["keywords", "call_filter"])
 
+    def test_reload_notifies_security_window_after_permissions_change(self):
+        namespace = self.make_namespace()
+        observed = []
+        unregister = register_config_sync_refresher_namespace_runtime(
+            namespace, "security",
+            lambda: observed.append(dict(namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"])),
+        )
+        snapshot = self.disk_snapshot()
+        snapshot["cloud_control"] = {"allow_sensitive_sn": "1"}
+
+        def load_snapshot(_path):
+            return {section: dict(values) for section, values in snapshot.items()}
+
+        reload_shared_ui_config_namespace_runtime(namespace, load_snapshot=load_snapshot)
+        self.assertEqual(len(observed), 1)
+        self.assertTrue(observed[0]["sn"])
+        snapshot["cloud_control"]["allow_sensitive_sn"] = "0"
+        reload_shared_ui_config_namespace_runtime(namespace, load_snapshot=load_snapshot)
+        self.assertEqual(len(observed), 2)
+        self.assertFalse(observed[1]["sn"])
+        unregister()
+        self.assertNotIn("security", namespace["_CONFIG_SYNC_REFRESHERS"])
+
     def test_start_watch_forwards_ui_lifecycle_and_callback(self):
         namespace = self.make_namespace()
         captured = {}

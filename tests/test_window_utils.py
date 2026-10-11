@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from sms_ui.window_utils import sync_and_focus_existing_window
+from sms_ui.window_utils import fit_window_position, sync_and_focus_existing_window
 
 
 class FakeWindow:
@@ -35,6 +36,16 @@ class FakeWindow:
 
 
 class WindowUtilsTests(unittest.TestCase):
+    def test_position_uses_secondary_monitor_work_area_and_window_frame(self):
+        with patch("sms_ui.window_utils._window_work_area", return_value=(-1920, -100, 0, 940, 18, 47)):
+            self.assertEqual(fit_window_position(None, None, 800, 600, -200, 700), (-818, 293))
+            self.assertEqual(fit_window_position(None, None, 800, 600, -2200, -500), (-1920, -100))
+            self.assertEqual(fit_window_position(None, None, 800, 600, -1500, 100), (-1500, 100))
+
+    def test_oversized_window_keeps_title_bar_in_work_area(self):
+        with patch("sms_ui.window_utils._window_work_area", return_value=(0, 0, 1024, 728, 18, 47)):
+            self.assertEqual(fit_window_position(None, None, 1200, 900, -88, -50), (0, 0))
+
     def test_sync_and_focus_existing_window_returns_false_for_missing_window(self):
         self.assertFalse(sync_and_focus_existing_window(None, "_sync"))
         self.assertFalse(sync_and_focus_existing_window(FakeWindow(exists=False), "_sync"))

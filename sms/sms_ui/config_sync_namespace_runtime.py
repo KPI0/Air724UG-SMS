@@ -243,6 +243,7 @@ def reload_shared_ui_config_namespace_runtime(
     namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"] = command_permissions
     if security_changed:
         changed_groups.append("安全设置")
+        _notify_config_sync_refreshers(namespace, "security")
 
     if changed_groups:
         try:

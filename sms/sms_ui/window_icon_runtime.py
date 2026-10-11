@@ -24,10 +24,15 @@ def install_window_icon_runtime(
 
         def patched_toplevel(*args, **kwargs):
             window = original_toplevel(*args, **kwargs)
-            try:
-                window.after(0, lambda w=window: apply_window_icon(w))
-            except Exception:
-                apply_window_icon(window)
+
+            def on_map(event):
+                if event.widget is window:
+                    window.unbind("<Map>", binding)
+                    apply_window_icon(window)
+
+            # On Windows, iconbitmap can map a new window before its caller
+            # has hidden, titled or sized it. Wait for its first actual map.
+            binding = window.bind("<Map>", on_map, add="+")
             return window
 
         tk_module.Toplevel = patched_toplevel

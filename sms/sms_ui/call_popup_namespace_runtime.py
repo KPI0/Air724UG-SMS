@@ -593,6 +593,8 @@ def finish_remote_incoming_call_namespace_runtime(
         if peer_binding is None or peer_binding["local_session_id"] not in ("", popup_session_id):
             return False
 
+    expected_local_session = active_session_id or popup_session_id
+
     def finish_on_ui():
         current_popup = namespace.get("current_call_popup")
         current_active = str(
@@ -605,6 +607,11 @@ def finish_remote_incoming_call_namespace_runtime(
             getattr(current_popup, "_call_popup_caller_num", "") or ""
         ).strip() if current_popup is not None else ""
         live_snapshot = namespace["INCOMING_CALL_SESSION"].snapshot()
+        # A terminal frame can wait in the UI queue while the same caller redials.
+        if expected_local_session and (current_active or current_popup_session) != expected_local_session:
+            return False
+        if getattr(live_snapshot, "started_at", None) != getattr(snapshot, "started_at", None):
+            return False
         live_caller = current_popup_caller or str(live_snapshot.caller_num or "").strip()
         if not live_caller or (caller_text and caller_text != live_caller):
             return False

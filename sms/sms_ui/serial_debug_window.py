@@ -88,6 +88,9 @@ def open_serial_debug_window_dialog(
     )
     chk.pack(side="left")
 
+    toolbar = ttk.Frame(top)
+    toolbar.pack(side="left", fill="x", expand=True)
+
     all_debug_lines = []
 
     def clear_text():
@@ -96,20 +99,22 @@ def open_serial_debug_window_dialog(
         serial_text.delete("1.0", "end")
         serial_text.config(state="disabled")
 
-    ttk.Button(top, text="清空", width=8, command=clear_text).pack(side="left", padx=8)
+    btn_clear = ttk.Button(toolbar, text="清空", width=8, command=clear_text)
+    btn_clear.pack(side="left", padx=8)
 
     paused_var = tk.BooleanVar(value=False)
-    btn_pause = ttk.Button(top, text="⏸ 暂停", width=8)
+    btn_pause = ttk.Button(toolbar, text="⏸ 暂停", width=8)
     btn_pause.pack(side="left")
 
-    right_frame = ttk.Frame(top)
-    right_frame.pack(side="right", padx=(8, 8))
+    right_frame = ttk.Frame(toolbar)
+    right_frame.pack(side="right", padx=8)
+    right_frame.grid_columnconfigure(1, weight=1)
 
     filter_var = tk.StringVar(value="")
 
     ttk.Label(right_frame, text="筛选：").grid(row=0, column=0, padx=(0, 4))
     filter_entry = ttk.Entry(right_frame, textvariable=filter_var, width=16)
-    filter_entry.grid(row=0, column=1, padx=(0, 6))
+    filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 6))
 
     def redraw_by_filter():
         redraw_serial_debug_filter(serial_text, all_debug_lines, filter_var.get().strip())
@@ -138,20 +143,28 @@ def open_serial_debug_window_dialog(
     state_label = ttk.Label(serial_status_bar, text="")
     state_label.pack(side="left")
 
-    drop_label = ttk.Label(top, text="")
+    drop_label = ttk.Label(serial_status_bar, text="")
     drop_label.pack(side="right")
 
     send_frame = ttk.Frame(win)
     send_frame.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
 
+    # Native Tab order follows creation order, independently of packing order.
     send_var = tk.StringVar()
-    ttk.Label(send_frame, text="发送指令：").pack(side="left")
-
+    send_label = ttk.Label(send_frame, text="发送指令：")
     send_entry = ttk.Entry(send_frame, textvariable=send_var)
+
+    send_actions = ttk.Frame(send_frame)
+    send_actions.pack(side="right")
+    send_actions.grid_columnconfigure(1, weight=1)
+
+    send_label.pack(side="left")
     send_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
     crlf_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(send_frame, text="加回车换行(\\r\\n)", variable=crlf_var).pack(side="left", padx=(0, 8))
+    ttk.Checkbutton(send_actions, text="加回车换行(\\r\\n)", variable=crlf_var).grid(
+        row=0, column=0, padx=(0, 8), sticky="w",
+    )
 
     def send_cmd(_event=None):
         if not enabled_var.get():
@@ -173,8 +186,8 @@ def open_serial_debug_window_dialog(
             )
         return "break"
 
-    btn_send = ttk.Button(send_frame, text="发送", width=8, command=send_cmd)
-    btn_send.pack(side="left")
+    btn_send = ttk.Button(send_actions, text="发送", width=8, command=send_cmd)
+    btn_send.grid(row=0, column=2)
 
     def quick_send(cmd):
         send_var.set(cmd)
@@ -203,8 +216,8 @@ def open_serial_debug_window_dialog(
             log_error=log_error,
         )
 
-    btn_quick = ttk.Button(send_frame, text="快捷命令 ▶")
-    btn_quick.pack(side="left", padx=(8, 0))
+    btn_quick = ttk.Button(send_actions, text="快捷命令 ▶")
+    btn_quick.grid(row=0, column=3, padx=(8, 0))
 
     send_entry.bind("<Return>", send_cmd)
 
@@ -321,6 +334,32 @@ def open_serial_debug_window_dialog(
     win.protocol("WM_DELETE_WINDOW", on_close)
     win.bind("<Escape>", lambda _e: on_close())
 
+    layout_modes = None
+
+    def fit_toolbars(_event=None):
+        nonlocal layout_modes
+        top_width = (chk.winfo_reqwidth() + btn_clear.winfo_reqwidth()
+                     + btn_pause.winfo_reqwidth() + right_frame.winfo_reqwidth() + 32)
+        send_width = send_label.winfo_reqwidth() + send_entry.winfo_reqwidth() + send_actions.winfo_reqwidth() + 8
+        modes = (top.winfo_width() < top_width, send_frame.winfo_width() < send_width)
+        if modes != layout_modes:
+            top_wrapped, send_wrapped = modes
+            chk.pack_configure(side="top" if top_wrapped else "left", anchor="w")
+            toolbar.pack_configure(side="top" if top_wrapped else "left", pady=(4, 0) if top_wrapped else 0)
+            right_frame.pack_configure(fill="x" if top_wrapped else "none", expand=top_wrapped)
+            send_actions.pack_configure(
+                side="bottom" if send_wrapped else "right",
+                fill="x" if send_wrapped else "none",
+                pady=(4, 0) if send_wrapped else 0,
+            )
+            layout_modes = modes
+        # Reserve a usable output/quick-panel area beneath the current rows.
+        min_height = (top.winfo_reqheight() + serial_status_bar.winfo_reqheight()
+                      + send_frame.winfo_reqheight() + 3 * btn_send.winfo_reqheight() + 36)
+        win.minsize(800, max(300, min_height))
+
+    top.bind("<Configure>", fit_toolbars, add="+")
+    send_frame.bind("<Configure>", fit_toolbars, add="+")
     win.update_idletasks()
     try:
         center_window(win, parent)

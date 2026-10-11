@@ -62,6 +62,29 @@ def protect_main_text_widget_runtime(text_widget):
     return text_widget
 
 
+def _flow_status_labels(root, frame, labels):
+    def layout(_event=None):
+        available = max(1, frame.winfo_width() - 12)
+        x, y, row_height = 6, 0, 0
+        for label in labels:
+            label.configure(wraplength=max(1, available - 4), justify="left")
+            width = min(available, label.winfo_reqwidth())
+            height = label.winfo_reqheight()
+            if x > 6 and x + width > available + 6:
+                x, y, row_height = 6, y + row_height, 0
+            label.place(x=x, y=y, width=width, height=height)
+            x += width + 20
+            row_height = max(row_height, height)
+        frame.configure(height=y + row_height)
+        root.minsize(root.minsize()[0], max(200, y + row_height + 80))
+
+    # Label size changes also cover updated text and named fonts. Widget-owned
+    # bindings are released on destruction; no variable traces or timers remain.
+    frame.bind("<Configure>", layout, add="+")
+    for label in labels:
+        label.bind("<Configure>", layout, add="+")
+
+
 def build_main_window_layout_runtime(root, tk_module, *, cloud_enabled, scrolled_text_class=ScrolledText):
     root.grid_rowconfigure(0, weight=1)
     root.grid_rowconfigure(1, weight=0)
@@ -79,19 +102,16 @@ def build_main_window_layout_runtime(root, tk_module, *, cloud_enabled, scrolled
 
     status_var = tk_module.StringVar(value="🔍 启动中…")
     status_label = tk_module.Label(status_frame, textvariable=status_var, anchor="w")
-    status_label.pack(side=tk_module.LEFT, padx=6)
 
     temp_var = tk_module.StringVar(value="🌡️ -- ℃")
     temp_label = tk_module.Label(status_frame, textvariable=temp_var, anchor="w", fg="#008000")
-    temp_label.pack(side=tk_module.LEFT, padx=(20, 6))
 
     signal_var = tk_module.StringVar(value="📶 -- dBm")
     signal_label = tk_module.Label(status_frame, textvariable=signal_var, anchor="w", fg="#008000")
-    signal_label.pack(side=tk_module.LEFT, padx=(20, 6))
 
     cloud_var = tk_module.StringVar(value="🌐 等待连接" if cloud_enabled else "🌐 已关闭")
     cloud_label = tk_module.Label(status_frame, textvariable=cloud_var, anchor="w", fg="#666666")
-    cloud_label.pack(side=tk_module.LEFT, padx=(20, 6))
+    _flow_status_labels(root, status_frame, (status_label, temp_label, signal_label, cloud_label))
 
     return {
         "main_frame": main_frame,

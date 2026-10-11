@@ -34,6 +34,12 @@ class FakeWidget:
     def grid(self, *args, **kwargs):
         return None
 
+    def grid_columnconfigure(self, *args, **kwargs):
+        return None
+
+    def winfo_reqheight(self):
+        return 24
+
     def config(self, *args, **kwargs):
         self.kwargs.update(kwargs)
 

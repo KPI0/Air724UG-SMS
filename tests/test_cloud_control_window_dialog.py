@@ -34,6 +34,12 @@ class FakeWindow:
     def update_idletasks(self):
         pass
 
+    def winfo_reqwidth(self):
+        return 540
+
+    def winfo_reqheight(self):
+        return 260
+
     def deiconify(self):
         pass
 

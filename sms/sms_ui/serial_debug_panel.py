@@ -116,34 +116,55 @@ def create_serial_debug_body(parent, quick_send, manual_operator_switch=None):
     quick_panel = ttk.LabelFrame(body, text="常用指令")
     quick_canvas = tk.Canvas(quick_panel, highlightthickness=0, width=330)
     quick_scrollbar = ttk.Scrollbar(quick_panel, orient="vertical", command=quick_canvas.yview)
+    quick_xscrollbar = ttk.Scrollbar(quick_panel, orient="horizontal", command=quick_canvas.xview)
     quick_scroll_frame = ttk.Frame(quick_canvas)
 
     quick_scroll_window = quick_canvas.create_window((0, 0), window=quick_scroll_frame, anchor="nw")
-    quick_canvas.configure(yscrollcommand=quick_scrollbar.set)
+    quick_canvas.configure(yscrollcommand=quick_scrollbar.set, xscrollcommand=quick_xscrollbar.set)
 
+    quick_xscrollbar.pack(side="bottom", fill="x")
     quick_scrollbar.pack(side="right", fill="y")
     quick_canvas.pack(side="left", fill="both", expand=True)
 
-    quick_scroll_frame.bind(
-        "<Configure>",
-        lambda _e: quick_canvas.configure(scrollregion=quick_canvas.bbox("all")),
-    )
-    quick_canvas.bind(
-        "<Configure>",
-        lambda e: quick_canvas.itemconfig(quick_scroll_window, width=e.width),
-    )
-
-    def bind_mousewheel(_event):
-        quick_canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: quick_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+    def resize_quick_content(_event=None):
+        quick_canvas.itemconfig(
+            quick_scroll_window,
+            width=max(quick_canvas.winfo_width(), quick_scroll_frame.winfo_reqwidth()),
         )
+        quick_canvas.configure(scrollregion=quick_canvas.bbox("all"))
 
-    def unbind_mousewheel(_event):
-        quick_canvas.unbind_all("<MouseWheel>")
+    quick_scroll_frame.bind("<Configure>", resize_quick_content)
+    quick_canvas.bind("<Configure>", resize_quick_content)
 
-    quick_canvas.bind("<Enter>", bind_mousewheel)
-    quick_canvas.bind("<Leave>", unbind_mousewheel)
+    def reveal_quick_focus(event):
+        widget = event.widget
+        if widget.master is not quick_scroll_frame:
+            return
+        top = widget.winfo_y()
+        bottom = top + widget.winfo_height()
+        visible_top = quick_canvas.canvasy(0)
+        height = quick_canvas.winfo_height()
+        content_height = max(1, quick_scroll_frame.winfo_height())
+        if top < visible_top or widget.winfo_height() > height:
+            quick_canvas.yview_moveto(top / content_height)
+        elif bottom > visible_top + height:
+            quick_canvas.yview_moveto((bottom - height) / content_height)
+        quick_canvas.xview_moveto(0)
+
+    parent.bind("<FocusIn>", reveal_quick_focus, add="+")
+
+    def scroll_quick_panel(event):
+        widget = event.widget
+        while widget is not None and widget is not parent:
+            if widget is quick_panel:
+                delta = (-1 if event.num == 4 else 1) if event.num in (4, 5) else -int(event.delta / 120)
+                quick_canvas.yview_scroll(delta, "units")
+                return "break"
+            widget = widget.master
+
+    parent.bind("<MouseWheel>", scroll_quick_panel, add="+")
+    parent.bind("<Button-4>", scroll_quick_panel, add="+")
+    parent.bind("<Button-5>", scroll_quick_panel, add="+")
 
     for cmd, desc in COMMON_SERIAL_COMMANDS:
         ttk.Button(
@@ -387,11 +408,6 @@ def reset_serial_debug_window_state(
 
     try:
         all_lines.clear()
-    except Exception:
-        pass
-
-    try:
-        window.unbind_all("<MouseWheel>")
     except Exception:
         pass
 

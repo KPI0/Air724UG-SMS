@@ -54,7 +54,7 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
     preview_canvas.grid(row=0, column=0, sticky="ew")
 
     def refresh_preview():
-        preview_canvas.update()
+        preview_canvas.update_idletasks()
         try:
             size = int(size_var.get().strip())
         except Exception:
@@ -94,7 +94,6 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
         if color is None:
             color = validated_tk_color(win, current_color) or "#ff0000"
         win.lift()
-        win.after(0, lambda: win.lift())
 
         try:
             win.grab_release()
@@ -104,12 +103,17 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
         chosen = colorchooser.askcolor(parent=win, initialcolor=color, title="选择短信颜色")
 
         try:
+            if not win.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        try:
             win.grab_set()
         except Exception:
             pass
 
         win.lift()
-        win.after(0, lambda: win.lift())
 
         if chosen and chosen[1]:
             color_var.set(chosen[1])
@@ -172,7 +176,7 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
     win.deiconify()
     win.lift()
     win.focus_force()
-    win.after(0, refresh_preview)
+    refresh_preview()
     size_spin.focus_set()
     win.bind("<Return>", lambda _e: save())
     win.bind("<Escape>", lambda _e: win.destroy())

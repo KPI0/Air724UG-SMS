@@ -33,7 +33,7 @@ def open_third_push_window_dialog(
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("三方推送")
-    win.geometry("780x580")
+    win.geometry("860x580")
     win.minsize(680, 520)
     win.resizable(True, True)
 
@@ -108,6 +108,20 @@ def open_third_push_window_dialog(
     win.protocol("WM_DELETE_WINDOW", close)
     win.bind("<Escape>", lambda _e: close())
     form.select_channel(form.current_channel)
+    win.update_idletasks()
+    # Fixed controls must leave a usable viewport for the independently scrolling form.
+    fixed_rows = [
+        child for child in frame.winfo_children()
+        if int(child.grid_info()["row"]) != 2
+    ]
+    fixed_height = sum(
+        frame.grid_bbox(0, int(child.grid_info()["row"]))[3]
+        for child in fixed_rows
+    )
+    win.minsize(
+        max(680, max(child.winfo_reqwidth() for child in fixed_rows) + 24),
+        max(520, fixed_height + form.param_box.winfo_reqheight() + 80 + 24 + 10),
+    )
     win.update_idletasks()
     center_window(win, parent)
     win.deiconify()

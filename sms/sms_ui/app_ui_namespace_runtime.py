@@ -14,6 +14,7 @@ from sms_ui.sms_font_dialog import validated_tk_color
 from sms_ui.thread_runtime import ui_messagebox_runtime
 from sms_ui.tray_runtime import create_tray_icon_runtime, stop_tray_icon_runtime
 from sms_ui.ui_log_runtime import clear_text_widget_runtime
+from sms_ui.window_utils import fit_window_position
 
 
 def _safe_log(namespace, message):
@@ -85,6 +86,7 @@ def center_on_screen_namespace_runtime(namespace, win, width=None, height=None):
     screen_height = win.winfo_screenheight()
     x = (screen_width - width) // 2
     y = (screen_height - height) // 2
+    x, y = fit_window_position(win, win, width, height, x, y)
     win.geometry(f"{width}x{height}+{x}+{y}")
 
 
@@ -95,9 +97,13 @@ def center_window_namespace_runtime(namespace, win, parent):
     if width <= 1 or height <= 1:
         width = win.winfo_reqwidth()
         height = win.winfo_reqheight()
+    min_width, min_height = win.minsize()
+    width = max(width, min_width)
+    height = max(height, min_height)
 
     x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
     y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+    x, y = fit_window_position(win, parent, width, height, x, y)
     win.geometry(f"+{x}+{y}")
 
 

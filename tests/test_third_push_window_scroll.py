@@ -104,6 +104,40 @@ class ThirdPushWindowScrollTests(unittest.TestCase):
         self.root.update()
         self.assert_visible(first)
 
+    def test_large_font_minimum_keeps_controls_and_parameter_viewport_usable(self):
+        self.win.destroy()
+        self.root.tk.call("tk", "scaling", 8 / 3)
+        for name in ("TkDefaultFont", "TkTextFont"):
+            self.root.tk.call("font", "configure", name, "-size", 12)
+        state = dict(enabled=False, sms_enabled=True, call_enabled=True,
+                     channels=[], settings=dict(THIRD_PUSH_DEFAULTS))
+        self.win = ui.open_third_push_window_dialog(
+            self.root, lambda: state, lambda *_: True, lambda *_: False,
+            lambda window: window.destroy(), lambda *_: None)
+        self.win.attributes("-alpha", 0)
+        self.form = self.win._sync_form_from_globals.__self__
+        self.win.geometry("680x520")
+        self.select("next-smtp-proxy")
+        status_label = next(widget for widget in descendants(self.win)
+                            if isinstance(widget, ttk.Label) and widget.cget("textvariable"))
+        for status in ("", "● 有未保存修改", "✅ 配置已保存，测试已加入队列"):
+            with self.subTest(status=status):
+                self.root.setvar(str(status_label.cget("textvariable")), status)
+                self.root.update()
+                self.assertGreaterEqual(self.form.param_canvas.winfo_height(), 80)
+                for control in descendants(self.win):
+                    if isinstance(control, (ttk.Button, ttk.Checkbutton)):
+                        self.assertTrue(control.winfo_ismapped())
+                        self.assertGreaterEqual(control.winfo_width(), control.winfo_reqwidth())
+                        self.assertLessEqual(control.winfo_rootx() + control.winfo_width(),
+                                             self.win.winfo_rootx() + self.win.winfo_width())
+                        self.assertLessEqual(control.winfo_rooty() + control.winfo_height(),
+                                             self.win.winfo_rooty() + self.win.winfo_height())
+                last = self.field("next_smtp_proxy_subject")
+                last.event_generate("<FocusIn>")
+                self.root.update()
+                self.assert_visible(last)
+
     def test_tab_navigation_skips_labels_and_reveals_parameters(self):
         self.select("next-smtp-proxy")
         first = self.field("next_smtp_proxy_api")

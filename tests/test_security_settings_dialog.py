@@ -60,6 +60,9 @@ class FakeWidget:
     def resizable(self, *_args):
         return None
 
+    def minsize(self, *_args):
+        return None
+
     def transient(self, parent):
         self.transient_parent = parent
         return None
@@ -90,7 +93,7 @@ class FakeWidget:
         self.protocols[name] = callback
         return None
 
-    def bind(self, *_args):
+    def bind(self, *_args, **_kwargs):
         return None
 
     def destroy(self):

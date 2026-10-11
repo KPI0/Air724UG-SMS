@@ -1,4 +1,7 @@
 import configparser
+from pathlib import Path
+import tempfile
+import threading
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -24,6 +27,8 @@ from sms_ui.settings_runtime import (
     toggle_voice_broadcast_runtime,
 )
 from sms_core.cloud_command_security import CLOUD_COMMAND_PERMISSION_SPECS
+from sms_core.cloud_command_security import read_cloud_command_permissions
+from sms_core.config_runtime import remember_config_snapshot, safe_save_config_runtime
 
 
 class FakeTkParent:
@@ -133,6 +138,40 @@ class SettingsRuntimeTests(unittest.TestCase):
             for spec in CLOUD_COMMAND_PERMISSION_SPECS
         ))
         self.assertEqual(calls, ["saved"])
+
+    def test_security_save_publishes_committed_permissions_after_external_merge(self):
+        for external_enabled in (False, True):
+            with self.subTest(external_enabled=external_enabled), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "config.ini"
+                config = configparser.ConfigParser()
+                config["cloud_control"] = {spec.option: "1" if not external_enabled else "0"
+                                           for spec in CLOUD_COMMAND_PERMISSION_SPECS}
+                config.set("cloud_control", "allow_sensitive_commands", "0")
+                remember_config_snapshot(config)
+                external = configparser.ConfigParser()
+                external["cloud_control"] = {spec.option: "1" if external_enabled else "0"
+                                             for spec in CLOUD_COMMAND_PERMISSION_SPECS}
+                external.set("cloud_control", "allow_sensitive_commands", "0")
+                with path.open("w", encoding="utf-8") as stream:
+                    external.write(stream)
+                published, messages = [], []
+
+                def open_dialog(_parent, permissions, on_change, _center):
+                    permissions["sn"] = external_enabled
+                    self.assertTrue(on_change(permissions))
+
+                open_security_settings_runtime(
+                    None, read_cloud_command_permissions(config), config=config,
+                    safe_save=lambda: safe_save_config_runtime(config=config, config_file=str(path),
+                                                                config_lock=threading.RLock()),
+                    set_permissions=published.append, system_ui=lambda message, _tag: messages.append(message),
+                    center_window=None, open_dialog=open_dialog)
+                disk = configparser.ConfigParser()
+                disk.read(path, encoding="utf-8")
+                committed = read_cloud_command_permissions(disk)
+                self.assertEqual(published, [committed])
+                self.assertTrue(all(value == external_enabled for value in committed.values()))
+                self.assertIn("全部开启" if external_enabled else "全部关闭", messages[-1])
 
     def test_open_security_settings_runtime_saves_and_updates_state(self):
         config = configparser.ConfigParser()

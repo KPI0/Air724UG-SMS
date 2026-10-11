@@ -71,6 +71,7 @@ def open_cloud_control_window_dialog(
     win.protocol("WM_DELETE_WINDOW", close)
     win.bind("<Escape>", lambda _e: close())
     win.update_idletasks()
+    win.minsize(max(540, win.winfo_reqwidth()), max(260, win.winfo_reqheight()))
     center_window(win, parent)
     win.deiconify()
     win.lift()
