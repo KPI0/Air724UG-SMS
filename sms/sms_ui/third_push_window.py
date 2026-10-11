@@ -114,14 +114,24 @@ def open_third_push_window_dialog(
         child for child in frame.winfo_children()
         if int(child.grid_info()["row"]) != 2
     ]
-    fixed_height = sum(
-        frame.grid_bbox(0, int(child.grid_info()["row"]))[3]
-        for child in fixed_rows
-    )
-    win.minsize(
-        max(680, max(child.winfo_reqwidth() for child in fixed_rows) + 24),
-        max(520, fixed_height + form.param_box.winfo_reqheight() + 80 + 24 + 10),
-    )
+    minimum_width = max(680, max(child.winfo_reqwidth() for child in fixed_rows) + 24)
+
+    def fit_minimum_height(_event=None):
+        fixed_height = sum(
+            frame.grid_bbox(0, int(child.grid_info()["row"]))[3]
+            for child in fixed_rows
+        )
+        parameter_padding = form.param_box.winfo_reqheight() - max(
+            form.param_canvas.winfo_reqheight(), form.param_scrollbar.winfo_reqheight(),
+        )
+        minimum = (minimum_width, max(520, fixed_height + parameter_padding + 80 + 24 + 10))
+        if win.minsize() != minimum:
+            win.minsize(*minimum)
+
+    # The footer can gain a row after narrowing or changing status text.
+    action_refs["frame"].bind("<Configure>", fit_minimum_height, add="+")
+    form.param_canvas.bind("<Configure>", fit_minimum_height, add="+")
+    fit_minimum_height()
     win.update_idletasks()
     center_window(win, parent)
     win.deiconify()

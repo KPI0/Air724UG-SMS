@@ -117,6 +117,13 @@ class UiLayoutBoundsTests(unittest.TestCase):
         controls = self.debug_controls(win)
         controls["filter"].insert(0, "test filter")
         controls["send"].insert(0, "AT")
+        top_width = sum(widget.winfo_reqwidth() for widget in (
+            controls["启用原始输出旁路（不做任何过滤）"], controls["清空"],
+            controls["⏸ 暂停"], controls["filter"].master)) + 48
+        send_width = sum(widget.winfo_reqwidth()
+                         for widget in controls["send"].master.winfo_children()) + 24
+        wide_width = max(1800, top_width, send_width)
+        max_height = max(900, win.maxsize()[1])
         for _ in range(3):
             win.geometry("800x300")
             self.root.update()
@@ -125,8 +132,19 @@ class UiLayoutBoundsTests(unittest.TestCase):
             self.assertGreater(controls["发送"].winfo_rooty(), controls["send"].winfo_rooty())
             for widget in controls.values():
                 self.assert_visible(win, widget)
-            win.geometry("1800x520")
+            # A requested width can be clamped by a small CI desktop.
+            win.maxsize(1024, max_height)
+            win.geometry(f"{wide_width}x520")
             self.root.update()
+            self.assertEqual(win.winfo_width(), 1024)
+            self.assertGreater(controls["清空"].winfo_rooty(),
+                               controls["启用原始输出旁路（不做任何过滤）"].winfo_rooty())
+            for widget in controls.values():
+                self.assert_visible(win, widget)
+            win.maxsize(wide_width, max_height)
+            win.geometry(f"{wide_width}x520")
+            self.root.update()
+            self.assertEqual(win.winfo_width(), wide_width)
             self.assert_same_row(*(controls[name] for name in (
                 "启用原始输出旁路（不做任何过滤）", "清空", "⏸ 暂停", "filter", "清除筛选")))
             self.assert_same_row(*(controls[name] for name in (

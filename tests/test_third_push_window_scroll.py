@@ -105,6 +105,19 @@ class ThirdPushWindowScrollTests(unittest.TestCase):
         self.assert_visible(first)
 
     def test_large_font_minimum_keeps_controls_and_parameter_viewport_usable(self):
+        self.check_large_font_minimum()
+
+    def test_large_font_minimum_across_font_fallbacks_and_themes(self):
+        native_theme = ttk.Style(self.root).theme_use()
+        for family in ("Microsoft YaHei UI", "Segoe UI"):
+            for theme in dict.fromkeys((native_theme, "clam")):
+                with self.subTest(family=family, theme=theme):
+                    ttk.Style(self.root).theme_use(theme)
+                    for name in ("TkDefaultFont", "TkTextFont"):
+                        self.root.tk.call("font", "configure", name, "-family", family)
+                    self.check_large_font_minimum()
+
+    def check_large_font_minimum(self):
         self.win.destroy()
         self.root.tk.call("tk", "scaling", 8 / 3)
         for name in ("TkDefaultFont", "TkTextFont"):
