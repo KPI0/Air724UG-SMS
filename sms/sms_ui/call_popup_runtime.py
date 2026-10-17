@@ -46,10 +46,16 @@ def close_call_popup_app_runtime(
     log_error=None,
     close_runtime=close_call_popup_runtime,
 ):
+    popup = get_popup()
+
+    def set_if_current(window):
+        if get_popup() is popup:
+            set_popup(window)
+
     def close_on_ui():
         if log_error is None:
-            return close_runtime(get_popup(), set_popup)
-        return close_runtime(get_popup(), set_popup, log_error=log_error)
+            return close_runtime(popup, set_if_current)
+        return close_runtime(popup, set_if_current, log_error=log_error)
 
     return run_on_ui_thread(close_on_ui, ui_post)
 

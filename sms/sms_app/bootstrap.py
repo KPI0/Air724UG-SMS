@@ -665,6 +665,7 @@ def _install_cloud_and_serial_bindings():
     globals()["call_popup_pending_peer_connected"] = None
     globals()["call_popup_pending_peer_terminal"] = None
     globals()["call_popup_pending_peer_incoming"] = None
+    globals()["call_popup_retired_peer_sessions"] = {}
     INCOMING_CALL_SESSION = IncomingCallSessionTracker()
     install_serial_namespace_bindings(globals())
 

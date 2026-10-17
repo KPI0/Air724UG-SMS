@@ -3,12 +3,17 @@
 from types import SimpleNamespace
 from datetime import datetime, timedelta
 import threading
+import itertools
+import gc
+import tkinter as tk
 
-from sms_core.call_session import IncomingCallSessionTracker
+from sms_core.call_session import IncomingCallSessionTracker, MissedCall
 from sms_core.cloud_message_runtime import handle_device_call_state_runtime
 from sms_ui.thread_runtime import run_on_ui_thread
 
 from sms_ui.call_popup_namespace_runtime import (
+    RETIRED_PEER_CALL_MAX_ENTRIES,
+    RETIRED_PEER_CALL_TTL_SECONDS,
     close_call_popup_namespace_runtime,
     close_missed_call_popup_namespace_runtime,
     close_phone_popups_namespace_runtime,
@@ -34,6 +39,243 @@ from sms_ui.call_popup_namespace_runtime import (
 
 
 class CallPopupNamespaceRuntimeTests(unittest.TestCase):
+    def test_replayed_finished_peer_call_cannot_remove_next_ringing_popup(self):
+        for order in itertools.permutations(("incoming", "connected", "ended")):
+            with self.subTest(order=order):
+                namespace = self.base_namespace()
+                tracker = IncomingCallSessionTracker()
+                namespace.update(INCOMING_CALL_SESSION=tracker, current_call_popup=None)
+                missed, destroyed = [], []
+                namespace["show_missed_call_popup"] = missed.append
+
+                def show(**kwargs):
+                    popup = SimpleNamespace(
+                        _call_popup_caller_num="10086", winfo_exists=lambda: True,
+                        destroy=lambda: destroyed.append(popup),
+                        _call_popup_mark_connected=lambda: tracker.mark_handled(),
+                    )
+                    kwargs["set_popup"](popup)
+                    return popup
+
+                for generation in range(1, 6):
+                    tracker.start("10086")
+                    popup = show_call_popup_namespace_runtime(
+                        namespace, "10086", f"local-{generation}", show_app_runtime=show)
+                    if generation > 1:
+                        for phase in order:
+                            handle_device_call_state_runtime(
+                                {"type": "device_call_state", "direction": "incoming",
+                                 "phone": "10086", "phase": phase,
+                                 "call_session_id": f"peer-{generation - 1}"},
+                                runtime_imei=lambda: "000000000000001",
+                                register_incoming=lambda *args: register_peer_incoming_call_namespace_runtime(namespace, *args),
+                                mark_peer_call_connected=lambda *args: mark_peer_incoming_call_connected_namespace_runtime(namespace, *args),
+                                finish_call=lambda *args, **kwargs: finish_remote_incoming_call_namespace_runtime(namespace, *args, **kwargs),
+                            )
+                        self.assertIs(namespace["current_call_popup"], popup)
+                        self.assertEqual(namespace["call_popup_active_session_id"], f"local-{generation}")
+                        self.assertEqual(tracker.snapshot().caller_num, "10086")
+                        self.assertFalse(tracker.snapshot().handled)
+                        self.assertEqual(missed, [])
+                    self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                        namespace, f"peer-{generation}", "10086"))
+                    finish_incoming_call_session_namespace_runtime(namespace)
+                    close_call_popup_namespace_runtime(namespace)
+                self.assertEqual(len(destroyed), 5)
+
+    def test_remote_finish_and_reset_do_not_revive_finished_peer(self):
+        for finish_remote in (True, False):
+            with self.subTest(finish_remote=finish_remote):
+                namespace = self.base_namespace()
+                tracker = IncomingCallSessionTracker()
+                tracker.start("10086")
+                namespace.update(
+                    INCOMING_CALL_SESSION=tracker,
+                    call_popup_active_session_id="local-old",
+                    current_call_popup=None,
+                )
+                self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                    namespace, "peer-old", "10086"))
+                if finish_remote:
+                    self.assertTrue(finish_remote_incoming_call_namespace_runtime(
+                        namespace, session_id="peer-old", caller_num="10086"))
+                else:
+                    reset_incoming_call_session_namespace_runtime(namespace)
+
+                tracker.start("10086")
+                namespace["call_popup_active_session_id"] = "local-new"
+                self.assertFalse(register_peer_incoming_call_namespace_runtime(
+                    namespace, "peer-old", "10086"))
+                self.assertFalse(mark_peer_incoming_call_connected_namespace_runtime(
+                    namespace, "peer-old", "10086"))
+                self.assertFalse(finish_remote_incoming_call_namespace_runtime(
+                    namespace, session_id="peer-old", caller_num="10086"))
+                self.assertEqual(tracker.snapshot().caller_num, "10086")
+                self.assertFalse(tracker.snapshot().handled)
+                self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                    namespace, "peer-new", "10086"))
+                self.assertTrue(mark_peer_incoming_call_connected_namespace_runtime(
+                    namespace, "peer-new", "10086"))
+                connected = []
+                popup = SimpleNamespace(
+                    _call_popup_caller_num="10086",
+                    _call_popup_mark_connected=lambda: connected.append(True),
+                    winfo_exists=lambda: True,
+                    destroy=lambda: None,
+                )
+                namespace["mark_incoming_call_handled"] = tracker.mark_handled
+                set_call_popup_namespace_runtime(namespace, popup)
+                self.assertEqual(connected, [True])
+                self.assertTrue(tracker.snapshot().handled)
+                missed = []
+                namespace["show_missed_call_popup"] = missed.append
+                self.assertTrue(finish_remote_incoming_call_namespace_runtime(
+                    namespace, session_id="peer-new", caller_num="10086"))
+                self.assertIsNone(namespace["current_call_popup"])
+                self.assertEqual(missed, [])
+
+    def test_retired_peer_protection_starts_when_long_call_finishes(self):
+        namespace = self.base_namespace()
+        now = [100.0]
+        namespace["_call_peer_monotonic"] = lambda: now[0]
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086"))
+        namespace["call_popup_active_session_id"] = "local-old"
+        set_call_popup_namespace_runtime(namespace, SimpleNamespace(
+            _call_popup_caller_num="10086"))
+        now[0] += 3600
+        finish_incoming_call_session_namespace_runtime(namespace)
+        namespace.update(current_call_popup=None, call_popup_active_session_id="")
+        now[0] += RETIRED_PEER_CALL_TTL_SECONDS - 0.1
+        self.assertFalse(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086"))
+        now[0] += 0.1
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086"))
+
+    def test_retired_peer_cache_is_bounded_and_namespace_local(self):
+        namespace = self.base_namespace()
+        tracker = IncomingCallSessionTracker()
+        namespace["INCOMING_CALL_SESSION"] = tracker
+        for generation in range(RETIRED_PEER_CALL_MAX_ENTRIES + 1):
+            tracker.start("10086")
+            namespace["call_popup_active_session_id"] = f"local-{generation}"
+            self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                namespace, f"peer-{generation}", "10086"))
+            finish_incoming_call_session_namespace_runtime(namespace)
+        self.assertEqual(len(namespace["call_popup_retired_peer_sessions"]),
+                         RETIRED_PEER_CALL_MAX_ENTRIES)
+        self.assertFalse(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-1", "10086"))
+        tracker.start("10086")
+        namespace["call_popup_active_session_id"] = "local-reused"
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-0", "10086"))
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            self.base_namespace(), "peer-1", "10086"))
+        namespace["_call_peer_monotonic"] = lambda: 1000.0
+        finish_incoming_call_session_namespace_runtime(namespace)
+        self.assertEqual(list(namespace["call_popup_retired_peer_sessions"]), ["peer-0"])
+
+    def test_expiring_unbound_peer_does_not_retire_a_live_generation(self):
+        namespace = self.base_namespace()
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-1", "10086"))
+        namespace["_call_peer_monotonic"] = lambda: 200.0
+        self.assertIsNone(_get_peer_call_binding(namespace))
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-1", "10086"))
+
+    def test_retired_peer_replay_preserves_pending_new_terminal(self):
+        namespace = self.base_namespace()
+        tracker = IncomingCallSessionTracker()
+        namespace.update(INCOMING_CALL_SESSION=tracker, current_call_popup=None)
+        tracker.start("10086")
+        namespace["call_popup_active_session_id"] = "local-old"
+        register_peer_incoming_call_namespace_runtime(namespace, "peer-old", "10086")
+        finish_incoming_call_session_namespace_runtime(namespace)
+        namespace["call_popup_active_session_id"] = ""
+        self.assertTrue(finish_remote_incoming_call_namespace_runtime(
+            namespace, session_id="peer-new", caller_num="10086"))
+        self.assertFalse(finish_remote_incoming_call_namespace_runtime(
+            namespace, session_id="peer-old", caller_num="10086"))
+        self.assertFalse(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086"))
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-new", "10086"))
+        tracker.start("10086")
+        namespace["call_popup_active_session_id"] = "local-new"
+        missed = []
+        namespace["show_missed_call_popup"] = missed.append
+        set_call_popup_namespace_runtime(namespace, SimpleNamespace(
+            _call_popup_caller_num="10086",
+            winfo_exists=lambda: True,
+            destroy=lambda: None,
+        ))
+        self.assertIsNone(namespace["current_call_popup"])
+        self.assertEqual(len(missed), 1)
+
+    def test_real_popups_coexist_during_repeated_calls_and_peer_replays(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        errors = []
+        root.report_callback_exception = lambda *args: errors.append(args)
+        tracker = IncomingCallSessionTracker()
+        namespace = self.base_namespace()
+
+        def cleanup():
+            root.destroy()
+            namespace.clear()
+            gc.collect()
+
+        self.addCleanup(cleanup)
+
+        def position_popup(window, _parent):
+            window.attributes("-alpha", 0)
+            window.geometry("+100+100")
+
+        namespace.update(
+            root=root, INCOMING_CALL_SESSION=tracker,
+            current_call_popup=None, current_missed_call_popup=None,
+            center_window=position_popup, run_on_ui_thread=run_on_ui_thread,
+            serial_lock=threading.Lock(), serial_obj=None, ui_post=lambda cb: cb(),
+            show_window=lambda: None,
+            close_call_popup=lambda: close_call_popup_namespace_runtime(namespace),
+            show_missed_call_popup=lambda call: show_missed_call_popup_namespace_runtime(namespace, call),
+        )
+        show_missed_call_popup_namespace_runtime(namespace, MissedCall("10086", datetime(2026, 1, 1)))
+        missed_popup = namespace["current_missed_call_popup"]
+        for generation in range(1, 6):
+            tracker.start("10086")
+            popup = show_call_popup_namespace_runtime(namespace, "10086", f"local-{generation}")
+            if generation > 1:
+                old_peer = f"peer-{generation - 1}"
+                register_peer_incoming_call_namespace_runtime(namespace, old_peer, "10086")
+                mark_peer_incoming_call_connected_namespace_runtime(namespace, old_peer, "10086")
+                finish_remote_incoming_call_namespace_runtime(namespace, session_id=old_peer, caller_num="10086")
+            root.update()
+            self.assertIs(namespace["current_call_popup"], popup)
+            self.assertIs(namespace["current_missed_call_popup"], missed_popup)
+            self.assertTrue(popup.winfo_viewable())
+            self.assertTrue(missed_popup.winfo_viewable())
+            self.assertIsNone(root.grab_current())
+            buttons = popup.winfo_children()[0].winfo_children()[-1].winfo_children()
+            self.assertEqual([button.cget("text") for button in buttons], ["✅ 接听", "❌ 挂断", "隐藏"])
+            self.assertTrue(all(button.winfo_ismapped() for button in buttons))
+            self.assertEqual(missed_popup.missed_call_popup_count, generation)
+            self.assertTrue(register_peer_incoming_call_namespace_runtime(namespace, f"peer-{generation}", "10086"))
+            missed = finish_incoming_call_session_namespace_runtime(namespace)
+            close_call_popup_namespace_runtime(namespace)
+            show_missed_call_popup_namespace_runtime(namespace, missed)
+            root.update()
+            self.assertFalse(popup.winfo_exists())
+        close_missed_call_popup_namespace_runtime(namespace)
+        root.update()
+        self.assertEqual(errors, [])
+
     def queued_terminal_case(self, *, local_session=True, show_popup=True, peer_session=""):
         now = [datetime(2026, 1, 1)]
         tracker = IncomingCallSessionTracker(now_func=lambda: now[0])

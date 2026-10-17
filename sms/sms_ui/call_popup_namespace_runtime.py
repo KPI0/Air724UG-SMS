@@ -9,6 +9,8 @@ from sms_ui.missed_call_popup_runtime import show_missed_call_popup_app_runtime
 
 
 PEER_CALL_BINDING_TTL_SECONDS = 15.0
+RETIRED_PEER_CALL_TTL_SECONDS = 120.0
+RETIRED_PEER_CALL_MAX_ENTRIES = 100
 
 
 def _peer_now(namespace):
@@ -21,7 +23,44 @@ def _peer_now(namespace):
         return time.monotonic()
 
 
-def _clear_peer_call_state(namespace):
+def _is_retired_peer_call(namespace, session_id):
+    if not session_id:
+        return False
+    retired = namespace.get("call_popup_retired_peer_sessions", {})
+    return retired.get(session_id, 0.0) > _peer_now(namespace)
+
+
+def _retire_peer_call(namespace):
+    peer_id = str(namespace.get("call_popup_peer_session_id") or "").strip()
+    if not peer_id:
+        return
+    now = _peer_now(namespace)
+    # Keep completed generations beyond the binding lifetime: a reliable
+    # peer event can be replayed while the same caller is already ringing again.
+    retired = {
+        key: expires_at
+        for key, expires_at in namespace.get("call_popup_retired_peer_sessions", {}).items()
+        if expires_at > now and key != peer_id
+    }
+    retired[peer_id] = now + RETIRED_PEER_CALL_TTL_SECONDS
+    namespace.__setitem__(
+        "call_popup_retired_peer_sessions",
+        dict(list(retired.items())[-RETIRED_PEER_CALL_MAX_ENTRIES:]),
+    )
+
+
+def _clear_peer_call_state(namespace, *, retire_current=False, preserve_next=False):
+    next_entries = {}
+    if preserve_next:
+        pending = _pending_peer_entry(namespace, "call_popup_pending_peer_incoming")
+        if pending and pending.get("session_id") != namespace.get("call_popup_peer_session_id"):
+            next_entries["call_popup_pending_peer_incoming"] = pending
+            for key in ("call_popup_pending_peer_connected", "call_popup_pending_peer_terminal"):
+                entry = _pending_peer_entry(namespace, key)
+                if entry and entry.get("session_id") == pending.get("session_id"):
+                    next_entries[key] = entry
+    if retire_current:
+        _retire_peer_call(namespace)
     for key in (
         "call_popup_peer_session_id",
         "call_popup_peer_caller_num",
@@ -32,6 +71,7 @@ def _clear_peer_call_state(namespace):
         "call_popup_pending_peer_incoming",
     ):
         namespace.__setitem__(key, "" if key.endswith("_id") or key.endswith("_num") else None)
+    namespace.update(next_entries)
 
 
 def _pending_peer_entry(namespace, key):
@@ -100,7 +140,7 @@ def register_peer_incoming_call_namespace_runtime(
     """Remember a firmware call generation before local serial UI catches up."""
     peer_id = str(session_id or "").strip()
     caller_text = str(caller_num or "").strip()
-    if not peer_id:
+    if not peer_id or _is_retired_peer_call(namespace, peer_id):
         return False
     binding = _get_peer_call_binding(namespace)
     active_session = str(namespace.get("call_popup_active_session_id") or "").strip()
@@ -151,7 +191,8 @@ def _bind_peer_to_local_session(namespace, local_session_id, caller_num):
     local_id = str(local_session_id or "").strip()
     caller_text = str(caller_num or "").strip()
     pending = _pending_peer_entry(namespace, "call_popup_pending_peer_incoming")
-    if pending is not None:
+    binding = _get_peer_call_binding(namespace)
+    if pending is not None and (binding is None or binding["local_session_id"] != local_id):
         pending_caller = str(pending.get("caller_num") or "").strip()
         if not pending_caller or not caller_text or pending_caller == caller_text:
             _set_peer_call_binding(
@@ -162,7 +203,6 @@ def _bind_peer_to_local_session(namespace, local_session_id, caller_num):
             )
             namespace.__setitem__("call_popup_pending_peer_incoming", None)
             return _get_peer_call_binding(namespace)
-    binding = _get_peer_call_binding(namespace)
     if binding is None:
         return None
     if binding["caller_num"] and caller_text and binding["caller_num"] != caller_text:
@@ -231,6 +271,8 @@ def mark_peer_incoming_call_connected_namespace_runtime(
 ):
     peer_id = str(session_id or "").strip()
     caller_text = str(caller_num or "").strip()
+    if _is_retired_peer_call(namespace, peer_id):
+        return False
     binding = _get_peer_call_binding(namespace)
     if peer_id:
         if binding is None:
@@ -507,9 +549,20 @@ def mark_incoming_call_handled_namespace_runtime(namespace):
     return namespace["INCOMING_CALL_SESSION"].mark_handled()
 
 
+def _has_local_incoming_call(namespace):
+    if namespace.get("call_popup_peer_local_session_id"):
+        return True
+    snapshot = getattr(namespace["INCOMING_CALL_SESSION"], "snapshot", None)
+    return callable(snapshot) and bool(snapshot().caller_num)
+
+
 def finish_incoming_call_session_namespace_runtime(namespace):
+    had_local_call = _has_local_incoming_call(namespace)
     result = namespace["INCOMING_CALL_SESSION"].finish()
-    _clear_peer_call_state(namespace)
+    # A peer terminal may have already settled this call. Its delayed serial
+    # terminal must leave a newly announced, unbound peer generation intact.
+    if had_local_call:
+        _clear_peer_call_state(namespace, retire_current=True, preserve_next=True)
     return result
 
 
@@ -529,6 +582,8 @@ def finish_remote_incoming_call_namespace_runtime(
     """
     requested_session_id = str(session_id or "").strip()
     caller_text = str(caller_num or "").strip()
+    if _is_retired_peer_call(namespace, requested_session_id):
+        return False
     active_session_id = str(
         namespace.get("call_popup_active_session_id", "") or ""
     ).strip()
@@ -626,7 +681,7 @@ def finish_remote_incoming_call_namespace_runtime(
         missed_call = namespace["INCOMING_CALL_SESSION"].finish()
         namespace.__setitem__("call_popup_active_session_id", "")
         namespace.__setitem__("call_popup_pending_connected_session_id", "")
-        _clear_peer_call_state(namespace)
+        _clear_peer_call_state(namespace, retire_current=True, preserve_next=True)
         # Close only the incoming popup.  The normal close_call_popup binding
         # also tears down an outgoing dial popup, which is a separate session
         # and must not be touched by a peer incoming terminal frame.
@@ -645,8 +700,9 @@ def finish_remote_incoming_call_namespace_runtime(
 
 
 def reset_incoming_call_session_namespace_runtime(namespace):
+    had_local_call = _has_local_incoming_call(namespace)
     result = namespace["INCOMING_CALL_SESSION"].reset()
-    _clear_peer_call_state(namespace)
+    _clear_peer_call_state(namespace, retire_current=had_local_call)
     return result
 
 
@@ -723,18 +779,34 @@ def show_call_popup_namespace_runtime(
     # marker belonging to a different call generation.
     if pending_session_id and pending_session_id != session_id:
         namespace.__setitem__("call_popup_pending_connected_session_id", "")
+    popup_holder = {}
+
+    def set_popup(window):
+        popup_holder["window"] = window
+        set_call_popup_namespace_runtime(namespace, window)
+
+    def close_popup():
+        def close_on_ui():
+            if namespace.get("current_call_popup") is not popup_holder.get("window"):
+                return False
+            if session_id and namespace.get("call_popup_active_session_id") != session_id:
+                return False
+            return namespace["close_call_popup"]()
+
+        return namespace["run_on_ui_thread"](close_on_ui, namespace["ui_post"])
+
     return show_app_runtime(
         parent=namespace["root"],
         caller_num=caller_num,
         get_popup=lambda: namespace["current_call_popup"],
-        set_popup=lambda window: set_call_popup_namespace_runtime(namespace, window),
+        set_popup=set_popup,
         center_window=namespace["center_window"],
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: namespace["serial_obj"],
         port_ui=namespace["port_ui"],
         set_status=namespace["set_status"],
         ui_post=namespace["ui_post"],
-        close_popup=namespace["close_call_popup"],
+        close_popup=close_popup,
         set_ring_timeout=lambda value: namespace.__setitem__("ring_timeout_target", value),
         run_on_ui_thread=namespace["run_on_ui_thread"],
         is_enabled=lambda: bool(namespace.get("CALL_POPUP_ENABLED", True))
