@@ -1,5 +1,7 @@
 ﻿import unittest
 
+from dataclasses import replace
+
 from sms_core.call_session import IncomingCallSessionTracker
 from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.serial_runtime import (
@@ -98,6 +100,29 @@ def flush_settled_sms(state, calls, now, *, config=None, port="COM5"):
 
 
 class SerialRuntimeTests(unittest.TestCase):
+    def test_repeated_calls_keep_popup_cloud_and_terminal_generation_aligned(self):
+        state = SerialRuntimeState.create(parse_sms_callback_head)
+        tracker = IncomingCallSessionTracker()
+        events, terminals, popups = [], [], []
+        callbacks = replace(runtime_callbacks([]),
+            start_incoming_call=tracker.start,
+            finish_incoming_call=tracker.finish,
+            send_cloud_call_event=lambda *a, **k: events.append(k['call_session_id']),
+            send_cloud_call_state=lambda *a, **k: terminals.append(k['call_session_id']),
+            show_call_popup=lambda number, call_session_id='': popups.append(call_session_id))
+        for i in range(20):
+            now = 100 + i * 60
+            for offset, line in ((0, 'RING'), (1, '+CLIP: "10086",129'),
+                                 (7, '+CLIP: "10086",129'), (15, '+CLIP: "10086",129'),
+                                 (20, 'NO CARRIER')):
+                handle_serial_runtime_line(state, line, now + offset, 'COM5',
+                    False, runtime_config(), callbacks, {})
+        self.assertEqual(len(events), 20)
+        self.assertEqual(len(set(events)), 20)
+        self.assertEqual(events, popups)
+        self.assertEqual(events, terminals)
+        self.assertEqual(tracker.snapshot().caller_num, '')
+
     def test_call_recording_frames_are_consumed_before_other_serial_handlers(self):
         calls = []
         state = SerialRuntimeState.create(parse_sms_callback_head)

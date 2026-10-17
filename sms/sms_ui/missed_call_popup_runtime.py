@@ -83,12 +83,14 @@ def show_missed_call_popup_app_runtime(
     run_on_ui_thread,
     ui_post,
     is_enabled=lambda: True,
+    get_active_call_popup=lambda: None,
+    log_error=None,
     show_runtime=show_missed_call_popup_runtime,
 ):
     def show_on_ui():
         if not is_enabled():
             return "disabled"
-        return show_runtime(
+        result = show_runtime(
             missed_call,
             parent=parent,
             current_popup=get_popup(),
@@ -96,5 +98,15 @@ def show_missed_call_popup_app_runtime(
             center_window=center_window,
             show_window=show_window,
         )
+        # A delayed missed-call notice may be processed after the next call
+        # has already opened. Both remain visible, with the live call on top.
+        popup = get_active_call_popup()
+        try:
+            if _popup_exists(popup) and popup.winfo_ismapped():
+                popup.lift()
+        except Exception as exc:
+            if log_error is not None:
+                log_error(f"Raise active call above missed-call notice failed: {exc!r}")
+        return result
 
     return run_on_ui_thread(show_on_ui, ui_post)

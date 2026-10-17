@@ -167,6 +167,43 @@ def open_call_popup(
     # thread without reaching into this closure.
     win._call_popup_mark_connected = mark_connected
     win.protocol("WM_DELETE_WINDOW", close_popup)
+
+    placement_after_id = None
+    placement_destroyed = False
+
+    def finish_placement():
+        nonlocal placement_after_id
+        placement_after_id = None
+        if not placement_destroyed:
+            try:
+                center_window(win, parent)
+                # Apply the queued geometry before lift, otherwise a pending
+                # native Configure event can restore the first-map position.
+                win.update_idletasks()
+                if not placement_destroyed:
+                    win.lift()
+            except tk.TclError:
+                if not placement_destroyed:
+                    raise
+
+    def center_mapped_window(event):
+        nonlocal placement_after_id
+        if event.widget is win:
+            win.unbind("<Map>", map_binding)
+            # The native frame/icon can still update geometry while Map is
+            # being dispatched. Center once after that dispatch completes.
+            placement_after_id = win.after_idle(finish_placement)
+
+    def cancel_placement(event):
+        nonlocal placement_after_id, placement_destroyed
+        if event.widget is win:
+            placement_destroyed = True
+            if placement_after_id is not None:
+                win.after_cancel(placement_after_id)
+                placement_after_id = None
+
+    map_binding = win.bind("<Map>", center_mapped_window, add="+")
+    win.bind("<Destroy>", cancel_placement, add="+")
     center_window(win, parent)
     win.deiconify()
     win.lift()

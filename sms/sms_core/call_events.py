@@ -330,18 +330,20 @@ def handle_call_line(
         )
         if (
             not clip.blocked
-            and state.ring_timeout_target == -1.0
+            and state.ring_timeout_target != 0.0
             and clip.caller_num == state.last_clip_num
         ):
-            # Once this caller is connected, a late/repeated +CLIP is still
-            # the same call even if it arrives outside the normal duplicate
-            # debounce window.
+            # Repeated CLIP belongs to the active call, including while it
+            # rings. Changing its ID here leaves the UI/cloud on the old ID
+            # because the incoming tracker correctly rejects the duplicate.
             clip = replace(
                 clip,
                 new_clip=False,
                 last_clip_num=state.last_clip_num,
                 last_clip_time=state.last_clip_time,
-                ring_timeout_target=-1.0,
+                ring_timeout_target=(
+                    -1.0 if state.ring_timeout_target == -1.0 else clip.ring_timeout_target
+                ),
             )
         if not clip.new_clip and state.ring_timeout_target == -1.0:
             # Some basebands repeat +CLIP after ATA/connection.  Do not turn

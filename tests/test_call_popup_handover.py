@@ -1,4 +1,5 @@
 import unittest
+from functools import partial
 from types import SimpleNamespace
 
 from sms_core.call_effects import apply_call_hangup_result
@@ -13,6 +14,7 @@ from sms_ui.call_popup_namespace_runtime import (
     reset_incoming_call_session_namespace_runtime,
     show_call_popup_namespace_runtime,
 )
+from sms_ui.call_popup_runtime import show_call_popup_app_runtime, show_call_popup_runtime
 
 
 class CallPopupHandoverTests(unittest.TestCase):
@@ -168,6 +170,158 @@ class CallPopupHandoverTests(unittest.TestCase):
         self.assertIs(self.namespace["current_call_popup"], new_popup)
         self.assertTrue(new_popup.exists)
         self.assertFalse(old_popup.exists)
+
+    def open_during(self, session_id, during_open=lambda: None, *, send_command_async=None):
+        def open_popup(*args):
+            popup = SimpleNamespace(_call_popup_caller_num='10086', exists=True)
+            popup.answer = args[3]
+            popup.hangup = args[4]
+            popup.winfo_exists = lambda: popup.exists
+            popup.destroy = lambda: setattr(popup, 'exists', False)
+            self.popups.append(popup)
+            during_open()
+            return popup
+
+        options = {'open_popup': open_popup}
+        if send_command_async is not None:
+            options['send_command_async'] = send_command_async
+        return show_call_popup_namespace_runtime(
+            self.namespace, '10086', session_id,
+            show_app_runtime=partial(show_call_popup_app_runtime,
+                show_runtime=partial(show_call_popup_runtime, **options)))
+
+    def test_late_answer_result_does_not_disable_new_calls_ring_timeout(self):
+        results, statuses = [], []
+        self.tracker.start('10086')
+        self.namespace['set_status'] = lambda *args: statuses.append(args)
+        old = self.open_during('local-old', send_command_async=lambda *a, **k: results.append(k['on_result']))
+        old.answer(lambda: None, lambda: None)
+        finish_incoming_call_session_namespace_runtime(self.namespace)
+        close_call_popup_namespace_runtime(self.namespace)
+        new = self.start('local-new')
+        self.namespace['ring_timeout_target'] = 123.0
+        results[0](SimpleNamespace(ok=True))
+        self.assertEqual(self.namespace['ring_timeout_target'], 123.0)
+        self.assertEqual(statuses, [])
+        self.assertIs(self.namespace['current_call_popup'], new)
+
+    def test_queued_answer_result_rechecks_call_when_ui_runs(self):
+        results, queued = [], []
+        self.tracker.start('10086')
+        old = self.open_during('local-old', send_command_async=lambda *a, **k: results.append(k['on_result']))
+        old.answer(lambda: None, lambda: None)
+        self.namespace['run_on_ui_thread'] = lambda cb, _post: queued.append(cb)
+        self.namespace['ui_post'] = queued.append
+        self.namespace['ring_timeout_target'] = 456.0
+        results[0](SimpleNamespace(ok=True))
+        self.assertEqual(self.namespace['ring_timeout_target'], 456.0)
+        self.namespace['run_on_ui_thread'] = lambda cb, _post: cb()
+        finish_incoming_call_session_namespace_runtime(self.namespace)
+        close_call_popup_namespace_runtime(self.namespace)
+        self.start('local-new')
+        self.namespace['ring_timeout_target'] = 123.0
+        for callback in queued:
+            callback()
+        self.assertEqual(self.namespace['ring_timeout_target'], 123.0)
+
+    def test_answer_result_still_applies_after_hiding_current_popup(self):
+        results = []
+        self.tracker.start('10086')
+        popup = self.open_during('local-1', send_command_async=lambda *a, **k: results.append(k['on_result']))
+        popup.answer(lambda: None, lambda: None)
+        close_call_popup_namespace_runtime(self.namespace)
+        self.namespace['ring_timeout_target'] = 123.0
+        results[0](SimpleNamespace(ok=True))
+        self.assertEqual(self.namespace['ring_timeout_target'], -1.0)
+        self.assertEqual(self.tracker.snapshot().caller_num, '10086')
+
+    def test_late_failed_actions_do_not_show_errors_for_new_call(self):
+        for action in ('answer', 'hangup'):
+            with self.subTest(action=action):
+                self.setUp()
+                results, messages, restored = [], [], []
+                self.tracker.start('10086')
+                self.namespace['port_ui'] = lambda *a: messages.append(a)
+                popup = self.open_during('local-old', send_command_async=lambda *a, **k: results.append(k['on_result']))
+                if action == 'answer':
+                    popup.answer(lambda: None, lambda: restored.append(True))
+                else:
+                    popup.hangup(lambda: restored.append(True))
+                finish_incoming_call_session_namespace_runtime(self.namespace)
+                close_call_popup_namespace_runtime(self.namespace)
+                self.start('local-new')
+                results[0](SimpleNamespace(ok=False, error='serial disconnected'))
+                self.assertEqual(messages, [])
+                self.assertEqual(restored, [])
+
+    def test_current_failed_actions_still_restore_controls(self):
+        for action in ('answer', 'hangup'):
+            with self.subTest(action=action):
+                self.setUp()
+                results, messages, restored = [], [], []
+                self.tracker.start('10086')
+                self.namespace['port_ui'] = lambda *a: messages.append(a)
+                popup = self.open_during('local-1', send_command_async=lambda *a, **k: results.append(k['on_result']))
+                if action == 'answer':
+                    popup.answer(lambda: None, lambda: restored.append(True))
+                else:
+                    popup.hangup(lambda: restored.append(True))
+                results[0](SimpleNamespace(ok=False, error='serial disconnected'))
+                self.assertEqual(restored, [True])
+                self.assertEqual(len(messages), 1)
+                self.assertIs(self.namespace['current_call_popup'], popup)
+
+    def test_answer_result_after_reset_is_ignored(self):
+        results = []
+        self.tracker.start('10086')
+        popup = self.open_during('local-1', send_command_async=lambda *a, **k: results.append(k['on_result']))
+        popup.answer(lambda: None, lambda: None)
+        reset_incoming_call_session_namespace_runtime(self.namespace)
+        self.namespace['ring_timeout_target'] = 0.0
+        results[0](SimpleNamespace(ok=True))
+        self.assertEqual(self.namespace['ring_timeout_target'], 0.0)
+
+    def test_legacy_no_id_result_still_isolates_same_number_redial(self):
+        results = []
+        self.tracker.start('10086')
+        popup = self.open_during('', send_command_async=lambda *a, **k: results.append(k['on_result']))
+        popup.answer(lambda: None, lambda: None)
+        finish_incoming_call_session_namespace_runtime(self.namespace)
+        close_call_popup_namespace_runtime(self.namespace)
+        self.start('')
+        self.namespace['ring_timeout_target'] = 123.0
+        results[0](SimpleNamespace(ok=True))
+        self.assertEqual(self.namespace['ring_timeout_target'], 123.0)
+
+    def test_call_ending_during_window_creation_does_not_leave_orphan(self):
+        for session_id in ('local-old', ''):
+            with self.subTest(session_id=session_id):
+                popup = self.open_during(session_id, lambda: close_call_popup_namespace_runtime(self.namespace))
+                self.assertFalse(popup.exists)
+                self.assertIsNone(self.namespace['current_call_popup'])
+
+    def test_new_generation_during_old_creation_does_not_inherit_old_window(self):
+        def redial():
+            close_call_popup_namespace_runtime(self.namespace)
+            self.start('local-new')
+
+        old_popup = self.open_during('local-old', redial)
+        self.assertFalse(old_popup.exists)
+        self.assertIs(self.namespace['current_call_popup'], self.popups[-1])
+        self.assertEqual(self.namespace['current_call_popup']._call_popup_session_id, 'local-new')
+
+    def test_new_call_replaces_lingering_window_before_delayed_close(self):
+        old_popup = self.start('local-old')
+        queued = []
+        self.namespace['run_on_ui_thread'] = lambda cb, _post: queued.append(cb)
+        close_call_popup_namespace_runtime(self.namespace)
+        self.namespace['run_on_ui_thread'] = lambda cb, _post: cb()
+        new_popup = self.open_during('local-new')
+        self.assertIsNot(new_popup, old_popup)
+        self.assertFalse(old_popup.exists)
+        queued.pop(0)()
+        self.assertIs(self.namespace['current_call_popup'], new_popup)
+        self.assertTrue(new_popup.exists)
 
 
 if __name__ == "__main__":

@@ -319,13 +319,14 @@ def mark_peer_incoming_call_connected_namespace_runtime(
     )
 
 
-def set_call_popup_namespace_runtime(namespace, window):
+def set_call_popup_namespace_runtime(namespace, window, *, call_session_id=None):
     namespace.__setitem__("current_call_popup", window)
     if window is None:
         return
 
     active_session_id = str(
-        namespace.get("call_popup_active_session_id", "") or ""
+        (namespace.get("call_popup_active_session_id", "")
+         if call_session_id is None else call_session_id) or ""
     ).strip()
     if active_session_id:
         try:
@@ -680,6 +681,7 @@ def finish_remote_incoming_call_namespace_runtime(
             return False
         missed_call = namespace["INCOMING_CALL_SESSION"].finish()
         namespace.__setitem__("call_popup_active_session_id", "")
+        namespace.__setitem__("call_popup_request_token", None)
         namespace.__setitem__("call_popup_pending_connected_session_id", "")
         _clear_peer_call_state(namespace, retire_current=True, preserve_next=True)
         # Close only the incoming popup.  The normal close_call_popup binding
@@ -710,6 +712,7 @@ def close_call_popup_namespace_runtime(namespace, *, close_app_runtime=close_cal
     # Invalidate the session before queueing window destruction.  A late
     # connected callback must not update a popup belonging to a newer call.
     namespace.__setitem__("call_popup_active_session_id", "")
+    namespace.__setitem__("call_popup_request_token", None)
     namespace.__setitem__("call_popup_pending_connected_session_id", "")
     result = close_app_runtime(
         get_popup=lambda: namespace["current_call_popup"],
@@ -767,6 +770,8 @@ def show_call_popup_namespace_runtime(
     if not namespace.get("CALL_POPUP_ENABLED", True):
         return "disabled"
     session_id = str(call_session_id or "").strip()
+    request_token = object()
+    namespace.__setitem__("call_popup_request_token", request_token)
     pending_session_id = str(
         namespace.get("call_popup_pending_connected_session_id", "") or ""
     ).strip()
@@ -780,10 +785,64 @@ def show_call_popup_namespace_runtime(
     if pending_session_id and pending_session_id != session_id:
         namespace.__setitem__("call_popup_pending_connected_session_id", "")
     popup_holder = {}
+    snapshot_call = getattr(namespace.get("INCOMING_CALL_SESSION"), "snapshot", None)
+    initial_call = snapshot_call() if callable(snapshot_call) else None
+
+    def is_current():
+        return (
+            namespace.get("CALL_POPUP_ENABLED", True)
+            and namespace.get("call_popup_request_token") is request_token
+            and namespace.get("call_popup_active_session_id", "") == session_id
+        )
+
+    def is_same_call():
+        if initial_call is not None and getattr(initial_call, "started_at", None) is not None:
+            current_call = snapshot_call()
+            return bool(initial_call.caller_num) and (
+                current_call.caller_num == initial_call.caller_num
+                and current_call.started_at == initial_call.started_at
+            )
+        return is_current()
+
+    def dispatch_call_result(callback):
+        def apply_on_ui():
+            # Hiding a window does not end its modem call. Use the tracked
+            # call lifetime, and recheck after any wait in the UI queue.
+            if is_same_call():
+                return callback()
+            return False
+        return namespace["run_on_ui_thread"](apply_on_ui, namespace["ui_post"])
+
+    def set_ring_timeout(value):
+        if is_same_call():
+            namespace.__setitem__("ring_timeout_target", value)
+
+    def discard_popup(window):
+        def clear_if_current(value):
+            if namespace.get("current_call_popup") is window:
+                namespace.__setitem__("current_call_popup", value)
+        close_call_popup_runtime(window, clear_if_current, log_error=namespace.get("log_file_only"))
+
+    def get_popup():
+        window = namespace.get("current_call_popup")
+        if session_id and window is not None and (
+            getattr(window, "_call_popup_session_id", "") != session_id
+        ):
+            discard_popup(window)
+            return None
+        return window
 
     def set_popup(window):
         popup_holder["window"] = window
-        set_call_popup_namespace_runtime(namespace, window)
+        # Tk construction/mapping can yield to terminal or new-call work.
+        # Validate again after construction and never label an old window
+        # with the generation that happens to be active when it returns.
+        if not is_current():
+            discard_popup(window)
+            return
+        set_call_popup_namespace_runtime(namespace, window, call_session_id=session_id)
+        if not is_current():
+            discard_popup(window)
 
     def close_popup():
         def close_on_ui():
@@ -798,7 +857,7 @@ def show_call_popup_namespace_runtime(
     return show_app_runtime(
         parent=namespace["root"],
         caller_num=caller_num,
-        get_popup=lambda: namespace["current_call_popup"],
+        get_popup=get_popup,
         set_popup=set_popup,
         center_window=namespace["center_window"],
         serial_lock=namespace["serial_lock"],
@@ -807,15 +866,12 @@ def show_call_popup_namespace_runtime(
         set_status=namespace["set_status"],
         ui_post=namespace["ui_post"],
         close_popup=close_popup,
-        set_ring_timeout=lambda value: namespace.__setitem__("ring_timeout_target", value),
+        set_ring_timeout=set_ring_timeout,
         run_on_ui_thread=namespace["run_on_ui_thread"],
-        is_enabled=lambda: bool(namespace.get("CALL_POPUP_ENABLED", True))
-        and (
-            not session_id
-            or namespace.get("call_popup_active_session_id", "") == session_id
-        ),
+        is_enabled=is_current,
         mark_call_handled=lambda: mark_incoming_call_handled_namespace_runtime(namespace),
         log_error=namespace.get("log_file_only"),
+        dispatch_call_result=dispatch_call_result,
     )
 
 
@@ -834,6 +890,8 @@ def show_missed_call_popup_namespace_runtime(
         set_popup=lambda window: set_missed_call_popup_namespace_runtime(namespace, window),
         center_window=namespace["center_window"],
         show_window=namespace["show_window"],
+        get_active_call_popup=lambda: namespace.get("current_call_popup"),
+        log_error=namespace.get("log_file_only"),
         run_on_ui_thread=namespace["run_on_ui_thread"],
         ui_post=namespace["ui_post"],
         is_enabled=lambda: bool(namespace.get("CALL_POPUP_ENABLED", True)),

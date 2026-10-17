@@ -78,6 +78,7 @@ def show_call_popup_runtime(
     open_popup=open_call_popup,
     send_command_async=send_command_with_result_async,
     log_error=None,
+    dispatch_call_result=None,
 ):
     if popup_exists(current_popup, log_error=log_error):
         return current_popup
@@ -88,11 +89,16 @@ def show_call_popup_runtime(
         except Exception as exc:
             _safe_log(log_error, f"Mark incoming call handled failed: {exc!r}")
 
+    def apply_result(callback):
+        if dispatch_call_result is not None:
+            return dispatch_call_result(callback)
+        return callback()
+
     def answer(mark_connected, restore_answer):
         mark_handled()
 
         def on_result(result):
-            apply_call_answer_result(
+            return apply_result(lambda: apply_call_answer_result(
                 result,
                 caller_num,
                 restore_answer,
@@ -101,7 +107,7 @@ def show_call_popup_runtime(
                 set_status,
                 ui_post,
                 set_ring_timeout,
-            )
+            ))
 
         kwargs = {"on_result": on_result}
         if log_error is not None:
@@ -112,13 +118,13 @@ def show_call_popup_runtime(
         mark_handled()
 
         def on_result(result):
-            apply_call_hangup_result(
+            return apply_result(lambda: apply_call_hangup_result(
                 result,
                 restore_hangup,
                 port_ui,
                 ui_post,
                 close_popup,
-            )
+            ))
 
         kwargs = {"on_result": on_result}
         if log_error is not None:
@@ -156,6 +162,7 @@ def show_call_popup_app_runtime(
     is_enabled=lambda: True,
     mark_call_handled=lambda: None,
     log_error=None,
+    dispatch_call_result=None,
     show_runtime=show_call_popup_runtime,
 ):
     def show_on_ui():
@@ -176,8 +183,11 @@ def show_call_popup_app_runtime(
             set_ring_timeout,
             mark_call_handled,
         )
-        if log_error is None:
-            return show_runtime(*args)
-        return show_runtime(*args, log_error=log_error)
+        kwargs = {}
+        if log_error is not None:
+            kwargs["log_error"] = log_error
+        if dispatch_call_result is not None:
+            kwargs["dispatch_call_result"] = dispatch_call_result
+        return show_runtime(*args, **kwargs)
 
     return run_on_ui_thread(show_on_ui, ui_post)

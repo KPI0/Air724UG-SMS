@@ -16,6 +16,28 @@ from sms_core.call_events import (
 
 
 class CallEventTests(unittest.TestCase):
+    def test_repeated_ringing_clip_keeps_generation_until_terminal(self):
+        state = CallState()
+        first_id = None
+        for now in (10.0, 16.0, 24.0, 34.0):
+            decision = handle_call_line('+CLIP: "10086",129', state, now,
+                'Disabled', [], [], popup_active=False)
+            state = decision.state
+            if first_id is None:
+                first_id = state.call_session_id
+                self.assertEqual(decision.incoming_number, '10086')
+            else:
+                self.assertEqual(state.call_session_id, first_id)
+                self.assertEqual(decision.incoming_number, '')
+            self.assertEqual(state.ring_timeout_target, now + 12)
+        ended = handle_call_line('NO CARRIER', state, 35.0,
+            'Disabled', [], [], popup_active=False)
+        self.assertEqual(ended.call_session_id, first_id)
+        next_call = handle_call_line('+CLIP: "10086",129', ended.state, 36.0,
+            'Disabled', [], [], popup_active=False)
+        self.assertNotEqual(next_call.call_session_id, first_id)
+        self.assertEqual(next_call.incoming_number, '10086')
+
     def test_handle_clip_line_allows_new_call(self):
         decision = handle_clip_line(
             '+CLIP: "+8613123123123",129',

@@ -657,6 +657,7 @@ def _install_cloud_and_serial_bindings():
     current_dial_popup = None
     current_missed_call_popup = None
     globals()["call_popup_active_session_id"] = ""
+    globals()["call_popup_request_token"] = None
     globals()["call_popup_pending_connected_session_id"] = ""
     globals()["call_popup_peer_session_id"] = ""
     globals()["call_popup_peer_caller_num"] = ""

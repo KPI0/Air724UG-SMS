@@ -21,6 +21,9 @@ class FakeWidget:
     def winfo_exists(self):
         return True
 
+    def bind(self, *_args, **_kwargs):
+        return 'map-binding'
+
 
 class TimerWindow(FakeWidget):
     def __init__(self, events):
