@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 from sms_core.serial_runtime import (
     SerialRuntimeCallbacks,
     SerialRuntimeConfig,
@@ -49,6 +51,8 @@ def build_serial_runtime_callbacks(callbacks):
             lambda line: DEFAULT_SMS_PDU_SEND_COORDINATOR.observe_line(line),
         ),
         start_incoming_call=callbacks.get("start_incoming_call", lambda _caller_num: True),
+        start_serial_incoming_call=callbacks.get("start_serial_incoming_call"),
+        call_state_guard=callbacks.get("call_state_guard", nullcontext),
         finish_incoming_call=callbacks.get("finish_incoming_call", lambda: None),
         reset_incoming_call=callbacks.get("reset_incoming_call", lambda: None),
         show_missed_call_popup=callbacks.get(
@@ -58,6 +62,7 @@ def build_serial_runtime_callbacks(callbacks):
         mark_dial_connected=callbacks.get("mark_dial_connected", lambda: None),
         mark_call_connected=callbacks.get("mark_call_connected", lambda: None),
         finish_dial_call=callbacks.get("finish_dial_call", lambda _message="": None),
+        consume_remote_incoming_end=callbacks.get("consume_remote_incoming_end", lambda _session_id: False),
         consume_call_recording_line=callbacks.get(
             "consume_call_recording_line",
             lambda _line: False,
@@ -121,6 +126,7 @@ def run_serial_app_runtime(
         callbacks=runtime_callbacks,
         get_call_state=state["get_call_state"],
         set_call_state=state["set_call_state"],
+        merge_call_state=state.get("merge_call_state"),
         popup_active=state["popup_active"],
         ignore_repeat_state=state["ignore_repeat_state"],
         should_continue=lambda: state["serial_running"]() and not reconnect["stop_requested"](),
@@ -186,6 +192,8 @@ def build_serial_app_wiring(
         "send_call_hangup": callbacks["send_call_hangup"],
         "show_call_popup": callbacks["show_call_popup"],
         "start_incoming_call": callbacks.get("start_incoming_call", lambda _caller_num: True),
+        "start_serial_incoming_call": callbacks.get("start_serial_incoming_call"),
+        "call_state_guard": callbacks.get("call_state_guard", nullcontext),
         "finish_incoming_call": callbacks.get("finish_incoming_call", lambda: None),
         "reset_incoming_call": callbacks.get("reset_incoming_call", lambda: None),
         "show_missed_call_popup": callbacks.get(
@@ -195,6 +203,7 @@ def build_serial_app_wiring(
         "mark_dial_connected": callbacks.get("mark_dial_connected", lambda: None),
         "mark_call_connected": callbacks.get("mark_call_connected", lambda: None),
         "finish_dial_call": callbacks.get("finish_dial_call", lambda _message="": None),
+        "consume_remote_incoming_end": callbacks.get("consume_remote_incoming_end", lambda _session_id: False),
         "consume_call_recording_line": callbacks.get(
             "consume_call_recording_line",
             lambda _line: False,
@@ -209,6 +218,7 @@ def build_serial_app_wiring(
     state = {
         "get_call_state": state_access["get_call_state"],
         "set_call_state": state_access["set_call_state"],
+        "merge_call_state": state_access.get("merge_call_state"),
         "popup_active": state_access["popup_active"],
         "ignore_repeat_state": state_access["ignore_repeat_state"],
         "serial_running": state_access["serial_running"],
@@ -333,6 +343,9 @@ def run_serial_reader_namespace_runtime(
             "close_call_popup": namespace["close_call_popup"],
             "send_call_hangup": namespace["send_call_hangup_command"],
             "show_call_popup": namespace["show_call_popup"],
+            "consume_remote_incoming_end": namespace.get("consume_remote_incoming_end", lambda _session_id: False),
+            "call_state_guard": namespace.get("serial_call_state_guard", nullcontext),
+            "start_serial_incoming_call": namespace.get("start_serial_incoming_call"),
             "start_incoming_call": namespace.get(
                 "start_incoming_call_session",
                 lambda _caller_num: True,
@@ -375,6 +388,7 @@ def run_serial_reader_namespace_runtime(
         state_access={
             "get_call_state": namespace["get_serial_call_state"],
             "set_call_state": namespace["set_serial_call_state"],
+            "merge_call_state": namespace.get("merge_serial_call_state"),
             "popup_active": lambda: namespace["current_call_popup"] is not None,
             "ignore_repeat_state": namespace["_sms_ignore_repeat_state"],
             "serial_running": lambda: namespace["serial_running"],

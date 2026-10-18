@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from contextlib import nullcontext
 import re
 import threading
 import time
@@ -491,8 +492,12 @@ def _write_sms_pdu_after_prompt(waiter, writer):
         return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
 
 
-def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=None):
-    with DEFAULT_SERIAL_WRITE_LOCK:
+def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=None, *, write_guard=None):
+    # Validate after every sender lock has been acquired, and keep the caller's
+    # context locked through the write so a queued action cannot change calls.
+    with DEFAULT_SERIAL_WRITE_LOCK, (write_guard() if write_guard else nullcontext(True)) as allowed:
+        if not allowed:
+            return SerialCommandResult(False, "指令所属状态已变化，已取消发送")
         reservation = _OTA_RESERVATIONS.get(id(serial_obj))
         if reservation:
             if reservation[2] > time.monotonic():
@@ -520,7 +525,7 @@ def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=
     return SerialCommandResult(True)
 
 
-def write_serial_command_result(serial_obj, command, append_crlf=True, push_debug=None):
+def write_serial_command_result(serial_obj, command, append_crlf=True, push_debug=None, *, write_guard=None):
     with DEFAULT_SERIAL_TRANSACTION_LOCK:
         command_bytes, display_suffix = build_serial_command_payload(command, append_crlf)
         return _write_serial_obj_bytes(
@@ -528,6 +533,7 @@ def write_serial_command_result(serial_obj, command, append_crlf=True, push_debu
             command_bytes,
             f">>> 发送: {command}{display_suffix}",
             push_debug,
+            write_guard=write_guard,
         )
 
 
@@ -971,15 +977,21 @@ def _run_with_serial(serial_lock, get_serial, worker):
     worker(serial_obj)
 
 
-def _run_serial_command_with_result(serial_lock, get_serial, command, append_crlf, push_debug, on_result):
-    with serial_lock:
-        serial_obj = get_serial()
-    result = write_serial_command_result(
-        serial_obj,
-        command,
-        append_crlf=append_crlf,
-        push_debug=push_debug,
-    )
+def _run_serial_command_with_result(serial_lock, get_serial, command, append_crlf, push_debug, on_result, write_guard=None):
+    if write_guard is not None:
+        # Match the transaction -> connection -> write order used by SMS and
+        # confirmed commands. Do not release the connection before writing.
+        with DEFAULT_SERIAL_TRANSACTION_LOCK, serial_lock:
+            result = write_serial_command_result(
+                get_serial(), command, append_crlf=append_crlf,
+                push_debug=push_debug, write_guard=write_guard,
+            )
+    else:
+        with serial_lock:
+            serial_obj = get_serial()
+        result = write_serial_command_result(
+            serial_obj, command, append_crlf=append_crlf, push_debug=push_debug,
+        )
     if on_result:
         on_result(result)
 
@@ -1055,6 +1067,8 @@ def send_command_with_result_async(
     on_result=None,
     log_error=None,
     thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    *,
+    write_guard=None,
 ):
     return start_registered_serial_worker(
         "serial_send_command_with_result",
@@ -1065,6 +1079,7 @@ def send_command_with_result_async(
             append_crlf,
             push_debug,
             on_result,
+            write_guard,
         ),
         log_error=log_error,
         thread_registry=thread_registry,

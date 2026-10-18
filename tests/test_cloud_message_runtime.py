@@ -84,24 +84,120 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, [("incoming:firmware:1", "15923240141")])
 
     def test_device_call_state_registers_incoming_generation_before_progress(self):
-        calls = []
+        for local_channel in ("desktop", "legacy"):
+            with self.subTest(local_channel=local_channel):
+                calls = []
+                local_session = f"incoming:{local_channel}:1"
+                handled = handle_device_call_state_runtime(
+                    {
+                        "type": "device_call_state",
+                        "imei": "861",
+                        "direction": "incoming",
+                        "phase": "incoming",
+                        "phone": "10086",
+                        "call_session_id": "incoming:firmware:1",
+                        "local_call_session_id": local_session,
+                        "call_session_ids": {
+                            local_channel: local_session,
+                            "firmware": "incoming:firmware:1",
+                        },
+                    },
+                    runtime_imei=lambda: "861",
+                    register_incoming=lambda *args: calls.append(args),
+                    mark_call_connected=lambda *_args: self.fail("incoming is not connected"),
+                )
 
-        handled = handle_device_call_state_runtime(
-            {
-                "type": "device_call_state",
-                "imei": "861",
-                "direction": "incoming",
-                "phase": "incoming",
-                "phone": "15923240141",
-                "call_session_id": "incoming:firmware:1",
-            },
-            runtime_imei=lambda: "861",
-            register_incoming=lambda *args: calls.append(args),
-            mark_call_connected=lambda *_args: self.fail("incoming is not connected"),
+                self.assertTrue(handled)
+                self.assertEqual(calls, [("incoming:firmware:1", "10086", local_session)])
+
+    def test_incoming_without_valid_server_correlation_is_only_consumed(self):
+        valid = {
+            "type": "device_call_state", "imei": "861", "direction": "incoming",
+            "phase": "incoming", "phone": "10086", "call_session_id": "peer-1",
+            "local_call_session_id": "local-1",
+            "call_session_ids": {"desktop": "local-1", "firmware": "peer-1"},
+        }
+        invalid_fields = (
+            {"local_call_session_id": None},
+            {"local_call_session_id": ""},
+            {"local_call_session_id": "   "},
+            {"local_call_session_id": "unrelated-local"},
+            {"local_call_session_id": "peer-1"},
+            {"call_session_id": ""},
+            {"call_session_id": "unrelated-peer"},
+            {"call_session_id": "local-1"},
+            {"call_session_ids": None},
+            {"call_session_ids": {}},
+            {"call_session_ids": ["local-1", "peer-1"]},
+            {"call_session_ids": "local-1,peer-1"},
+            {"call_session_ids": {"desktop": "local-1"}},
+            {"call_session_ids": {"firmware": "peer-1"}},
+            {"call_session_ids": {"desktop": "different-local", "firmware": "peer-1"}},
+            {"call_session_ids": {"desktop": "local-1", "firmware": "different-peer"}},
+            {"call_session_ids": {"unknown": "local-1", "firmware": "peer-1"}},
+            {"call_session_ids": {"desktop": "local-1", "unknown": "peer-1"}},
+            {"call_session_ids": {"firmware": "local-1", "desktop": "peer-1"}},
+            {"call_session_ids": {"desktop": "peer-1", "firmware": "peer-1"},
+             "local_call_session_id": "peer-1"},
         )
+        for fields in invalid_fields:
+            with self.subTest(fields=fields):
+                calls = []
+                self.assertTrue(handle_device_call_state_runtime(
+                    dict(valid, **fields), runtime_imei=lambda: "861",
+                    register_incoming=lambda *args: calls.append(args),
+                    mark_peer_call_connected=lambda *_args: self.fail("incoming became connected"),
+                    finish_call=lambda *_args, **_kwargs: self.fail("incoming became terminal"),
+                ))
+                self.assertEqual(calls, [])
 
-        self.assertTrue(handled)
-        self.assertEqual(calls, [("incoming:firmware:1", "15923240141")])
+        for missing in ("local_call_session_id", "call_session_ids"):
+            with self.subTest(missing=missing):
+                message = dict(valid)
+                message.pop(missing)
+                self.assertTrue(handle_device_call_state_runtime(
+                    message, runtime_imei=lambda: "861",
+                    register_incoming=lambda *_args: self.fail("missing correlation was guessed"),
+                ))
+
+    def test_state_progress_cannot_create_correlation_even_with_server_map(self):
+        for phase in ("connected", "ended"):
+            with self.subTest(phase=phase):
+                calls = []
+                self.assertTrue(handle_device_call_state_runtime(
+                    {
+                        "type": "device_call_state", "imei": "861", "direction": "incoming",
+                        "phase": phase, "phone": "10086", "call_session_id": "peer-1",
+                        "local_call_session_id": "local-1",
+                        "call_session_ids": {"desktop": "local-1", "firmware": "peer-1"},
+                    },
+                    runtime_imei=lambda: "861",
+                    register_incoming=lambda *_args: self.fail("progress created a correlation"),
+                    mark_peer_call_connected=lambda *args: calls.append(("connected", args)),
+                    finish_call=lambda *args, **kwargs: calls.append(("ended", kwargs)),
+                ))
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], phase)
+
+    def test_incoming_registration_failure_does_not_retry_without_local_id(self):
+        calls, logs = [], []
+
+        def register(*args):
+            calls.append(args)
+            raise TypeError("callback failed")
+
+        self.assertTrue(handle_device_call_state_runtime(
+            {
+                "type": "device_call_state", "imei": "861", "direction": "incoming",
+                "phase": "incoming", "phone": "10086", "call_session_id": "peer-1",
+                "local_call_session_id": "local-1",
+                "call_session_ids": {"desktop": "local-1", "firmware": "peer-1"},
+            },
+            runtime_imei=lambda: "861", register_incoming=register, log=logs.append,
+        ))
+        self.assertEqual(calls, [("peer-1", "10086", "local-1")])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("TypeError", logs[0])
 
     def test_device_call_state_prefers_peer_connected_callback(self):
         calls = []

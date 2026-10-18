@@ -39,6 +39,54 @@ from sms_ui.call_popup_namespace_runtime import (
 
 
 class CallPopupNamespaceRuntimeTests(unittest.TestCase):
+    def test_incoming_peer_requires_explicit_local_session_without_number_guessing(self):
+        for active in (False, True):
+            with self.subTest(active=active):
+                namespace = self.base_namespace()
+                tracker = IncomingCallSessionTracker()
+                tracker.start("10086")
+                namespace.update(
+                    INCOMING_CALL_SESSION=tracker,
+                    call_popup_active_session_id="local-1" if active else "",
+                    current_call_popup=SimpleNamespace(_call_popup_caller_num="10086"),
+                )
+                if active:
+                    self.announce_local_session(namespace, "local-1")
+                for local_id in (None, "", "   "):
+                    self.assertFalse(register_peer_incoming_call_namespace_runtime(
+                        namespace, "peer-unknown", "10086", local_id))
+                    self.assertIsNone(_get_peer_call_binding(namespace))
+                self.assertFalse(register_peer_incoming_call_namespace_runtime(
+                    namespace, "peer-unknown", "10086"))
+                self.assertIsNone(_get_peer_call_binding(namespace))
+                self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                    namespace, "peer-1", "10086", "local-1"))
+                if not active:
+                    popup = namespace["current_call_popup"]
+                    self.announce_local_session(namespace, "local-unrelated")
+                    set_call_popup_namespace_runtime(namespace, popup)
+                    self.assertIsNone(_get_peer_call_binding(namespace))
+                    self.announce_local_session(namespace, "local-1")
+                    set_call_popup_namespace_runtime(namespace, popup)
+                binding = _get_peer_call_binding(namespace)
+                self.assertIsNotNone(binding)
+                self.assertEqual(binding["peer_session_id"], "peer-1")
+                self.assertEqual(binding["local_session_id"], "local-1")
+
+    def test_existing_peer_correlation_cannot_be_retargeted_to_same_number_redial(self):
+        namespace = self.base_namespace()
+        namespace.update(
+            call_popup_active_session_id="local-old",
+            current_call_popup=SimpleNamespace(_call_popup_caller_num="10086"),
+        )
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086", "local-old"))
+        self.assertFalse(register_peer_incoming_call_namespace_runtime(
+            namespace, "peer-old", "10086", "local-new"))
+        binding = _get_peer_call_binding(namespace)
+        self.assertEqual(binding["peer_session_id"], "peer-old")
+        self.assertEqual(binding["local_session_id"], "local-old")
+
     def test_replayed_finished_peer_call_cannot_remove_next_ringing_popup(self):
         for order in itertools.permutations(("incoming", "connected", "ended")):
             with self.subTest(order=order):
@@ -66,7 +114,12 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                             handle_device_call_state_runtime(
                                 {"type": "device_call_state", "direction": "incoming",
                                  "phone": "10086", "phase": phase,
-                                 "call_session_id": f"peer-{generation - 1}"},
+                                 "call_session_id": f"peer-{generation - 1}",
+                                 "local_call_session_id": f"local-{generation - 1}",
+                                 "call_session_ids": {
+                                     "desktop": f"local-{generation - 1}",
+                                     "firmware": f"peer-{generation - 1}",
+                                 }},
                                 runtime_imei=lambda: "000000000000001",
                                 register_incoming=lambda *args: register_peer_incoming_call_namespace_runtime(namespace, *args),
                                 mark_peer_call_connected=lambda *args: mark_peer_incoming_call_connected_namespace_runtime(namespace, *args),
@@ -78,7 +131,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                         self.assertFalse(tracker.snapshot().handled)
                         self.assertEqual(missed, [])
                     self.assertTrue(register_peer_incoming_call_namespace_runtime(
-                        namespace, f"peer-{generation}", "10086"))
+                        namespace, f"peer-{generation}", "10086", f"local-{generation}"))
                     finish_incoming_call_session_namespace_runtime(namespace)
                     close_call_popup_namespace_runtime(namespace)
                 self.assertEqual(len(destroyed), 5)
@@ -91,11 +144,11 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 tracker.start("10086")
                 namespace.update(
                     INCOMING_CALL_SESSION=tracker,
-                    call_popup_active_session_id="local-old",
                     current_call_popup=None,
                 )
+                self.announce_local_session(namespace, "local-old")
                 self.assertTrue(register_peer_incoming_call_namespace_runtime(
-                    namespace, "peer-old", "10086"))
+                    namespace, "peer-old", "10086", "local-old"))
                 if finish_remote:
                     self.assertTrue(finish_remote_incoming_call_namespace_runtime(
                         namespace, session_id="peer-old", caller_num="10086"))
@@ -103,9 +156,9 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                     reset_incoming_call_session_namespace_runtime(namespace)
 
                 tracker.start("10086")
-                namespace["call_popup_active_session_id"] = "local-new"
+                self.announce_local_session(namespace, "local-new")
                 self.assertFalse(register_peer_incoming_call_namespace_runtime(
-                    namespace, "peer-old", "10086"))
+                    namespace, "peer-old", "10086", "local-old"))
                 self.assertFalse(mark_peer_incoming_call_connected_namespace_runtime(
                     namespace, "peer-old", "10086"))
                 self.assertFalse(finish_remote_incoming_call_namespace_runtime(
@@ -113,7 +166,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 self.assertEqual(tracker.snapshot().caller_num, "10086")
                 self.assertFalse(tracker.snapshot().handled)
                 self.assertTrue(register_peer_incoming_call_namespace_runtime(
-                    namespace, "peer-new", "10086"))
+                    namespace, "peer-new", "10086", "local-new"))
                 self.assertTrue(mark_peer_incoming_call_connected_namespace_runtime(
                     namespace, "peer-new", "10086"))
                 connected = []
@@ -139,7 +192,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         now = [100.0]
         namespace["_call_peer_monotonic"] = lambda: now[0]
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-old", "10086"))
+            namespace, "peer-old", "10086", "local-old"))
         namespace["call_popup_active_session_id"] = "local-old"
         set_call_popup_namespace_runtime(namespace, SimpleNamespace(
             _call_popup_caller_num="10086"))
@@ -148,10 +201,10 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         namespace.update(current_call_popup=None, call_popup_active_session_id="")
         now[0] += RETIRED_PEER_CALL_TTL_SECONDS - 0.1
         self.assertFalse(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-old", "10086"))
+            namespace, "peer-old", "10086", "local-old"))
         now[0] += 0.1
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-old", "10086"))
+            namespace, "peer-old", "10086", "local-old"))
 
     def test_retired_peer_cache_is_bounded_and_namespace_local(self):
         namespace = self.base_namespace()
@@ -159,20 +212,20 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         namespace["INCOMING_CALL_SESSION"] = tracker
         for generation in range(RETIRED_PEER_CALL_MAX_ENTRIES + 1):
             tracker.start("10086")
-            namespace["call_popup_active_session_id"] = f"local-{generation}"
+            self.announce_local_session(namespace, f"local-{generation}")
             self.assertTrue(register_peer_incoming_call_namespace_runtime(
-                namespace, f"peer-{generation}", "10086"))
+                namespace, f"peer-{generation}", "10086", f"local-{generation}"))
             finish_incoming_call_session_namespace_runtime(namespace)
         self.assertEqual(len(namespace["call_popup_retired_peer_sessions"]),
                          RETIRED_PEER_CALL_MAX_ENTRIES)
         self.assertFalse(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-1", "10086"))
+            namespace, "peer-1", "10086", "local-1"))
         tracker.start("10086")
-        namespace["call_popup_active_session_id"] = "local-reused"
+        self.announce_local_session(namespace, "local-reused")
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-0", "10086"))
+            namespace, "peer-0", "10086", "local-reused"))
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            self.base_namespace(), "peer-1", "10086"))
+            self.base_namespace(), "peer-1", "10086", "local-1"))
         namespace["_call_peer_monotonic"] = lambda: 1000.0
         finish_incoming_call_session_namespace_runtime(namespace)
         self.assertEqual(list(namespace["call_popup_retired_peer_sessions"]), ["peer-0"])
@@ -180,19 +233,19 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
     def test_expiring_unbound_peer_does_not_retire_a_live_generation(self):
         namespace = self.base_namespace()
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-1", "10086"))
+            namespace, "peer-1", "10086", "local-1"))
         namespace["_call_peer_monotonic"] = lambda: 200.0
         self.assertIsNone(_get_peer_call_binding(namespace))
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-1", "10086"))
+            namespace, "peer-1", "10086", "local-1"))
 
     def test_retired_peer_replay_preserves_pending_new_terminal(self):
         namespace = self.base_namespace()
         tracker = IncomingCallSessionTracker()
         namespace.update(INCOMING_CALL_SESSION=tracker, current_call_popup=None)
         tracker.start("10086")
-        namespace["call_popup_active_session_id"] = "local-old"
-        register_peer_incoming_call_namespace_runtime(namespace, "peer-old", "10086")
+        self.announce_local_session(namespace, "local-old")
+        register_peer_incoming_call_namespace_runtime(namespace, "peer-old", "10086", "local-old")
         finish_incoming_call_session_namespace_runtime(namespace)
         namespace["call_popup_active_session_id"] = ""
         self.assertTrue(finish_remote_incoming_call_namespace_runtime(
@@ -200,11 +253,11 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
         self.assertFalse(finish_remote_incoming_call_namespace_runtime(
             namespace, session_id="peer-old", caller_num="10086"))
         self.assertFalse(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-old", "10086"))
+            namespace, "peer-old", "10086", "local-old"))
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            namespace, "peer-new", "10086"))
+            namespace, "peer-new", "10086", "local-new"))
         tracker.start("10086")
-        namespace["call_popup_active_session_id"] = "local-new"
+        self.announce_local_session(namespace, "local-new")
         missed = []
         namespace["show_missed_call_popup"] = missed.append
         set_call_popup_namespace_runtime(namespace, SimpleNamespace(
@@ -253,7 +306,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             popup = show_call_popup_namespace_runtime(namespace, "10086", f"local-{generation}")
             if generation > 1:
                 old_peer = f"peer-{generation - 1}"
-                register_peer_incoming_call_namespace_runtime(namespace, old_peer, "10086")
+                register_peer_incoming_call_namespace_runtime(namespace, old_peer, "10086", f"local-{generation - 1}")
                 mark_peer_incoming_call_connected_namespace_runtime(namespace, old_peer, "10086")
                 finish_remote_incoming_call_namespace_runtime(namespace, session_id=old_peer, caller_num="10086")
             root.update()
@@ -266,7 +319,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             self.assertEqual([button.cget("text") for button in buttons], ["✅ 接听", "❌ 挂断", "隐藏"])
             self.assertTrue(all(button.winfo_ismapped() for button in buttons))
             self.assertEqual(missed_popup.missed_call_popup_count, generation)
-            self.assertTrue(register_peer_incoming_call_namespace_runtime(namespace, f"peer-{generation}", "10086"))
+            self.assertTrue(register_peer_incoming_call_namespace_runtime(namespace, f"peer-{generation}", "10086", f"local-{generation}"))
             missed = finish_incoming_call_session_namespace_runtime(namespace)
             close_call_popup_namespace_runtime(namespace)
             show_missed_call_popup_namespace_runtime(namespace, missed)
@@ -291,16 +344,18 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             )
 
         session = "incoming:desktop:old" if local_session else ""
-        namespace = {
+        namespace = self.base_namespace()
+        namespace.update({
             "INCOMING_CALL_SESSION": tracker,
             "current_call_popup": make_popup(session) if show_popup else None,
             "call_popup_active_session_id": session,
             "ui_post": queued.append,
             "run_on_ui_thread": run_on_ui_thread,
             "show_missed_call_popup": missed.append,
-        }
+        })
+        self.announce_local_session(namespace, session)
         if peer_session:
-            register_peer_incoming_call_namespace_runtime(namespace, peer_session, "10086")
+            register_peer_incoming_call_namespace_runtime(namespace, peer_session, "10086", session)
 
         def receive():
             handle_device_call_state_runtime(
@@ -331,35 +386,49 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 new_id = "incoming:desktop:new" if local_session else ""
                 new_popup = make_popup(new_id) if show_popup else None
                 namespace.update(current_call_popup=new_popup, call_popup_active_session_id=new_id)
-                self.assertFalse(queued.pop()())
+                self.assertTrue(queued.pop()())
                 self.assertIs(namespace["current_call_popup"], new_popup)
                 self.assertEqual(namespace["call_popup_active_session_id"], new_id)
                 self.assertEqual(tracker.snapshot().started_at, now[0])
-                self.assertEqual(destroyed, [])
-                self.assertEqual(missed, [])
+                self.assertEqual(destroyed, ["incoming:desktop:old" if local_session else ""] if show_popup else [])
+                self.assertEqual(len(missed), 1)
 
-    def test_queued_terminal_finishes_unchanged_call_and_late_popup(self):
+    def test_queued_terminal_invalidates_late_show_and_finishes_captured_popup(self):
         for peer, show_popup in (("", True), ("", False), ("incoming:firmware:old", True)):
             with self.subTest(peer=peer, show_popup=show_popup):
                 namespace, _now, queued, destroyed, missed, make_popup = self.queued_terminal_case(
                     show_popup=show_popup, peer_session=peer)
+                self.assertIsNone(namespace["INCOMING_CALL_SESSION"].snapshot().session_token)
                 if not show_popup:
-                    namespace["current_call_popup"] = make_popup("incoming:desktop:old")
+                    self.assertEqual(show_call_popup_namespace_runtime(
+                        namespace, "10086", "incoming:desktop:old"), "disabled")
                 self.assertTrue(queued.pop()())
                 self.assertIsNone(namespace["current_call_popup"])
                 self.assertEqual(namespace["INCOMING_CALL_SESSION"].snapshot().caller_num, "")
-                self.assertEqual(destroyed, ["incoming:desktop:old"])
+                self.assertEqual(destroyed, ["incoming:desktop:old"] if show_popup else [])
                 self.assertEqual(len(missed), 1)
 
     def test_queued_peer_terminal_preserves_replaced_local_session(self):
         namespace, _now, queued, destroyed, missed, make_popup = self.queued_terminal_case(
             peer_session="incoming:firmware:old")
         new_popup = make_popup("incoming:desktop:new")
+        namespace["INCOMING_CALL_SESSION"].start("10086")
         namespace.update(current_call_popup=new_popup, call_popup_active_session_id="incoming:desktop:new")
-        self.assertFalse(queued.pop()())
+        self.announce_local_session(namespace, "incoming:desktop:new")
+        self.assertTrue(queued.pop()())
         self.assertIs(namespace["current_call_popup"], new_popup)
-        self.assertEqual(destroyed, [])
-        self.assertEqual(missed, [])
+        self.assertEqual(namespace["call_popup_active_session_id"], "incoming:desktop:new")
+        self.assertEqual(namespace["INCOMING_CALL_SESSION"].snapshot().caller_num, "10086")
+        self.assertEqual(destroyed, ["incoming:desktop:old"])
+        self.assertEqual(len(missed), 1)
+
+    def announce_local_session(self, namespace, local_session_id):
+        show_call_popup_namespace_runtime(
+            namespace,
+            namespace["INCOMING_CALL_SESSION"].snapshot().caller_num,
+            local_session_id,
+            show_app_runtime=lambda **_kwargs: None,
+        )
 
     def base_namespace(self):
         tracker = SimpleNamespace(
@@ -434,6 +503,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
 
@@ -471,6 +541,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
 
@@ -504,6 +575,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
         self.assertTrue(
@@ -545,6 +617,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:new",
                 "15923240141",
+                "incoming:desktop:new",
             )
         )
 
@@ -556,8 +629,16 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             caller_num="15923240141",
         )
 
-        self.assertFalse(result)
+        self.assertTrue(result)
         self.assertEqual(tracker.finished, 0)
+        self.assertEqual(
+            namespace["call_popup_pending_peer_terminal"]["incoming:firmware:old"]["session_id"],
+            "incoming:firmware:old",
+        )
+        self.assertEqual(
+            _get_peer_call_binding(namespace)["peer_session_id"],
+            "incoming:firmware:new",
+        )
         self.assertEqual(
             namespace["call_popup_active_session_id"],
             "incoming:desktop:new",
@@ -577,6 +658,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
         namespace["call_popup_peer_local_session_id"] = "incoming:desktop:1"
@@ -619,6 +701,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
         tracker.caller_num = "15923240141"
@@ -653,6 +736,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                 namespace,
                 "incoming:firmware:1",
                 "15923240141",
+                "incoming:desktop:1",
             )
         )
         namespace["call_popup_active_session_id"] = "incoming:desktop:1"

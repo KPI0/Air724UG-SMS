@@ -10,6 +10,9 @@ from sms_core.call_session import IncomingCallSessionTracker, MissedCall
 from sms_ui.app_ui_namespace_runtime import center_window_namespace_runtime
 from sms_ui.call_popup_namespace_runtime import (
     close_call_popup_namespace_runtime,
+    close_missed_call_popup_namespace_runtime,
+    set_call_popup_namespace_runtime,
+    set_missed_call_popup_namespace_runtime,
     show_call_popup_namespace_runtime,
     show_missed_call_popup_namespace_runtime,
 )
@@ -99,6 +102,95 @@ class CallPopupVisibilityTests(unittest.TestCase):
         self.missed()
         self.assert_incoming_above_missed(incoming, missed)
 
+    def test_focusing_missed_notice_cannot_cover_active_incoming_window(self):
+        missed = self.missed()
+        incoming = self.incoming()
+        missed.focus_force()
+        self.root.update()
+        self.assert_incoming_above_missed(incoming, missed)
+        self.assertIsNone(self.root.grab_current())
+        self.assertFalse(self.root.tk.call('after', 'info'))
+
+    def test_hiding_and_remapping_incoming_updates_missed_notice_priority(self):
+        missed = self.missed()
+        incoming = self.incoming()
+        self.assertFalse(missed.attributes('-topmost'))
+
+        incoming.withdraw()
+        self.root.update()
+        self.assertTrue(missed.attributes('-topmost'))
+        self.assertIs(self.namespace['current_call_popup'], incoming)
+
+        incoming.deiconify()
+        self.root.update()
+        missed.focus_force()
+        self.root.update()
+        self.assertFalse(missed.attributes('-topmost'))
+        self.assert_incoming_above_missed(incoming, missed)
+
+    def test_destroying_old_window_does_not_raise_missed_above_new_call(self):
+        missed = self.missed()
+        old = self.incoming('local-old')
+        set_call_popup_namespace_runtime(self.namespace, None)
+        self.namespace['INCOMING_CALL_SESSION'].finish()
+        incoming = self.incoming('local-new')
+
+        old.destroy()
+        self.root.update()
+        missed.focus_force()
+        self.root.update()
+        self.assertIs(self.namespace['current_call_popup'], incoming)
+        self.assertFalse(missed.attributes('-topmost'))
+        self.assert_incoming_above_missed(incoming, missed)
+
+    def test_closing_incoming_restores_missed_notice_priority(self):
+        missed = self.missed()
+        incoming = self.incoming()
+        self.assertFalse(missed.attributes('-topmost'))
+
+        close_call_popup_namespace_runtime(self.namespace)
+        self.root.update()
+        self.assertFalse(incoming.winfo_exists())
+        self.assertIs(self.namespace['current_missed_call_popup'], missed)
+        self.assertTrue(missed.winfo_ismapped())
+        self.assertTrue(missed.attributes('-topmost'))
+        self.assertEqual(self.errors, [])
+
+    def test_destroying_incoming_restores_missed_notice_priority(self):
+        missed = self.missed()
+        incoming = self.incoming()
+        self.assertFalse(missed.attributes('-topmost'))
+
+        incoming.destroy()
+        self.root.update()
+        self.assertTrue(missed.winfo_ismapped())
+        self.assertTrue(missed.attributes('-topmost'))
+        self.assertEqual(self.errors, [])
+
+    def test_closing_missed_notice_keeps_incoming_visible(self):
+        incoming = self.incoming()
+        missed = self.missed()
+        self.assertFalse(missed.attributes('-topmost'))
+        missed.focus_force()
+        self.root.update()
+        self.assert_incoming_above_missed(incoming, missed)
+
+        close_missed_call_popup_namespace_runtime(self.namespace)
+        self.root.update()
+        self.assertFalse(missed.winfo_exists())
+        self.assertIs(self.namespace['current_call_popup'], incoming)
+        self.assertTrue(incoming.winfo_ismapped())
+        self.assertTrue(incoming.attributes('-topmost'))
+        self.assertEqual(self.errors, [])
+
+    def test_native_stacking_error_is_logged(self):
+        missed = self.missed()
+        self.incoming()
+        with patch.object(missed, 'attributes', side_effect=tk.TclError('window operation failed')):
+            set_missed_call_popup_namespace_runtime(self.namespace, missed)
+        self.assertEqual(len(self.errors), 1)
+        self.assertIn('Sync phone popup stacking failed', self.errors[0])
+
     def test_center_is_restored_after_first_map_repositions_window(self):
         self.move_on_map = True
         incoming = self.incoming()
@@ -108,6 +200,7 @@ class CallPopupVisibilityTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_destroy_during_map_cancels_pending_placement(self):
+        self.namespace['INCOMING_CALL_SESSION'].start('10086')
         show_call_popup_namespace_runtime(self.namespace, '10086', 'local-1')
         window = self.namespace['current_call_popup']
         window.bind('<Map>', lambda event: window.destroy() if event.widget is window else None, add='+')

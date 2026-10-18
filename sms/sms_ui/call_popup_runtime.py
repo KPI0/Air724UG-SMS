@@ -79,15 +79,17 @@ def show_call_popup_runtime(
     send_command_async=send_command_with_result_async,
     log_error=None,
     dispatch_call_result=None,
+    write_guard=None,
 ):
     if popup_exists(current_popup, log_error=log_error):
         return current_popup
 
     def mark_handled():
         try:
-            mark_call_handled()
+            return mark_call_handled()
         except Exception as exc:
             _safe_log(log_error, f"Mark incoming call handled failed: {exc!r}")
+            return False
 
     def apply_result(callback):
         if dispatch_call_result is not None:
@@ -95,7 +97,8 @@ def show_call_popup_runtime(
         return callback()
 
     def answer(mark_connected, restore_answer):
-        mark_handled()
+        if mark_handled() is False:
+            return
 
         def on_result(result):
             return apply_result(lambda: apply_call_answer_result(
@@ -110,12 +113,15 @@ def show_call_popup_runtime(
             ))
 
         kwargs = {"on_result": on_result}
+        if write_guard is not None:
+            kwargs["write_guard"] = write_guard
         if log_error is not None:
             kwargs["log_error"] = log_error
         send_command_async(serial_lock, serial_getter, "ATA", **kwargs)
 
     def hangup(restore_hangup):
-        mark_handled()
+        if mark_handled() is False:
+            return
 
         def on_result(result):
             return apply_result(lambda: apply_call_hangup_result(
@@ -127,6 +133,8 @@ def show_call_popup_runtime(
             ))
 
         kwargs = {"on_result": on_result}
+        if write_guard is not None:
+            kwargs["write_guard"] = write_guard
         if log_error is not None:
             kwargs["log_error"] = log_error
         send_command_async(serial_lock, serial_getter, "ATH", **kwargs)
@@ -163,6 +171,7 @@ def show_call_popup_app_runtime(
     mark_call_handled=lambda: None,
     log_error=None,
     dispatch_call_result=None,
+    write_guard=None,
     show_runtime=show_call_popup_runtime,
 ):
     def show_on_ui():
@@ -188,6 +197,8 @@ def show_call_popup_app_runtime(
             kwargs["log_error"] = log_error
         if dispatch_call_result is not None:
             kwargs["dispatch_call_result"] = dispatch_call_result
+        if write_guard is not None:
+            kwargs["write_guard"] = write_guard
         return show_runtime(*args, **kwargs)
 
     return run_on_ui_thread(show_on_ui, ui_post)

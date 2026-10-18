@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 import codecs
 import inspect
@@ -59,6 +60,7 @@ class SerialRuntimeState:
 @dataclass(frozen=True)
 class SerialRuntimeResult:
     continue_read: bool = False
+    incoming_state_committed: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,9 @@ class SerialRuntimeCallbacks:
     mark_dial_connected: object = lambda: None
     mark_call_connected: object = lambda: None
     finish_dial_call: object = lambda _message="": None
+    consume_remote_incoming_end: object = lambda _session_id: False
+    call_state_guard: object = nullcontext
+    start_serial_incoming_call: object = None
 
 
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
@@ -220,6 +225,27 @@ def process_runtime_sms_items(pending, config, callbacks, ignore_repeat_state):
     )
 
 
+def _consume_remote_incoming_end(state, callbacks):
+    call_state = state.call_state
+    consume_remote_end = getattr(callbacks, "consume_remote_incoming_end", None)
+    if (
+        call_state.call_session_id and not call_state.current_dial_num
+        and not call_state.call_session_id.startswith("outgoing:")
+        and callable(consume_remote_end)
+        and consume_remote_end(call_state.call_session_id)
+    ):
+        # Only the serial reader owns CallState. A confirmed peer terminal
+        # names the generation to clear before a new RING/CLIP is parsed.
+        call_state.ring_timeout_target = 0.0
+        call_state.last_clip_num = ""
+        call_state.last_clip_time = 0.0
+        call_state.call_session_id = ""
+        call_state.pending_incoming_connected_until = 0.0
+        call_state.incoming_connected_session_id = ""
+        return True
+    return False
+
+
 def handle_serial_runtime_line(
     state,
     line,
@@ -230,6 +256,8 @@ def handle_serial_runtime_line(
     callbacks,
     ignore_repeat_state,
 ):
+    if _consume_remote_incoming_end(state, callbacks):
+        popup_active = False
     try:
         if callbacks.consume_call_recording_line(line):
             return SerialRuntimeResult(continue_read=True)
@@ -289,16 +317,33 @@ def handle_serial_runtime_line(
         callbacks.set_local_number,
     )
 
-    call_decision = handle_call_line(
-        line,
-        state.call_state,
-        now,
-        config.call_filter_mode,
-        config.call_whitelist,
-        config.call_blacklist,
-        popup_active,
-    )
-    state.call_state = call_decision.state
+    incoming_state_committed = False
+    start_result = True
+    with getattr(callbacks, "call_state_guard", nullcontext)():
+        # A peer terminal can arrive during SMS/log callbacks above. Consume
+        # its generation and commit the next pure call transition atomically.
+        if _consume_remote_incoming_end(state, callbacks):
+            popup_active = False
+        call_decision = handle_call_line(
+            line,
+            state.call_state,
+            now,
+            config.call_filter_mode,
+            config.call_whitelist,
+            config.call_blacklist,
+            popup_active,
+        )
+        state.call_state = call_decision.state
+        if call_decision.incoming_number:
+            start_serial_incoming = getattr(callbacks, "start_serial_incoming_call", None)
+            if callable(start_serial_incoming):
+                start_result = start_serial_incoming(
+                    call_decision.incoming_number, call_decision.call_session_id,
+                    state.call_state.ring_timeout_target,
+                )
+                incoming_state_committed = bool(start_result)
+            else:
+                start_result = callbacks.start_incoming_call(call_decision.incoming_number)
 
     call_effect = apply_call_decision(
         call_decision,
@@ -309,7 +354,7 @@ def handle_serial_runtime_line(
         callbacks.set_status,
         callbacks.show_call_popup,
         callbacks.close_call_popup,
-        callbacks.start_incoming_call,
+        lambda _number: start_result,
         callbacks.finish_incoming_call,
         callbacks.show_missed_call_popup,
         callbacks.send_cloud_call_event,
@@ -317,7 +362,8 @@ def handle_serial_runtime_line(
         callbacks.finish_dial_call,
     )
     if call_effect.stop_processing:
-        return SerialRuntimeResult(continue_read=True)
+        return SerialRuntimeResult(
+            continue_read=True, incoming_state_committed=incoming_state_committed)
 
     if call_decision.connected_number:
         try:
@@ -341,7 +387,10 @@ def handle_serial_runtime_line(
         now,
         lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now),
     )
-    return SerialRuntimeResult(continue_read=sms_decision.continue_read)
+    return SerialRuntimeResult(
+        continue_read=sms_decision.continue_read,
+        incoming_state_committed=incoming_state_committed,
+    )
 
 
 def decode_serial_line(raw):
@@ -422,6 +471,7 @@ def run_serial_runtime_thread(
     run_loop=run_serial_thread_loop,
     handle_runtime_line=handle_serial_runtime_line,
     settle_wait=time.sleep,
+    merge_call_state=None,
 ):
     state = SerialRuntimeState.create(parse_callback_head)
     now = clock or time.monotonic
@@ -443,9 +493,10 @@ def run_serial_runtime_thread(
     def handle_line(line):
         nonlocal config
         config = get_runtime_config()
-        ring_timeout_target, current_dial_num = get_call_state()
+        previous_state = get_call_state()
+        ring_timeout_target, current_dial_num = previous_state
         state.sync_call_state(ring_timeout_target, current_dial_num)
-        handle_runtime_line(
+        result = handle_runtime_line(
             state,
             line,
             now(),
@@ -455,7 +506,20 @@ def run_serial_runtime_thread(
             callbacks,
             ignore_repeat_state,
         )
-        sync_app_call_state()
+        if getattr(result, "incoming_state_committed", False):
+            # The new tracker lifetime and shared values were committed under
+            # the peer lock. Preserve any answer/terminal received afterwards.
+            state.sync_call_state(*get_call_state())
+        elif merge_call_state is None:
+            sync_app_call_state()
+        else:
+            # UI/cloud callbacks may update the shared state while this line
+            # is being processed. Commit only against the snapshot we read.
+            merged = merge_call_state(
+                previous_state, state.call_state.ring_timeout_target,
+                state.call_state.current_dial_num,
+            )
+            state.sync_call_state(*merged)
 
     def finish_sms_session():
         # Flush while the original device identity and log prefix still apply.

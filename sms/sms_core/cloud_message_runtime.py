@@ -724,9 +724,29 @@ def handle_device_call_state_runtime(
                     pass
         return True
     if phase == "incoming":
+        sessions = data.get("call_session_ids")
+        local_session_id = data.get("local_call_session_id")
+        if not isinstance(sessions, dict) or not isinstance(local_session_id, str):
+            return True
+        local_session_id = local_session_id.strip()
+        sessions = {
+            channel: value.strip()
+            for channel, value in sessions.items()
+            if channel in ("desktop", "firmware", "legacy")
+            and isinstance(value, str) and 0 < len(value.strip()) <= 128
+        }
+        local_channels = {channel for channel in ("desktop", "legacy")
+                          if sessions.get(channel) == local_session_id}
+        if (
+            not local_session_id or not local_channels or not session_id
+            or session_id == local_session_id
+            or not any(channel not in local_channels and value == session_id
+                       for channel, value in sessions.items())
+        ):
+            return True
         if callable(register_incoming):
             try:
-                register_incoming(session_id, caller_num)
+                register_incoming(session_id, caller_num, local_session_id)
             except Exception as exc:
                 if callable(log):
                     try:

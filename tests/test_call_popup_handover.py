@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from sms_core.call_effects import apply_call_hangup_result
 from sms_core.call_session import IncomingCallSessionTracker
+from sms_core.cloud_message_runtime import handle_device_call_state_runtime
 from sms_ui.call_popup_namespace_runtime import (
     _get_peer_call_binding,
     close_call_popup_namespace_runtime,
@@ -58,24 +59,66 @@ class CallPopupHandoverTests(unittest.TestCase):
 
     def test_late_serial_finish_preserves_next_unbound_peer(self):
         self.start("local-old")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086", "local-old")
         finish_remote_incoming_call_namespace_runtime(
             self.namespace, session_id="peer-old", caller_num="10086")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086", "local-new")
         finish_incoming_call_session_namespace_runtime(self.namespace)
         close_call_popup_namespace_runtime(self.namespace)
         popup = self.start("local-new")
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            self.namespace, "peer-new", "10086"))
+            self.namespace, "peer-new", "10086", "local-new"))
         self.assertTrue(mark_peer_incoming_call_connected_namespace_runtime(
             self.namespace, "peer-new", "10086"))
         self.assertTrue(self.tracker.snapshot().handled)
         self.assertIs(self.namespace["current_call_popup"], popup)
 
+    def test_first_late_old_peer_messages_preserve_same_number_redial(self):
+        for correlated in (False, True):
+            for phases in (("incoming", "ended"), ("ended", "incoming")):
+                with self.subTest(correlated=correlated, phases=phases):
+                    self.setUp()
+                    self.start("local-old")
+                    finish_incoming_call_session_namespace_runtime(self.namespace)
+                    close_call_popup_namespace_runtime(self.namespace)
+                    popup = self.start("local-new")
+                    new_token = self.tracker.snapshot().session_token
+                    self.namespace["ring_timeout_target"] = 123.0
+
+                    for phase in phases:
+                        message = {
+                            "type": "device_call_state", "direction": "incoming",
+                            "phase": phase, "phone": "10086", "call_session_id": "peer-old",
+                        }
+                        if correlated:
+                            message.update(
+                                local_call_session_id="local-old",
+                                call_session_ids={"desktop": "local-old", "firmware": "peer-old"},
+                            )
+                        self.assertTrue(handle_device_call_state_runtime(
+                            message,
+                            runtime_imei=lambda: "000000000000001",
+                            register_incoming=lambda *args: register_peer_incoming_call_namespace_runtime(
+                                self.namespace, *args),
+                            mark_peer_call_connected=lambda *args: mark_peer_incoming_call_connected_namespace_runtime(
+                                self.namespace, *args),
+                            finish_call=lambda *args, **kwargs: finish_remote_incoming_call_namespace_runtime(
+                                self.namespace, *args, **kwargs),
+                        ))
+
+                    self.assertIs(self.namespace["current_call_popup"], popup)
+                    self.assertTrue(popup.exists)
+                    self.assertEqual(self.namespace["call_popup_active_session_id"], "local-new")
+                    self.assertEqual(self.tracker.snapshot().session_token, new_token)
+                    self.assertEqual(self.tracker.snapshot().caller_num, "10086")
+                    self.assertFalse(self.tracker.snapshot().handled)
+                    self.assertEqual(self.namespace["ring_timeout_target"], 123.0)
+                    self.assertEqual(self.missed, [])
+
     def test_next_peer_does_not_replace_current_binding_on_connected(self):
         self.start("local-old")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086", "local-old")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086", "local-new")
         self.assertTrue(mark_peer_incoming_call_connected_namespace_runtime(
             self.namespace, "peer-old", "10086"))
         self.assertEqual(_get_peer_call_binding(self.namespace)["peer_session_id"], "peer-old")
@@ -85,17 +128,39 @@ class CallPopupHandoverTests(unittest.TestCase):
         self.assertEqual(_get_peer_call_binding(self.namespace)["peer_session_id"], "peer-new")
         self.assertFalse(self.tracker.snapshot().handled)
 
+    def test_future_peer_without_old_binding_waits_for_exact_local_session(self):
+        popup = self.start("local-old")
+        self.assertTrue(register_peer_incoming_call_namespace_runtime(
+            self.namespace, "peer-new", "10086", "local-new"))
+        mark_peer_incoming_call_connected_namespace_runtime(
+            self.namespace, "peer-new", "10086")
+        self.assertIs(self.namespace["current_call_popup"], popup)
+        self.assertFalse(self.tracker.snapshot().handled)
+        binding = _get_peer_call_binding(self.namespace)
+        if binding is not None:
+            self.assertNotEqual(binding["local_session_id"], "local-old")
+
+        finish_incoming_call_session_namespace_runtime(self.namespace)
+        close_call_popup_namespace_runtime(self.namespace)
+        new_popup = self.start("local-new")
+        binding = _get_peer_call_binding(self.namespace)
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding["peer_session_id"], "peer-new")
+        self.assertEqual(binding["local_session_id"], "local-new")
+        self.assertIs(self.namespace["current_call_popup"], new_popup)
+        self.assertTrue(self.tracker.snapshot().handled)
+
     def test_reset_discards_unbound_frame_without_retiring_its_id(self):
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086", "local-new")
         reset_incoming_call_session_namespace_runtime(self.namespace)
         self.assertIsNone(_get_peer_call_binding(self.namespace))
         self.assertTrue(register_peer_incoming_call_namespace_runtime(
-            self.namespace, "peer-new", "10086"))
+            self.namespace, "peer-new", "10086", "local-new"))
 
     def test_expired_next_peer_is_not_bound_to_later_call(self):
         self.start("local-old")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086")
-        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086", "local-old")
+        register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086", "local-new")
         self.namespace["_call_peer_monotonic"] = lambda: 200.0
         finish_incoming_call_session_namespace_runtime(self.namespace)
         close_call_popup_namespace_runtime(self.namespace)
@@ -107,8 +172,8 @@ class CallPopupHandoverTests(unittest.TestCase):
             with self.subTest(remote_finish=remote_finish):
                 self.setUp()
                 self.start("local-old")
-                register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086")
-                register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086")
+                register_peer_incoming_call_namespace_runtime(self.namespace, "peer-old", "10086", "local-old")
+                register_peer_incoming_call_namespace_runtime(self.namespace, "peer-new", "10086", "local-new")
                 if remote_finish:
                     finish_remote_incoming_call_namespace_runtime(
                         self.namespace, session_id="peer-old", caller_num="10086")
@@ -121,7 +186,7 @@ class CallPopupHandoverTests(unittest.TestCase):
                 self.assertEqual(binding["peer_session_id"], "peer-new")
                 self.assertEqual(binding["local_session_id"], "local-new")
                 self.assertFalse(register_peer_incoming_call_namespace_runtime(
-                    self.namespace, "peer-old", "10086"))
+                    self.namespace, "peer-old", "10086", "local-old"))
                 self.assertTrue(finish_remote_incoming_call_namespace_runtime(
                     self.namespace, session_id="peer-new", caller_num="10086"))
                 self.assertIsNone(self.namespace["current_call_popup"])
@@ -191,6 +256,79 @@ class CallPopupHandoverTests(unittest.TestCase):
             self.namespace, '10086', session_id,
             show_app_runtime=partial(show_call_popup_app_runtime,
                 show_runtime=partial(show_call_popup_runtime, **options)))
+
+    def when_show_checks_enabled(self, callback):
+        class HookNamespace(dict):
+            hook = None
+
+            def get(self, key, default=None):
+                if key == 'CALL_POPUP_ENABLED' and self.hook is not None:
+                    pending = self.hook
+                    self.hook = None
+                    pending()
+                return super().get(key, default)
+
+        self.namespace = HookNamespace(self.namespace)
+        self.namespace.hook = callback
+
+    def test_terminal_before_show_request_initialization_cannot_reopen_call(self):
+        self.tracker.start('10086')
+
+        def finish_before_request():
+            self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                self.namespace, 'peer-old', '10086', 'local-old'))
+            self.assertTrue(finish_remote_incoming_call_namespace_runtime(
+                self.namespace, session_id='peer-old', caller_num='10086'))
+
+        self.when_show_checks_enabled(finish_before_request)
+        result = self.open_during('local-old')
+
+        self.assertEqual(result, 'disabled')
+        self.assertEqual(self.popups, [])
+        self.assertIsNone(self.namespace['current_call_popup'])
+        self.assertIsNone(self.tracker.snapshot().session_token)
+        self.assertEqual(self.namespace['call_popup_active_session_id'], '')
+        self.assertIsNone(self.namespace['call_popup_request_token'])
+
+    def test_call_finished_before_show_entry_cannot_create_window(self):
+        self.tracker.start('10086')
+        finish_incoming_call_session_namespace_runtime(self.namespace)
+
+        result = self.open_during('local-ended')
+
+        self.assertEqual(result, 'disabled')
+        self.assertEqual(self.popups, [])
+        self.assertIsNone(self.namespace['current_call_popup'])
+        self.assertIsNone(self.tracker.snapshot().session_token)
+        self.assertIsNone(self.namespace.get('call_popup_local_session'))
+        self.assertFalse(self.namespace.get('call_popup_active_session_id'))
+        self.assertIsNone(self.namespace.get('call_popup_request_token'))
+
+    def test_old_show_initialization_cannot_replace_call_started_during_settings_check(self):
+        self.tracker.start('10086')
+        new_call = {}
+
+        def redial_before_request():
+            self.assertTrue(register_peer_incoming_call_namespace_runtime(
+                self.namespace, 'peer-old', '10086', 'local-old'))
+            self.assertTrue(finish_remote_incoming_call_namespace_runtime(
+                self.namespace, session_id='peer-old', caller_num='10086'))
+            self.tracker.start('10086')
+            new_call['popup'] = self.open_during('local-new')
+            new_call['token'] = self.tracker.snapshot().session_token
+            new_call['request'] = self.namespace['call_popup_request_token']
+
+        self.when_show_checks_enabled(redial_before_request)
+        result = self.open_during('local-old')
+
+        self.assertEqual(result, 'disabled')
+        self.assertEqual(self.popups, [new_call['popup']])
+        self.assertTrue(new_call['popup'].exists)
+        self.assertIs(self.namespace['current_call_popup'], new_call['popup'])
+        self.assertEqual(self.namespace['call_popup_active_session_id'], 'local-new')
+        self.assertIs(self.namespace['call_popup_request_token'], new_call['request'])
+        self.assertIs(self.tracker.snapshot().session_token, new_call['token'])
+        self.assertEqual(self.namespace['call_popup_local_session'], (new_call['token'], 'local-new'))
 
     def test_late_answer_result_does_not_disable_new_calls_ring_timeout(self):
         results, statuses = [], []
@@ -298,11 +436,14 @@ class CallPopupHandoverTests(unittest.TestCase):
     def test_call_ending_during_window_creation_does_not_leave_orphan(self):
         for session_id in ('local-old', ''):
             with self.subTest(session_id=session_id):
+                self.tracker.start('10086')
                 popup = self.open_during(session_id, lambda: close_call_popup_namespace_runtime(self.namespace))
                 self.assertFalse(popup.exists)
                 self.assertIsNone(self.namespace['current_call_popup'])
 
     def test_new_generation_during_old_creation_does_not_inherit_old_window(self):
+        self.tracker.start('10086')
+
         def redial():
             close_call_popup_namespace_runtime(self.namespace)
             self.start('local-new')
