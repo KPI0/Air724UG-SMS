@@ -1,5 +1,6 @@
 import unittest
 from functools import partial
+from datetime import datetime
 from types import SimpleNamespace
 
 from sms_core.call_effects import apply_call_hangup_result
@@ -19,7 +20,8 @@ from sms_ui.call_popup_runtime import show_call_popup_app_runtime, show_call_pop
 
 class CallPopupHandoverTests(unittest.TestCase):
     def setUp(self):
-        self.tracker = IncomingCallSessionTracker()
+        # Coarse Windows clocks can give consecutive calls the same time.
+        self.tracker = IncomingCallSessionTracker(now_func=lambda: datetime(2026, 1, 1))
         self.missed = []
         self.popups = []
         self.namespace = {

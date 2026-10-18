@@ -5,6 +5,40 @@ from sms_core.call_session import IncomingCallSessionTracker
 
 
 class IncomingCallSessionTrackerTests(unittest.TestCase):
+    def test_session_identity_is_independent_of_wall_clock(self):
+        timestamp = datetime(2026, 1, 1)
+        tracker = IncomingCallSessionTracker(now_func=lambda: timestamp)
+        self.assertIsNone(tracker.snapshot().session_token)
+        tracker.start('10086')
+        first = tracker.snapshot()
+        self.assertIsNotNone(first.session_token)
+        self.assertFalse(tracker.start('10086'))
+        tracker.mark_handled()
+        self.assertIs(tracker.snapshot().session_token, first.session_token)
+        tracker.finish()
+        self.assertIsNone(tracker.snapshot().session_token)
+        tracker.start('10086')
+        second = tracker.snapshot()
+        self.assertEqual(first.started_at, second.started_at)
+        self.assertIsNot(second.session_token, first.session_token)
+        tracker.reset()
+        self.assertIsNone(tracker.snapshot().session_token)
+        tracker.start('10086')
+        third = tracker.snapshot()
+        self.assertIsNot(third.session_token, first.session_token)
+        self.assertIsNot(third.session_token, second.session_token)
+
+    def test_replacement_and_separate_trackers_have_distinct_identities(self):
+        tracker = IncomingCallSessionTracker(now_func=lambda: 0)
+        other = IncomingCallSessionTracker(now_func=lambda: 0)
+        tracker.start('10086')
+        first = tracker.snapshot().session_token
+        tracker.start('10010')
+        replacement = tracker.snapshot().session_token
+        other.start('10010')
+        self.assertIsNot(first, replacement)
+        self.assertIsNot(other.snapshot().session_token, replacement)
+
     def test_unhandled_session_finishes_as_one_missed_call(self):
         started_at = datetime(2026, 8, 1, 10, 30, 0)
         tracker = IncomingCallSessionTracker(now_func=lambda: started_at)

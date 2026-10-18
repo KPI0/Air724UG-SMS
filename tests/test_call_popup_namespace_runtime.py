@@ -1,7 +1,7 @@
 ﻿import unittest
 
 from types import SimpleNamespace
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 import itertools
 import gc
@@ -325,7 +325,8 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
                     local_session=local_session, show_popup=show_popup)
                 tracker = namespace["INCOMING_CALL_SESSION"]
                 tracker.finish()
-                now[0] += timedelta(seconds=1)
+                # A new call must stay isolated even when the wall clock has
+                # not advanced between the old finish and the new start.
                 tracker.start("10086")
                 new_id = "incoming:desktop:new" if local_session else ""
                 new_popup = make_popup(new_id) if show_popup else None

@@ -14,6 +14,7 @@ class IncomingCallSessionSnapshot:
     caller_num: str = ""
     started_at: object = None
     handled: bool = False
+    session_token: object = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class IncomingCallSessionTracker:
         self._caller_num = ""
         self._started_at = None
         self._handled = False
+        self._session_token = None
 
     def start(self, caller_num):
         caller = str(caller_num or "").strip()
@@ -54,6 +56,8 @@ class IncomingCallSessionTracker:
             self._caller_num = caller
             self._started_at = self._now_func()
             self._handled = False
+            # Wall-clock timestamps can repeat across consecutive calls.
+            self._session_token = object()
             return IncomingCallStartResult(
                 started=True,
                 replaced=replaced,
@@ -78,6 +82,7 @@ class IncomingCallSessionTracker:
             self._caller_num = ""
             self._started_at = None
             self._handled = False
+            self._session_token = None
             return missed_call
 
     def reset(self):
@@ -85,6 +90,7 @@ class IncomingCallSessionTracker:
             self._caller_num = ""
             self._started_at = None
             self._handled = False
+            self._session_token = None
 
     def snapshot(self):
         with self._lock:
@@ -92,4 +98,5 @@ class IncomingCallSessionTracker:
                 caller_num=self._caller_num,
                 started_at=self._started_at,
                 handled=self._handled,
+                session_token=self._session_token,
             )

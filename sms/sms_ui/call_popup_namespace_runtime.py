@@ -666,7 +666,11 @@ def finish_remote_incoming_call_namespace_runtime(
         # A terminal frame can wait in the UI queue while the same caller redials.
         if expected_local_session and (current_active or current_popup_session) != expected_local_session:
             return False
-        if getattr(live_snapshot, "started_at", None) != getattr(snapshot, "started_at", None):
+        session_token = getattr(snapshot, "session_token", None)
+        if session_token is not None:
+            if getattr(live_snapshot, "session_token", None) is not session_token:
+                return False
+        elif getattr(live_snapshot, "started_at", None) != getattr(snapshot, "started_at", None):
             return False
         live_caller = current_popup_caller or str(live_snapshot.caller_num or "").strip()
         if not live_caller or (caller_text and caller_text != live_caller):
@@ -796,12 +800,10 @@ def show_call_popup_namespace_runtime(
         )
 
     def is_same_call():
-        if initial_call is not None and getattr(initial_call, "started_at", None) is not None:
+        session_token = getattr(initial_call, "session_token", None)
+        if session_token is not None:
             current_call = snapshot_call()
-            return bool(initial_call.caller_num) and (
-                current_call.caller_num == initial_call.caller_num
-                and current_call.started_at == initial_call.started_at
-            )
+            return getattr(current_call, "session_token", None) is session_token
         return is_current()
 
     def dispatch_call_result(callback):
