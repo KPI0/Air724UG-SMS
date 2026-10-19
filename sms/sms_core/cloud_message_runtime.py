@@ -852,7 +852,7 @@ async def handle_cloud_message_runtime(
     ):
         # Capture the target before replay validation or the started ACK can
         # yield. Login ACKs and other non-serial messages need no serial state.
-        send_serial_command = prepare_serial_command()
+        send_serial_command = prepare_serial_command(incoming.data)
     log(f"收到：{cloud_incoming_preview(incoming)}")
     if error_payload is not None:
         await reply(error_payload)

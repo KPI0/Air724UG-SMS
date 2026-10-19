@@ -252,7 +252,6 @@ def open_serial_debug_window_dialog(
         set_current_dial_num(phone)
         port_ui(f"📞 主动呼叫：拨打号码 {phone}", "normal")
         set_status(f"📞 呼叫中：{phone}", "blue")
-        quick_send(build_dial_command(phone))
         if popup_exists(get_dial_popup(), log_error=log_error):
             close_dial_popup()
         set_dial_popup(
@@ -264,6 +263,7 @@ def open_serial_debug_window_dialog(
                 close_dial_popup,
             )
         )
+        quick_send(build_dial_command(phone))
 
     def hangup_dialed_phone():
         port_ui("📞 已发送挂机指令 (ATH)", "normal")

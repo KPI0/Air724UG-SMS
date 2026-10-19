@@ -1,12 +1,14 @@
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import codecs
 import inspect
 import re
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
+from sms_core.call_command_context import SerialCallStateSnapshot, call_with_state_snapshot
 from sms_core.call_events import (
+    CallLineDecision,
     CallState,
     handle_call_line,
     line_confirms_call_presence,
@@ -31,6 +33,9 @@ class SerialRuntimeState:
     long_sms_assembler: LongSmsAssembler
     sms_pipeline: SmsReceivePipeline
     call_state: CallState
+    call_state_snapshot: object = None
+    received_call_snapshot: object = None
+    dial_generation: object = None
 
     @classmethod
     def create(cls, parse_callback_head):
@@ -49,6 +54,18 @@ class SerialRuntimeState:
         self.call_state.ring_timeout_target = ring_timeout_target
         self.call_state.current_dial_num = current_dial_num
 
+    def sync_call_snapshot(self, snapshot):
+        if isinstance(snapshot, SerialCallStateSnapshot):
+            if snapshot.generation is not self.dial_generation:
+                if self.call_state.call_session_id.startswith("outgoing:"):
+                    self.call_state.call_session_id = ""
+                self.call_state.outgoing_connected_session_id = ""
+                self.dial_generation = snapshot.generation
+            self.call_state_snapshot = snapshot
+        else:
+            self.call_state_snapshot = None
+        self.sync_call_state(*snapshot)
+
     def reset_call_state(self):
         self.call_state = CallState()
 
@@ -61,6 +78,7 @@ class SerialRuntimeState:
 class SerialRuntimeResult:
     continue_read: bool = False
     incoming_state_committed: bool = False
+    call_state_committed: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +125,7 @@ class SerialRuntimeCallbacks:
     finish_dial_call: object = lambda _message="": None
     consume_remote_incoming_end: object = lambda _session_id: False
     call_state_guard: object = nullcontext
+    observe_call_command_line: object = lambda _line: None
     start_serial_incoming_call: object = None
 
 
@@ -147,17 +166,25 @@ class SerialLineDecoder:
         self.text_buffer = ""
         self.max_line_chars = max(1, int(max_line_chars))
         self._skip_lf = False
+        self.call_state_snapshot = None
 
     def feed(self, raw):
+        snapshot = getattr(raw, "call_state_snapshot", None)
+
+        def decoded_line(text, captured):
+            return SerialReceivedLine(text, captured) if captured is not None else text
+
         if not raw:
             # A lone > at a chunk boundary may still be SMS body text. Wait
             # for one idle read before treating an unterminated > as a prompt.
             if self.text_buffer.strip() == ">" and not self.decoder.getstate()[0]:
                 self.text_buffer = ""
-                return [">"]
+                captured = self.call_state_snapshot
+                self.call_state_snapshot = None
+                return [decoded_line(">", captured)]
             if self.text_buffer or self.decoder.getstate()[0]:
                 return []
-            return [""]
+            return [decoded_line("", snapshot)]
 
         lines = []
         # Chunk boundaries are unrelated to frame boundaries. Preserve split
@@ -166,6 +193,8 @@ class SerialLineDecoder:
             if index % 2 == 0:
                 if not part:
                     continue
+                if not self.text_buffer and not self.decoder.getstate()[0]:
+                    self.call_state_snapshot = snapshot
                 self._skip_lf = False
                 self.text_buffer += self.decoder.decode(part, final=False)
                 if len(self.text_buffer) > self.max_line_chars:
@@ -178,9 +207,24 @@ class SerialLineDecoder:
                     continue
                 self._skip_lf = part == b"\r"
                 if not self.decoder.getstate()[0]:
-                    lines.append(self.text_buffer.strip())
+                    lines.append(decoded_line(self.text_buffer.strip(), self.call_state_snapshot or snapshot))
                     self.text_buffer = ""
+                    self.call_state_snapshot = None
         return lines
+
+
+class SerialReadChunk(bytes):
+    def __new__(cls, raw, snapshot):
+        result = super().__new__(cls, raw or b"")
+        result.call_state_snapshot = snapshot
+        return result
+
+
+class SerialReceivedLine(str):
+    def __new__(cls, line, snapshot):
+        result = super().__new__(cls, line)
+        result.call_state_snapshot = snapshot
+        return result
 
 
 def flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=None):
@@ -256,6 +300,11 @@ def handle_serial_runtime_line(
     callbacks,
     ignore_repeat_state,
 ):
+    snapshot = state.call_state_snapshot
+    call_with_state_snapshot(
+        getattr(callbacks, "observe_call_command_line", lambda _line: None), line,
+        call_state_snapshot=snapshot,
+    )
     if _consume_remote_incoming_end(state, callbacks):
         popup_active = False
     try:
@@ -298,7 +347,10 @@ def handle_serial_runtime_line(
     if ready_sms is not None:
         process_runtime_sms_items(ready_sms, config, callbacks, ignore_repeat_state)
     try:
-        callbacks.observe_sms_send_line(line)
+        call_with_state_snapshot(
+            callbacks.observe_sms_send_line, line,
+            call_state_snapshot=state.received_call_snapshot or snapshot, check_current=False,
+        )
     except Exception:
         pass
 
@@ -318,21 +370,24 @@ def handle_serial_runtime_line(
     )
 
     incoming_state_committed = False
+    call_state_committed = False
     start_result = True
     with getattr(callbacks, "call_state_guard", nullcontext)():
         # A peer terminal can arrive during SMS/log callbacks above. Consume
         # its generation and commit the next pure call transition atomically.
         if _consume_remote_incoming_end(state, callbacks):
             popup_active = False
-        call_decision = handle_call_line(
-            line,
-            state.call_state,
-            now,
-            config.call_filter_mode,
-            config.call_whitelist,
-            config.call_blacklist,
-            popup_active,
-        )
+        if snapshot is not None and not snapshot.is_current():
+            call_decision = CallLineDecision(state=state.call_state)
+            call_state_committed = True
+        else:
+            decision_state = state.call_state
+            if snapshot is not None and snapshot.pending:
+                decision_state = replace(decision_state, current_dial_num="")
+            call_decision = handle_call_line(
+                line, decision_state, now, config.call_filter_mode,
+                config.call_whitelist, config.call_blacklist, popup_active,
+            )
         state.call_state = call_decision.state
         if call_decision.incoming_number:
             start_serial_incoming = getattr(callbacks, "start_serial_incoming_call", None)
@@ -344,6 +399,12 @@ def handle_serial_runtime_line(
                 incoming_state_committed = bool(start_result)
             else:
                 start_result = callbacks.start_incoming_call(call_decision.incoming_number)
+        elif snapshot is not None and snapshot[1]:
+            # Commit the original outgoing transition while its generation is
+            # still protected; later effects may yield to a same-number redial.
+            if not call_state_committed:
+                snapshot.commit(state.call_state.ring_timeout_target, state.call_state.current_dial_num)
+            call_state_committed = True
 
     call_effect = apply_call_decision(
         call_decision,
@@ -351,7 +412,9 @@ def handle_serial_runtime_line(
         callbacks.send_call_hangup,
         callbacks.enqueue_third_push,
         callbacks.port_ui,
-        callbacks.set_status,
+        lambda text, color: call_with_state_snapshot(
+            callbacks.set_status, text, color,
+            call_state_snapshot=snapshot if snapshot is not None and snapshot[1] else None),
         callbacks.show_call_popup,
         callbacks.close_call_popup,
         lambda _number: start_result,
@@ -359,15 +422,17 @@ def handle_serial_runtime_line(
         callbacks.show_missed_call_popup,
         callbacks.send_cloud_call_event,
         callbacks.send_cloud_call_state,
-        callbacks.finish_dial_call,
+        lambda message: call_with_state_snapshot(
+            callbacks.finish_dial_call, message, call_state_snapshot=snapshot, check_incoming=False),
     )
     if call_effect.stop_processing:
         return SerialRuntimeResult(
-            continue_read=True, incoming_state_committed=incoming_state_committed)
+            continue_read=True, incoming_state_committed=incoming_state_committed,
+            call_state_committed=call_state_committed)
 
     if call_decision.connected_number:
         try:
-            callbacks.mark_dial_connected()
+            call_with_state_snapshot(callbacks.mark_dial_connected, call_state_snapshot=snapshot)
         except Exception:
             pass
     if call_decision.incoming_connected_number:
@@ -390,6 +455,7 @@ def handle_serial_runtime_line(
     return SerialRuntimeResult(
         continue_read=sms_decision.continue_read,
         incoming_state_committed=incoming_state_committed,
+        call_state_committed=call_state_committed,
     )
 
 
@@ -492,10 +558,19 @@ def run_serial_runtime_thread(
 
     def handle_line(line):
         nonlocal config
-        config = get_runtime_config()
+        received_state = getattr(line, "call_state_snapshot", None)
+        line = str(line)
         previous_state = get_call_state()
-        ring_timeout_target, current_dial_num = previous_state
-        state.sync_call_state(ring_timeout_target, current_dial_num)
+        if isinstance(received_state, SerialCallStateSnapshot):
+            # Earlier lines from the same read may have advanced this call.
+            # Refresh values only within the originally received generation.
+            if not received_state.same_generation(previous_state):
+                previous_state = received_state
+        config = get_runtime_config()
+        state.sync_call_snapshot(previous_state)
+        state.received_call_snapshot = (
+            received_state if isinstance(received_state, SerialCallStateSnapshot)
+            else state.call_state_snapshot)
         result = handle_runtime_line(
             state,
             line,
@@ -506,10 +581,11 @@ def run_serial_runtime_thread(
             callbacks,
             ignore_repeat_state,
         )
-        if getattr(result, "incoming_state_committed", False):
+        if (getattr(result, "incoming_state_committed", False)
+                or getattr(result, "call_state_committed", False)):
             # The new tracker lifetime and shared values were committed under
             # the peer lock. Preserve any answer/terminal received afterwards.
-            state.sync_call_state(*get_call_state())
+            state.sync_call_snapshot(get_call_state())
         elif merge_call_state is None:
             sync_app_call_state()
         else:
@@ -519,7 +595,11 @@ def run_serial_runtime_thread(
                 previous_state, state.call_state.ring_timeout_target,
                 state.call_state.current_dial_num,
             )
-            state.sync_call_state(*merged)
+            state.sync_call_snapshot(merged)
+
+    def read_call_scoped_chunk():
+        raw = read_serial_line()
+        return SerialReadChunk(raw, get_call_state())
 
     def finish_sms_session():
         # Flush while the original device identity and log prefix still apply.
@@ -545,7 +625,7 @@ def run_serial_runtime_thread(
             set_connecting_status=set_connecting_status,
             open_and_initialize_serial=open_and_initialize_serial,
             on_connected_port=handle_connected_port,
-            read_serial_line=read_serial_line,
+            read_serial_line=read_call_scoped_chunk,
             handle_line=handle_line,
             handle_error=handle_error,
             wait_before_retry=wait_before_retry,

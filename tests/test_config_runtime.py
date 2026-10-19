@@ -536,6 +536,39 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(backups, [("config.ini", "config.ini.broken.123.bak")])
         self.assertEqual(config.get("ui", "voice_enabled"), "1")
 
+    def test_initialize_config_runtime_preserves_corrupt_file_if_backup_fails(self):
+        for failure in ("permission", "destination_directory"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                config_file = os.path.join(tmp, "config.ini")
+                original = b"synthetic-invalid-header\n[serial]\nmode=Manual\n"
+                with open(config_file, "wb") as file:
+                    file.write(original)
+                backup_path = config_file + ".broken.123.bak"
+                if failure == "destination_directory":
+                    os.mkdir(backup_path)
+
+                def backup(source, destination):
+                    if failure == "permission":
+                        raise PermissionError("synthetic backup denial")
+                    return os.replace(source, destination)
+
+                config = configparser.ConfigParser(interpolation=None)
+                saves = []
+                with self.assertRaises(ConfigInitializationError) as raised:
+                    initialize_config_runtime(
+                        config=config,
+                        config_file=config_file,
+                        defaults_by_section={"ui": {"voice_enabled": "1"}},
+                        save_config=lambda: saves.append(True),
+                        backup_file=backup,
+                        time_func=lambda: 123,
+                    )
+                self.assertIn("备份失败", str(raised.exception))
+                self.assertEqual(saves, [])
+                with open(config_file, "rb") as file:
+                    self.assertEqual(file.read(), original)
+                self.assertFalse(config.has_section("ui"))
+
     def test_safe_save_config_runtime_writes_temp_and_replaces_target(self):
         config = configparser.ConfigParser()
         config["ui"] = {"voice_enabled": "1"}

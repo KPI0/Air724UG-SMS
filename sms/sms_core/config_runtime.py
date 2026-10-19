@@ -299,7 +299,11 @@ def initialize_config_runtime(
                     f"Config file invalid; moved to {backup_path!r} ({type(exc).__name__})",
                 )
         except Exception as backup_exc:
-            _safe_log(log_error, f"Config file invalid and backup failed; recreating defaults: {backup_exc!r}")
+            config.clear()
+            _safe_log(log_error, f"Config file invalid and backup failed; original preserved: {backup_exc!r}")
+            raise ConfigInitializationError(
+                f"配置文件损坏且备份失败：{config_file}。原文件未修改，请检查权限或备份路径后重试。"
+            ) from backup_exc
         load_defaults()
         save_startup_config("修复")
         created = True

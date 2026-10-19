@@ -1,8 +1,10 @@
 import time
-import threading
 from contextlib import contextmanager
 
 from sms_core.status_text import format_connected_status
+from sms_core.call_command_context import (
+    SerialCallStateSnapshot, call_state_lock, invalidate_call_commands, set_local_dial_popup,
+)
 
 from sms_ui.call_popup_runtime import (
     close_call_popup_app_runtime,
@@ -24,10 +26,7 @@ _PEER_PENDING_KEYS = (
 
 
 def _peer_state_lock(namespace):
-    lock = namespace.get("_call_peer_state_lock")
-    if lock is None:
-        lock = namespace.setdefault("_call_peer_state_lock", threading.RLock())
-    return lock
+    return call_state_lock(namespace)
 
 
 def _call_snapshot(namespace):
@@ -484,13 +483,15 @@ def set_call_popup_namespace_runtime(namespace, window, *, call_session_id=None)
 
 
 def set_dial_popup_namespace_runtime(namespace, window):
-    namespace.__setitem__("current_dial_popup", window)
+    set_local_dial_popup(namespace, window)
 
 
-def mark_dial_popup_connected_namespace_runtime(namespace):
+def mark_dial_popup_connected_namespace_runtime(namespace, *, call_state_snapshot=None):
+    popup = call_state_snapshot.popup if call_state_snapshot is not None else namespace.get("current_dial_popup")
+
     def mark_on_ui():
-        popup = namespace.get("current_dial_popup")
-        if popup is None:
+        if (popup is None or namespace.get("current_dial_popup") is not popup
+                or (call_state_snapshot is not None and not call_state_snapshot.is_current())):
             return False
         try:
             if not popup.winfo_exists():
@@ -516,39 +517,41 @@ def mark_dial_popup_connected_namespace_runtime(namespace):
 
 
 def mark_call_popup_connected_namespace_runtime(
-    namespace, call_session_id="", caller_num="",
+    namespace, call_session_id="", caller_num="", *, call_guard=None,
 ):
-    requested_session_id = str(call_session_id or "").strip()
-    caller_text = str(caller_num or "").strip()
-    local_id = _local_call_session_id(namespace)
-    snapshot = _call_snapshot(namespace)
-    popup = namespace.get("current_call_popup")
-    if snapshot is not None and hasattr(snapshot, "session_token") and snapshot.session_token is None:
-        return False
-    if not local_id and popup is None:
-        return False
-    popup_caller = str(getattr(popup, "_call_popup_caller_num", "") or "").strip()
-    current_caller = str(getattr(snapshot, "caller_num", "") or popup_caller).strip()
-    if caller_text and current_caller and caller_text != current_caller:
-        return False
-    if requested_session_id and local_id and requested_session_id != local_id:
-        binding = _get_peer_call_binding(namespace)
-        if not (
-            binding is not None and binding["peer_session_id"] == requested_session_id
-            and binding["local_session_id"] == local_id
-        ):
-            # The explicit ATA result API retains its historical caller match;
-            # passive peer states use the exact binding before entering here.
-            if not caller_text or not popup_caller or caller_text != popup_caller:
+    with _peer_state_lock(namespace):
+        if call_guard is not None and not call_guard():
+            return False
+        local_id = _local_call_session_id(namespace)
+        snapshot = _call_snapshot(namespace)
+        requested_session_id = str(call_session_id or "").strip()
+        caller_text = str(caller_num or "").strip()
+        popup = namespace.get("current_call_popup")
+        if snapshot is not None and hasattr(snapshot, "session_token") and snapshot.session_token is None:
+            return False
+        if not local_id and popup is None:
+            return False
+        popup_caller = str(getattr(popup, "_call_popup_caller_num", "") or "").strip()
+        current_caller = str(getattr(snapshot, "caller_num", "") or popup_caller).strip()
+        if caller_text and current_caller and caller_text != current_caller:
+            return False
+        if requested_session_id and local_id and requested_session_id != local_id:
+            binding = _get_peer_call_binding(namespace)
+            if not (
+                binding is not None and binding["peer_session_id"] == requested_session_id
+                and binding["local_session_id"] == local_id
+            ):
                 return False
-        requested_session_id = local_id
-    if requested_session_id and not local_id:
-        return False
-    if requested_session_id:
-        namespace["call_popup_pending_connected_session_id"] = requested_session_id
+            requested_session_id = local_id
+        if requested_session_id and not local_id:
+            return False
+        if requested_session_id:
+            namespace["call_popup_pending_connected_session_id"] = requested_session_id
 
     def mark_on_ui():
         with _peer_state_lock(namespace):
+            if call_guard is not None and not call_guard():
+                return False
             if not _same_local_call(namespace, local_id, snapshot):
                 return False
             tracker = namespace.get("INCOMING_CALL_SESSION")
@@ -591,10 +594,12 @@ def mark_call_popup_connected_namespace_runtime(
     return namespace["run_on_ui_thread"](mark_on_ui, namespace["ui_post"])
 
 
-def finish_dial_popup_namespace_runtime(namespace, message=""):
+def finish_dial_popup_namespace_runtime(namespace, message="", *, call_state_snapshot=None):
+    popup = call_state_snapshot.popup if call_state_snapshot is not None else namespace.get("current_dial_popup")
+
     def finish_on_ui():
-        popup = namespace.get("current_dial_popup")
-        if popup is None:
+        if (popup is None or namespace.get("current_dial_popup") is not popup
+                or (call_state_snapshot is not None and not call_state_snapshot.is_current(check_incoming=False))):
             return False
         try:
             if not popup.winfo_exists():
@@ -626,7 +631,10 @@ def set_missed_call_popup_namespace_runtime(namespace, window):
 
 def start_incoming_call_session_namespace_runtime(namespace, caller_num):
     with _peer_state_lock(namespace):
-        return namespace["INCOMING_CALL_SESSION"].start(caller_num)
+        result = namespace["INCOMING_CALL_SESSION"].start(caller_num)
+        if result:
+            invalidate_call_commands(namespace)
+        return result
 
 
 def serial_call_state_guard_namespace_runtime(namespace):
@@ -638,6 +646,7 @@ def start_serial_incoming_call_namespace_runtime(namespace, caller_num, session_
     with _peer_state_lock(namespace):
         result = namespace["INCOMING_CALL_SESSION"].start(caller_num)
         if result:
+            invalidate_call_commands(namespace)
             snapshot = _call_snapshot(namespace)
             namespace["call_popup_local_session"] = (
                 getattr(snapshot, "session_token", None), str(session_id or "").strip(),
@@ -665,6 +674,7 @@ def finish_incoming_call_session_namespace_runtime(namespace):
         namespace["call_popup_local_session"] = None
         # Duplicate serial termination must preserve future peer generations.
         if had_local_call:
+            invalidate_call_commands(namespace)
             _clear_peer_call_state(namespace, retire_current=True, preserve_next=True)
         return result
 
@@ -710,6 +720,7 @@ def finish_remote_incoming_call_namespace_runtime(
             if callable(mark_handled):
                 mark_handled()
         missed_call = namespace["INCOMING_CALL_SESSION"].finish()
+        invalidate_call_commands(namespace)
         namespace["call_popup_local_session"] = None
         namespace["call_popup_active_session_id"] = ""
         namespace["call_popup_request_token"] = None
@@ -751,6 +762,7 @@ def reset_incoming_call_session_namespace_runtime(namespace):
     with _peer_state_lock(namespace):
         had_local_call = _has_local_incoming_call(namespace)
         result = namespace["INCOMING_CALL_SESSION"].reset()
+        invalidate_call_commands(namespace)
         namespace["call_popup_local_session"] = None
         namespace["call_popup_pending_serial_ends"] = {}
         _clear_peer_call_state(namespace, retire_current=had_local_call)
@@ -995,8 +1007,7 @@ def show_missed_call_popup_namespace_runtime(
 
 
 def get_serial_call_state_namespace_runtime(namespace):
-    with _peer_state_lock(namespace):
-        return namespace["ring_timeout_target"], namespace["current_dial_num"]
+    return SerialCallStateSnapshot(namespace)
 
 
 def set_serial_call_state_namespace_runtime(namespace, next_ring_timeout, next_dial_num):
@@ -1007,6 +1018,8 @@ def set_serial_call_state_namespace_runtime(namespace, next_ring_timeout, next_d
 
 def merge_serial_call_state_namespace_runtime(namespace, previous_state, next_ring_timeout, next_dial_num):
     with _peer_state_lock(namespace):
+        if isinstance(previous_state, SerialCallStateSnapshot) and not previous_state.is_current():
+            return get_serial_call_state_namespace_runtime(namespace)
         previous_ring_timeout, previous_dial_num = previous_state
         current_ring_timeout, current_dial_num = get_serial_call_state_namespace_runtime(namespace)
         snapshot = _call_snapshot(namespace)
@@ -1016,6 +1029,7 @@ def merge_serial_call_state_namespace_runtime(namespace, previous_state, next_ri
         )
         if incoming_ended or current_ring_timeout == previous_ring_timeout:
             namespace["ring_timeout_target"] = next_ring_timeout
-        if current_dial_num == previous_dial_num and next_dial_num != previous_dial_num:
+        if (not getattr(previous_state, "pending", False)
+                and current_dial_num == previous_dial_num and next_dial_num != previous_dial_num):
             namespace["current_dial_num"] = next_dial_num
         return get_serial_call_state_namespace_runtime(namespace)

@@ -2,6 +2,7 @@ import asyncio
 import threading
 
 from sms_core.config_runtime import reload_config_runtime
+from sms_core.cloud_command_context import set_cloud_command_authorized
 from sms_core.cloud_runtime import read_cloud_control_settings
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain
 from sms_ui.cloud_control_app_runtime import (
@@ -74,7 +75,7 @@ def stop_cloud_control_namespace_runtime(
     stop_app_runtime=stop_cloud_control_app_runtime,
 ):
     def set_authorized(value):
-        namespace["cloud_device_authorized"] = bool(value)
+        set_cloud_command_authorized(namespace, value)
         if not value:
             interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
 

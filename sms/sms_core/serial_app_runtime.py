@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from sms_core.call_command_context import call_with_state_snapshot, observe_call_command_line
 
 from sms_core.serial_runtime import (
     SerialRuntimeCallbacks,
@@ -53,6 +54,7 @@ def build_serial_runtime_callbacks(callbacks):
         start_incoming_call=callbacks.get("start_incoming_call", lambda _caller_num: True),
         start_serial_incoming_call=callbacks.get("start_serial_incoming_call"),
         call_state_guard=callbacks.get("call_state_guard", nullcontext),
+        observe_call_command_line=callbacks.get("observe_call_command_line", lambda _line: None),
         finish_incoming_call=callbacks.get("finish_incoming_call", lambda: None),
         reset_incoming_call=callbacks.get("reset_incoming_call", lambda: None),
         show_missed_call_popup=callbacks.get(
@@ -194,6 +196,7 @@ def build_serial_app_wiring(
         "start_incoming_call": callbacks.get("start_incoming_call", lambda _caller_num: True),
         "start_serial_incoming_call": callbacks.get("start_serial_incoming_call"),
         "call_state_guard": callbacks.get("call_state_guard", nullcontext),
+        "observe_call_command_line": callbacks.get("observe_call_command_line", lambda _line: None),
         "finish_incoming_call": callbacks.get("finish_incoming_call", lambda: None),
         "reset_incoming_call": callbacks.get("reset_incoming_call", lambda: None),
         "show_missed_call_popup": callbacks.get(
@@ -288,15 +291,15 @@ def run_serial_reader_namespace_runtime(
         DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     )
 
-    def observe_sms_send_line(line):
+    def observe_sms_send_line(line, *, call_state_snapshot=None):
         connection = namespace.get("serial_obj")
         sms_send_coordinator.observe_line(
             line,
             connection=connection,
         )
-        return command_response_coordinator.observe_line(
-            line,
-            connection=connection,
+        return call_with_state_snapshot(
+            command_response_coordinator.observe_line, line, connection=connection,
+            call_state_snapshot=call_state_snapshot, check_current=False,
         )
 
     def cancel_serial_transactions(error="串口连接已断开"):
@@ -345,6 +348,8 @@ def run_serial_reader_namespace_runtime(
             "show_call_popup": namespace["show_call_popup"],
             "consume_remote_incoming_end": namespace.get("consume_remote_incoming_end", lambda _session_id: False),
             "call_state_guard": namespace.get("serial_call_state_guard", nullcontext),
+            "observe_call_command_line": lambda line, call_state_snapshot=None: observe_call_command_line(
+                namespace, line, call_state_snapshot=call_state_snapshot),
             "start_serial_incoming_call": namespace.get("start_serial_incoming_call"),
             "start_incoming_call": namespace.get(
                 "start_incoming_call_session",
@@ -366,6 +371,7 @@ def run_serial_reader_namespace_runtime(
                 "mark_dial_connected",
                 lambda: None,
             ),
+            "finish_dial_call": namespace.get("finish_dial_call", lambda _message="": None),
             "mark_call_connected": namespace.get(
                 "mark_call_connected",
                 lambda: None,

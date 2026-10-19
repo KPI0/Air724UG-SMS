@@ -1,10 +1,11 @@
 from dataclasses import dataclass
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import re
 import threading
 import time
 
 from sms_core.serial_debug import build_serial_command_payload
+from sms_core.call_command_context import VOICE_DIAL_RE
 from sms_core.phone_numbers import normalize_sms_destination
 from sms_core.sms_pdu import encode_text_sms_pdus
 from sms_core.threading_runtime import WorkerThreadRegistry, start_daemon_thread
@@ -91,7 +92,7 @@ _UNSET_CONNECTION = object()
 
 
 class SmsPduSendWaiter:
-    def __init__(self, label="", connection=None, cmgs_len=None):
+    def __init__(self, label="", connection=None, cmgs_len=None, *, wait_for_write=False):
         self.label = str(label or "")
         self.connection = connection
         self.cmgs_len = cmgs_len
@@ -102,6 +103,14 @@ class SmsPduSendWaiter:
         self._result_phase = False
         self._prompt_or_terminal_event = threading.Event()
         self._prompt_seen = False
+        self._write_started = not wait_for_write
+
+    def mark_write_started(self):
+        with self._lock:
+            if self._response is not None:
+                return False
+            self._write_started = True
+            return True
 
     def wait(self, timeout):
         if self._event.wait(float(timeout)):
@@ -149,6 +158,9 @@ class SmsPduSendWaiter:
         self._complete(SmsPduSendResponse(False, str(error or "短信发送失败"), str(line or "")))
 
     def observe_line(self, line):
+        with self._lock:
+            if not self._write_started:
+                return
         body = _modem_response_body(line)
         if not body:
             return
@@ -192,8 +204,10 @@ class SmsPduSendCoordinator:
         self._lock = threading.Lock()
         self._active = None
 
-    def begin_segment(self, label="", connection=None, cmgs_len=None):
-        waiter = SmsPduSendWaiter(label, connection=connection, cmgs_len=cmgs_len)
+    def begin_segment(self, label="", connection=None, cmgs_len=None, *, wait_for_write=False):
+        waiter = SmsPduSendWaiter(
+            label, connection=connection, cmgs_len=cmgs_len, wait_for_write=wait_for_write,
+        )
         with self._lock:
             if self._active is not None and not self._active.done():
                 waiter.fail("已有短信分片正在等待 Modem 确认")
@@ -229,12 +243,20 @@ class SmsPduSendCoordinator:
 
 
 class AtCommandResponseWaiter:
-    def __init__(self, command="", connection=None):
+    def __init__(self, command="", connection=None, *, wait_for_write=False):
         self.command = str(command or "").strip()
         self.connection = connection
         self._event = threading.Event()
         self._lock = threading.RLock()
         self._response = None
+        self._write_started = not wait_for_write
+
+    def mark_write_started(self):
+        with self._lock:
+            if self._response is not None:
+                return False
+            self._write_started = True
+            return True
 
     def wait(self, timeout):
         if self._event.wait(float(timeout)):
@@ -246,6 +268,9 @@ class AtCommandResponseWaiter:
         self._complete(AtCommandResponse(False, str(error or "AT 指令执行已取消")))
 
     def observe_line(self, line):
+        with self._lock:
+            if not self._write_started:
+                return
         body = _modem_response_body(line)
         if not body or not _is_trusted_modem_line(line, body):
             return
@@ -280,7 +305,7 @@ class AtCommandResponseCoordinator:
         self._active = None
 
     def begin(self, command="", connection=None):
-        waiter = AtCommandResponseWaiter(command, connection=connection)
+        waiter = AtCommandResponseWaiter(command, connection=connection, wait_for_write=True)
         with self._lock:
             if self._active is not None and not self._active.done():
                 waiter.cancel("已有 AT 指令正在等待 Modem 响应")
@@ -288,7 +313,7 @@ class AtCommandResponseCoordinator:
             self._active = waiter
         return waiter
 
-    def observe_line(self, line, connection=_UNSET_CONNECTION):
+    def observe_line(self, line, connection=_UNSET_CONNECTION, *, call_state_snapshot=None):
         with self._lock:
             waiter = self._active
         if (
@@ -299,6 +324,11 @@ class AtCommandResponseCoordinator:
         ):
             return
         if waiter is not None:
+            command = waiter.command.upper()
+            if (call_state_snapshot is not None
+                    and (VOICE_DIAL_RE.fullmatch(command) or re.fullmatch(r"AT[AH];?", command))
+                    and not call_state_snapshot.is_response_current()):
+                return
             waiter.observe_line(line)
 
     def finish(self, waiter):
@@ -360,7 +390,8 @@ def _matches_current_cmgs_command(upper_body, cmgs_len):
     upper = str(upper_body or "").upper()
     if cmgs_len is None or "AT+CMGS=" not in upper:
         return True
-    return f"AT+CMGS={cmgs_len}" in upper
+    command = re.search(r"AT\+CMGS=(\d+)", upper)
+    return command is not None and command.group(1) == str(cmgs_len)
 
 
 def _is_luat_cmgs_result_line(line, body, upper_body, cmgs_len=None):
@@ -415,12 +446,18 @@ def _begin_sms_segment_response(response_coordinator, label, connection=None, cm
                 label=label,
                 connection=connection,
                 cmgs_len=cmgs_len,
+                wait_for_write=True,
             )
         except TypeError:
             try:
-                waiter = response_coordinator.begin_segment(label=label)
+                waiter = response_coordinator.begin_segment(
+                    label=label, connection=connection, cmgs_len=cmgs_len,
+                )
             except TypeError:
-                waiter = response_coordinator.begin_segment()
+                try:
+                    waiter = response_coordinator.begin_segment(label=label)
+                except TypeError:
+                    waiter = response_coordinator.begin_segment()
     except Exception as exc:
         return None, SerialCommandResult(False, str(exc) or exc.__class__.__name__)
     if waiter is None:
@@ -492,7 +529,10 @@ def _write_sms_pdu_after_prompt(waiter, writer):
         return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
 
 
-def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=None, *, write_guard=None):
+def _write_serial_obj_bytes(
+    serial_obj, payload, debug_message=None, push_debug=None, *,
+    write_guard=None, before_write=None,
+):
     # Validate after every sender lock has been acquired, and keep the caller's
     # context locked through the write so a queued action cannot change calls.
     with DEFAULT_SERIAL_WRITE_LOCK, (write_guard() if write_guard else nullcontext(True)) as allowed:
@@ -512,6 +552,8 @@ def _write_serial_obj_bytes(serial_obj, payload, debug_message=None, push_debug=
             return SerialCommandResult(False, error)
 
         try:
+            if before_write is not None and before_write() is False:
+                return SerialCommandResult(False, "指令已取消，未写入串口")
             serial_obj.write(payload)
             serial_obj.flush()
         except Exception as exc:
@@ -622,6 +664,7 @@ def write_text_sms_pdu(
                     (command + "\r\n").encode("utf-8"),
                     f">>> 发送: {command}{suffix}\\r\\n",
                     push_debug,
+                    before_write=getattr(waiter, "mark_write_started", None),
                 )
                 if not result.ok:
                     _cancel_sms_segment_response(waiter, result.error)
@@ -684,6 +727,8 @@ def _write_bytes_locked(
     debug_message=None,
     push_debug=None,
     expected_serial=None,
+    before_write=None,
+    call_write_guard=None,
 ):
     with serial_lock:
         serial_obj = get_serial()
@@ -697,11 +742,21 @@ def _write_bytes_locked(
             if push_debug:
                 push_debug(f">>> 发送失败: {error}")
             return SerialCommandResult(False, error)
+
+        @contextmanager
+        def write_guard():
+            # Context-aware getters also validate authorization and generation.
+            # Recheck after the final write-lock wait while serial_lock is held.
+            with (call_write_guard() if call_write_guard else nullcontext(True)) as allowed:
+                yield allowed and get_serial() is serial_obj
+
         return _write_serial_obj_bytes(
             serial_obj,
             payload,
             debug_message,
             push_debug,
+            write_guard=write_guard,
+            before_write=before_write,
         )
 
 
@@ -749,6 +804,8 @@ def _write_confirmed_command_locked(
     *,
     append_crlf=True,
     on_modem_response=None,
+    write_guard=None,
+    before_write=None,
 ):
     if response_coordinator is None:
         return SerialCommandResult(False, "未配置 AT 指令响应确认器")
@@ -761,6 +818,12 @@ def _write_confirmed_command_locked(
         return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
 
     try:
+        def mark_write_started():
+            marker = getattr(waiter, "mark_write_started", None)
+            if callable(marker) and marker() is False:
+                return False
+            return before_write() if before_write is not None else True
+
         payload, display_suffix = build_serial_command_payload(command, append_crlf)
         result = _write_bytes_locked(
             serial_lock,
@@ -769,6 +832,8 @@ def _write_confirmed_command_locked(
             f">>> 发送: {command}{display_suffix}" if push_debug else None,
             push_debug,
             expected_serial=transaction_serial,
+            before_write=mark_write_started,
+            call_write_guard=write_guard,
         )
         if not result.ok:
             try:
@@ -797,6 +862,8 @@ def write_serial_command_confirmed_locked(
     response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
     push_debug=None,
     on_modem_response=None,
+    write_guard=None,
+    before_write=None,
 ):
     """Confirm one command while preserving the serial editor's exact bytes."""
     with DEFAULT_SERIAL_TRANSACTION_LOCK:
@@ -808,6 +875,7 @@ def write_serial_command_confirmed_locked(
             serial_lock, get_serial, transaction_serial, command,
             response_coordinator, response_timeout, push_debug,
             append_crlf=append_crlf, on_modem_response=on_modem_response,
+            write_guard=write_guard, before_write=before_write,
         )
 
 
@@ -819,6 +887,8 @@ def write_serial_command_sequence_confirmed_locked(
     response_coordinator,
     response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
     push_debug=None,
+    write_guard=None,
+    before_write=None,
 ):
     commands = [str(command or "").strip() for command in commands or ()]
     if not commands or any(not command for command in commands):
@@ -839,6 +909,7 @@ def write_serial_command_sequence_confirmed_locked(
                 response_coordinator,
                 response_timeout,
                 push_debug,
+                write_guard=write_guard, before_write=before_write,
             )
             if not result.ok:
                 return result
@@ -925,6 +996,7 @@ def write_text_sms_pdu_locked(
                     f">>> 发送: {command}{suffix}\\r\\n",
                     push_debug,
                     expected_serial=transaction_serial,
+                    before_write=getattr(waiter, "mark_write_started", None),
                 )
                 if not result.ok:
                     _cancel_sms_segment_response(waiter, result.error)

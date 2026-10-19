@@ -751,7 +751,7 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls, ["connected"])
 
-    def test_mark_call_popup_connected_allows_matching_caller_when_generation_differs(self):
+    def test_mark_call_popup_connected_rejects_unknown_generation_with_matching_caller(self):
         namespace = self.base_namespace()
         namespace["call_popup_active_session_id"] = "incoming:desktop:1"
         calls = []
@@ -769,8 +769,8 @@ class CallPopupNamespaceRuntimeTests(unittest.TestCase):
             "15923240141",
         )
 
-        self.assertTrue(result)
-        self.assertEqual(calls, ["connected"])
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
 
     def test_mark_call_popup_connected_is_deferred_until_popup_is_registered(self):
         namespace = self.base_namespace()

@@ -4,7 +4,8 @@ import inspect
 import threading
 from datetime import datetime
 
-from sms_core.cloud_command_context import capture_cloud_serial_command_context
+from sms_core.cloud_command_context import capture_cloud_serial_command_context, set_cloud_command_authorized
+from sms_core.cloud_auth import command_text
 from sms_core.cloud_message_runtime import (
     handle_device_call_state_runtime,
     handle_cloud_message_runtime,
@@ -380,20 +381,33 @@ def send_cloud_serial_command_namespace_runtime(
     send_runtime=send_cloud_serial_command_runtime,
 ):
     if command_context is None:
-        command_context = capture_cloud_serial_command_context(namespace)
+        command_context = capture_cloud_serial_command_context(
+            namespace, command=command, command_data=command_data,
+        )
+    call_context = command_context.call_context
+    if call_context is not None and call_context.command != str(command or "").strip():
+        call_context.finish(False)
+        return False, "通话指令已变化，已取消旧请求"
     context_error = ""
 
     def get_command_serial():
         nonlocal context_error
         # All three transaction writers call this under serial_lock before
-        # selecting a connection and again before each write (including PDU).
+        # selecting a connection and after the final write lock for each write.
         context_error = context_error or command_context.rejection_reason(namespace)
         return None if context_error else command_context.serial
 
     with namespace["serial_lock"]:
         get_command_serial()
     if context_error:
+        if call_context is not None:
+            call_context.finish(False)
         return False, context_error
+    if call_context is not None:
+        call_error = call_context.admit() or call_context.wait_for_dial(AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT)
+        if call_error:
+            call_context.finish(False)
+            return False, call_error
 
     sms_coordinator = namespace.get(
         "SMS_SEND_COORDINATOR",
@@ -411,40 +425,60 @@ def send_cloud_serial_command_namespace_runtime(
             (next_command,),
             response_coordinator=command_coordinator,
             response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+            write_guard=call_context.write_guard if call_context is not None else None,
+            before_write=call_context.before_write if call_context is not None else None,
         )
 
-    result = send_runtime(
-        command,
-        command_meta=command_data,
-        serial_lock=namespace["serial_lock"],
-        get_serial=get_command_serial,
-        write_command_result=execute_confirmed_command,
-        push_serial_debug=namespace.get("_push_serial_debug"),
-        port_ui=namespace.get("port_ui"),
-        log=namespace["_cloud_log"],
-        allow_sensitive_commands=namespace.get(
-            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
-            {},
-        ),
-        send_sms_transaction=lambda phone, message: write_text_sms_pdu_locked(
-            namespace["serial_lock"],
-            get_command_serial,
-            phone,
-            message,
-            push_debug=namespace.get("_push_serial_debug"),
+    mark_connected = namespace.get("mark_call_connected")
+    if call_context is not None and callable(mark_connected):
+        original_mark_connected = mark_connected
+
+        def mark_connected(*args):
+            return original_mark_connected(*args, call_guard=call_context.is_current)
+
+    try:
+        result = send_runtime(
+            command,
+            command_meta=command_data,
+            serial_lock=namespace["serial_lock"],
+            get_serial=get_command_serial,
+            write_command_result=execute_confirmed_command,
+            push_serial_debug=namespace.get("_push_serial_debug"),
             port_ui=namespace.get("port_ui"),
-            response_coordinator=sms_coordinator,
-            command_response_coordinator=command_coordinator,
-        ),
-        set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
-            namespace["serial_lock"],
-            get_command_serial,
-            build_own_number_commands(phone),
-            response_coordinator=command_coordinator,
-        ),
-        set_current_dial_num=lambda value: namespace.__setitem__("current_dial_num", value),
-        mark_call_connected=namespace.get("mark_call_connected"),
-    )
+            log=namespace["_cloud_log"],
+            allow_sensitive_commands=namespace.get(
+                "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
+                {},
+            ),
+            send_sms_transaction=lambda phone, message: write_text_sms_pdu_locked(
+                namespace["serial_lock"],
+                get_command_serial,
+                phone,
+                message,
+                push_debug=namespace.get("_push_serial_debug"),
+                port_ui=namespace.get("port_ui"),
+                response_coordinator=sms_coordinator,
+                command_response_coordinator=command_coordinator,
+            ),
+            set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
+                namespace["serial_lock"],
+                get_command_serial,
+                build_own_number_commands(phone),
+                response_coordinator=command_coordinator,
+            ),
+            set_current_dial_num=(None if call_context is not None else
+                                  lambda value: namespace.__setitem__("current_dial_num", value)),
+            mark_call_connected=mark_connected,
+        )
+    except Exception:
+        if call_context is not None:
+            call_context.finish(False)
+        raise
+    if call_context is not None:
+        stale_error = "" if call_context.is_current() else call_context.rejection_reason()
+        call_context.finish(bool(result[0]))
+        if stale_error:
+            return False, stale_error
     return (False, context_error) if context_error else result
 
 
@@ -480,7 +514,15 @@ async def run_registered_cloud_serial_command_namespace_runtime(
     start_worker=start_registered_serial_worker,
 ):
     if command_context is None:
-        command_context = capture_cloud_serial_command_context(namespace)
+        command_context = capture_cloud_serial_command_context(
+            namespace, command=command, command_data=command_data,
+        )
+    call_context = command_context.call_context
+    if call_context is not None:
+        call_error = call_context.admit()
+        if call_error:
+            call_context.finish(False)
+            return False, call_error
     result_future = loop.create_future()
 
     def finish(result):
@@ -495,6 +537,8 @@ async def run_registered_cloud_serial_command_namespace_runtime(
                 command, command_data, command_context=command_context,
             )
         except Exception as exc:
+            if call_context is not None:
+                call_context.finish(False)
             result = (False, f"发送失败：{exc}")
         try:
             loop.call_soon_threadsafe(finish, result)
@@ -510,6 +554,8 @@ async def run_registered_cloud_serial_command_namespace_runtime(
             thread_factory=namespace.get("threading", threading).Thread,
         )
     except Exception as exc:
+        if call_context is not None:
+            call_context.finish(False)
         return False, f"发送失败：{exc}"
 
     return await result_future
@@ -545,15 +591,17 @@ async def handle_cloud_message_namespace_runtime(
 
     def set_authorized(value):
         authorized = bool(value)
-        namespace["cloud_device_authorized"] = authorized
+        set_cloud_command_authorized(namespace, authorized)
         if not authorized:
             interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), lock_held=True)
         if authorized:
             namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
             namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
 
-    def prepare_serial_command():
-        command_context = capture_cloud_serial_command_context(namespace, websocket=ws)
+    def prepare_serial_command(command_data):
+        command_context = capture_cloud_serial_command_context(
+            namespace, websocket=ws, command=command_text(command_data), command_data=command_data,
+        )
         return lambda command, command_data=None: run_registered_cloud_serial_command_namespace_runtime(
             namespace, loop, command, command_data, command_context=command_context,
         )

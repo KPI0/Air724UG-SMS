@@ -1,6 +1,7 @@
 import queue
 
 from sms_core.call_send_namespace_runtime import send_local_serial_command_namespace_runtime
+from sms_core.call_command_context import set_local_dial_number, set_local_dial_popup
 from sms_core.sms_send_namespace_runtime import send_manual_sms_namespace_runtime
 from sms_ui.serial_debug_app_runtime import open_serial_debug_window_runtime
 
@@ -37,7 +38,7 @@ def set_serial_debug_state_namespace_runtime(namespace, name, *values):
         ),
         "dial_popup": lambda: (
             _require_values(1, values),
-            namespace.__setitem__("current_dial_popup", values[0]),
+            set_local_dial_popup(namespace, values[0]),
         ),
         "clear_window_refs": lambda: (
             namespace.__setitem__("serial_debug_win", None),
@@ -53,7 +54,7 @@ def set_serial_debug_state_namespace_runtime(namespace, name, *values):
         ),
         "current_dial_num": lambda: (
             _require_values(1, values),
-            namespace.__setitem__("current_dial_num", values[0]),
+            set_local_dial_number(namespace, values[0]),
         ),
     }
 

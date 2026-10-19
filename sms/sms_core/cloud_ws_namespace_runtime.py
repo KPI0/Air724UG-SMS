@@ -1,6 +1,7 @@
 import inspect
 import time
 from sms_core.cloud_firmware_ota import stop_firmware_ota
+from sms_core.cloud_command_context import set_cloud_command_authorized
 from sms_core.cloud_protocol import cloud_login_ack_matches_imei
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain, stop_cloud_sms_event_drain
 
@@ -26,7 +27,7 @@ async def wait_cloud_login_ack_namespace_runtime(
     result = await wait_runtime(
         ws,
         stop_event=namespace["cloud_stop_event"],
-        set_authorized=lambda value: namespace.__setitem__("cloud_device_authorized", bool(value)),
+        set_authorized=lambda value: set_cloud_command_authorized(namespace, value),
         set_auth_status_from_ack=namespace["set_cloud_auth_status_from_ack"],
         log=namespace["_cloud_log"],
         safe_preview=namespace["_cloud_safe_preview"],
@@ -154,7 +155,7 @@ async def cloud_ws_main_namespace_runtime(
     uploader = namespace.get("CALL_RECORDING_UPLOADER")
 
     def set_authorized(value):
-        namespace["cloud_device_authorized"] = bool(value)
+        set_cloud_command_authorized(namespace, value)
         if not value:
             interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
         if not value and uploader is not None:
@@ -189,7 +190,7 @@ async def cloud_ws_main_namespace_runtime(
     finally:
         namespace["cloud_connected"] = False
         namespace["cloud_ws_conn"] = None
-        namespace["cloud_device_authorized"] = False
+        set_cloud_command_authorized(namespace, False)
         await stop_firmware_ota(namespace)
         await stop_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
         if uploader is not None:

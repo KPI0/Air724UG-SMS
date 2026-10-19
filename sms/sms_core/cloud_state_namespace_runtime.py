@@ -2,6 +2,7 @@ import asyncio
 import threading
 import time
 from contextlib import nullcontext
+from sms_core.cloud_command_context import set_cloud_command_authorized
 
 from sms_core.cloud_imei_runtime import (
     maybe_capture_cloud_device_imei_runtime,
@@ -52,7 +53,7 @@ def set_cloud_device_imei_namespace_runtime(
         with event_state.lock if event_state is not None else nullcontext():
             # Authorization belongs to the previous identity until its new
             # login ACK arrives. Keep queued events and their generation.
-            namespace["cloud_device_authorized"] = False
+            set_cloud_command_authorized(namespace, False)
             namespace["CLOUD_DEVICE_IMEI"] = value
             interrupt_cloud_sms_event_drain(event_state, lock_held=True)
         reset_logs = namespace.get("_reset_cloud_serial_log_state")

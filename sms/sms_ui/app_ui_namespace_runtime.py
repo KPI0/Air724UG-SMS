@@ -162,14 +162,21 @@ def set_cloud_auth_status_from_ack_namespace_runtime(namespace, data):
     return namespace["set_cloud_status"]("🌐 等待授权", "#b26a00")
 
 
-def set_status_namespace_runtime(namespace, text, color="black"):
+def set_status_namespace_runtime(namespace, text, color="black", *, call_state_snapshot=None):
+    def run_status_on_ui(callback, post):
+        def apply_status():
+            if call_state_snapshot is None or call_state_snapshot.is_current():
+                return callback()
+            return None
+        return namespace["run_on_ui_thread"](apply_status, post)
+
     return update_label_status_runtime(
         text,
         color,
         tk_alive=namespace["tk_alive"],
         text_var=namespace["status_var"],
         label=namespace["status_label"],
-        run_on_ui_thread=namespace["run_on_ui_thread"],
+        run_on_ui_thread=run_status_on_ui,
         ui_post=namespace["ui_post"],
         log_error=namespace.get("log_file_only"),
     )

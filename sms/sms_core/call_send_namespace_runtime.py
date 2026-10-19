@@ -4,6 +4,10 @@ import time
 import uuid
 
 from sms_core.cloud_payloads import build_outgoing_call_event_payload
+from sms_core.call_command_context import (
+    SerialCallStateSnapshot, call_state_lock, call_with_state_snapshot,
+    capture_call_command_context,
+)
 from sms_core.cloud_sms_event_runtime import enqueue_cloud_sms_event_runtime
 from sms_core.serial_sender import (
     AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
@@ -42,6 +46,14 @@ def send_local_serial_command_namespace_runtime(
         identity = dict(namespace["_cloud_identity_payload"]())
         imei = str(identity.get("imei") or "").strip()
     source_id = "desktop_dial_" + uuid.uuid4().hex
+    with call_state_lock(namespace):
+        call_context = capture_call_command_context(namespace, raw_command)
+        request = namespace.get("_local_dial_request")
+        if (request is not None and request is namespace.get("_dial_state_generation")
+                and not request.queued and not request.finished
+                and request.number == match.group(1)):
+            request.queued = True
+            call_context.local_dial_request = request
     attempted_at = None
     context_changed = False
 
@@ -87,6 +99,17 @@ def send_local_serial_command_namespace_runtime(
             is_enabled=lambda: namespace.get("CLOUD_CONTROL_ENABLED", True),
         )
 
+    def finish_failed_popup():
+        callback = namespace.get("finish_dial_call")
+        with call_state_lock(namespace):
+            if (not callable(callback) or call_context.local_dial_request is None
+                    or namespace.get("_dial_state_generation") is not call_context.local_dial_request):
+                return
+            snapshot = SerialCallStateSnapshot(namespace)
+        call_with_state_snapshot(
+            callback, "📞 拨号失败，请检查串口状态", call_state_snapshot=snapshot,
+        )
+
     def worker():
         replies = []
         try:
@@ -97,8 +120,15 @@ def send_local_serial_command_namespace_runtime(
                 ),
                 append_crlf=append_crlf, response_timeout=response_timeout,
                 push_debug=namespace["_push_serial_debug"], on_modem_response=replies.append,
+                write_guard=call_context.write_guard,
+                before_write=call_context.before_write,
             )
+            call_context.finish(result.ok)
+            if not result.ok:
+                finish_failed_popup()
         except Exception:
+            call_context.finish(False)
+            finish_failed_popup()
             namespace["port_ui"]("拨号执行异常，未生成呼出记录，请检查串口状态", "normal")
             return
         # A serial-write error could contain any text. Only the waiter's
@@ -122,7 +152,13 @@ def send_local_serial_command_namespace_runtime(
         except Exception:
             namespace["port_ui"]("拨号已执行，但呼出记录上传遇到问题；请勿为补记录重复拨号", "normal")
 
-    return start_worker(
-        "serial_local_dial", worker, log_error=namespace.get("log_file_only"),
-        thread_registry=namespace.get("SERIAL_COMMAND_THREAD_REGISTRY", DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY),
-    )
+    try:
+        return start_worker(
+            "serial_local_dial", worker, log_error=namespace.get("log_file_only"),
+            thread_registry=namespace.get("SERIAL_COMMAND_THREAD_REGISTRY", DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY),
+        )
+    except Exception:
+        call_context.finish(False)
+        finish_failed_popup()
+        namespace["port_ui"]("拨号任务未能启动，请稍后重试", "normal")
+        return None

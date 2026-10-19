@@ -526,6 +526,28 @@ class SerialSenderResultTests(unittest.TestCase):
         self.assertTrue(waiter.wait(0).ok)
         coordinator.finish(waiter)
 
+    def test_sms_pdu_send_coordinator_rejects_length_prefix_collisions(self):
+        for other_length in (120, 123, 129):
+            for result_phase, result in ((False, "false ERROR"),
+                                         (True, "false ERROR"),
+                                         (True, "true OK")):
+                with self.subTest(other_length=other_length, result_phase=result_phase, result=result):
+                    coordinator = SmsPduSendCoordinator()
+                    waiter = coordinator.begin_segment(cmgs_len=12)
+                    if result_phase:
+                        coordinator.observe_line(">")
+                        self.assertTrue(waiter.mark_pdu_send_started())
+                    coordinator.observe_line(
+                        f"[I]-[lib_sms rsp] +CMGS AT+CMGS={other_length} {result}"
+                    )
+                    self.assertFalse(waiter.done())
+                    if not result_phase:
+                        coordinator.observe_line(">")
+                        self.assertTrue(waiter.mark_pdu_send_started())
+                    coordinator.observe_line("[I]-[lib_sms rsp] +CMGS AT+CMGS=12 true OK")
+                    self.assertTrue(waiter.wait(0).ok)
+                    coordinator.finish(waiter)
+
     def test_sms_pdu_send_coordinator_binds_lines_to_current_connection(self):
         coordinator = SmsPduSendCoordinator()
         connection_a = object()
