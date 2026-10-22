@@ -239,6 +239,26 @@ class ThirdPushWindowScrollTests(unittest.TestCase):
         self.root.update()
         self.assertEqual(self.root.bind_all("<MouseWheel>"), global_binding)
 
+    def test_save_button_refreshes_committed_parameters_and_clears_dirty_title(self):
+        state = self.form.state_provider()
+        state.update(enabled=True, channels=["wecom"])
+        state["settings"]["wecom_webhook"] = "https://saved.example.invalid"
+        self.form.sync_from_state()
+        self.form.entry_vars["wecom_webhook"].set("https://requested.example.invalid")
+        self.assertTrue(self.form.is_dirty())
+        state["settings"]["wecom_webhook"] = "https://merged.example.invalid"
+        save_button = next(
+            widget for widget in descendants(self.win)
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "保存修改"
+        )
+
+        save_button.invoke()
+        self.root.update()
+
+        self.assertEqual(self.form.entry_vars["wecom_webhook"].get(), "https://merged.example.invalid")
+        self.assertFalse(self.form.is_dirty())
+        self.assertEqual(self.win.title(), "三方推送")
+
     def test_closed_forms_release_variables_and_callbacks_on_ui_thread(self):
         owner = threading.get_ident()
         finalized = []

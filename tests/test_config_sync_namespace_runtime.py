@@ -1,7 +1,12 @@
 import configparser
+import os
+import queue
+import tempfile
 import threading
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from sms_ui.config_sync_namespace_runtime import (
     register_config_sync_refresher_namespace_runtime,
@@ -9,7 +14,19 @@ from sms_ui.config_sync_namespace_runtime import (
     start_config_file_watch_namespace_runtime,
 )
 from sms_ui.config_sync_runtime import ConfigFileWatchState
-from sms_core.config_runtime import CONFIG_SNAPSHOT_ATTR, remember_config_snapshot
+from sms_core.config_runtime import (
+    CONFIG_SNAPSHOT_ATTR,
+    remember_config_snapshot,
+    safe_save_config_runtime,
+    snapshot_config_runtime,
+)
+from sms_core.third_push import THIRD_PUSH_SETTINGS_KEYS, third_push_state
+from sms_core.third_push_config import read_third_push_settings
+from sms_ui.config_sync_namespace_bindings import install_config_sync_namespace_bindings
+from sms_ui.third_push_namespace_bindings import install_third_push_namespace_bindings
+from sms_ui.third_push_namespace_runtime import apply_third_push_settings_namespace_runtime
+from tests.test_config_sync_runtime import FakeRootTimer
+from tests.test_third_push_window_form import make_form
 
 
 class FakeVar:
@@ -49,6 +66,7 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "call_popup_enabled": "1",
             "local_only": "old",
         }
+        push_settings = read_third_push_settings(config)
         remember_config_snapshot(config)
         calls = []
         return {
@@ -70,6 +88,12 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
             "AUTO_LOG_CLEANUP": True,
             "LOG_RETENTION_DAYS": 30,
             "ALLOW_MULTI_INSTANCE": True,
+            "THIRD_PUSH_ENABLED": push_settings.enabled,
+            "THIRD_PUSH_SMS_ENABLED": push_settings.sms_enabled,
+            "THIRD_PUSH_CALL_ENABLED": push_settings.call_enabled,
+            "THIRD_PUSH_TYPES": push_settings.channels,
+            "THIRD_PUSH_SETTINGS": push_settings.settings,
+            "third_push_win": None,
             "CLOUD_SENSITIVE_COMMAND_PERMISSIONS": {
                 "sms": False,
                 "call": False,
@@ -367,6 +391,220 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         self.assertFalse(observed[1]["sn"])
         unregister()
         self.assertNotIn("security", namespace["_CONFIG_SYNC_REFRESHERS"])
+
+    def test_reload_syncs_each_push_option_and_parameter_without_repeated_notices(self):
+        updates = {
+            "enabled": "1",
+            "sms_enabled": "0",
+            "call_enabled": "0",
+            "notify_type": '["wecom", "email"]',
+            **{key: "synthetic-update" for key in THIRD_PUSH_SETTINGS_KEYS},
+        }
+        for key, value in updates.items():
+            with self.subTest(key=key):
+                namespace = self.make_namespace()
+                snapshot = snapshot_config_runtime(namespace["config"])
+                snapshot["third_push"][key] = value
+
+                changed = reload_shared_ui_config_namespace_runtime(
+                    namespace, load_snapshot=lambda _path: snapshot,
+                )
+
+                self.assertIn("三方推送", changed)
+                expected = read_third_push_settings(namespace["config"])
+                self.assertEqual(self.push_state(namespace), third_push_state(
+                    expected.enabled, expected.sms_enabled, expected.call_enabled,
+                    expected.channels, expected.settings,
+                ))
+                self.assertTrue(any(
+                    item[0] == "ui" and "三方推送" in item[1][0]
+                    for item in namespace["calls"] if isinstance(item, tuple)
+                ))
+                namespace["calls"].clear()
+                repeated = reload_shared_ui_config_namespace_runtime(
+                    namespace, load_snapshot=lambda _path: snapshot,
+                )
+                self.assertNotIn("三方推送", repeated)
+                self.assertFalse(any(
+                    item[0] == "ui" for item in namespace["calls"]
+                    if isinstance(item, tuple)
+                ))
+
+    @staticmethod
+    def push_state(namespace):
+        return third_push_state(
+            namespace["THIRD_PUSH_ENABLED"], namespace["THIRD_PUSH_SMS_ENABLED"],
+            namespace["THIRD_PUSH_CALL_ENABLED"], namespace["THIRD_PUSH_TYPES"],
+            namespace["THIRD_PUSH_SETTINGS"],
+        )
+
+    def test_shared_file_watch_updates_subsequent_pushes_in_both_instances(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.ini")
+            initial = self.make_namespace()["config"]
+            initial.set("third_push", "enabled", "1")
+            initial.set("third_push", "notify_type", '["dingtalk"]')
+            initial.set("third_push", "dingtalk_webhook", "https://old.example.invalid")
+            with open(path, "w", encoding="utf-8") as file_obj:
+                initial.write(file_obj)
+            namespaces = [self.make_namespace(), self.make_namespace()]
+            timers = []
+            for namespace in namespaces:
+                namespace["config"].read(path, encoding="utf-8")
+                namespace["CONFIG_FILE"] = path
+                remember_config_snapshot(namespace["config"])
+                apply_third_push_settings_namespace_runtime(
+                    namespace, read_third_push_settings(namespace["config"]),
+                )
+                namespace["safe_save_config"] = lambda ns=namespace: safe_save_config_runtime(
+                    config=ns["config"], config_file=path, config_lock=ns["CONFIG_LOCK"],
+                )
+                namespace["THIRD_PUSH_Q"] = queue.Queue()
+                timer = FakeRootTimer()
+                namespace["root"] = SimpleNamespace(
+                    after=timer.after, after_cancel=timer.after_cancel,
+                    winfo_rgb=FakeRoot().winfo_rgb,
+                )
+                timers.append(timer)
+                install_third_push_namespace_bindings(namespace)
+                install_config_sync_namespace_bindings(namespace)
+                namespace["start_config_file_watch"]()
+            first, second = namespaces
+
+            self.assertTrue(second["enqueue_third_push"]("queued before sync"))
+            self.assertIsNotNone(first["save_third_push_setting"](
+                notify_type=["wecom"], sms_enabled=False,
+                settings={"wecom_webhook": "https://new.example.invalid"},
+            ))
+            timers[1].run(second["CONFIG_FILE_WATCH_STATE"].after_id)
+            self.assertEqual(second["THIRD_PUSH_TYPES"], ["wecom"])
+            self.assertFalse(second["enqueue_third_push"]("disabled SMS"))
+            self.assertTrue(second["enqueue_third_push"]("call", event_type="call"))
+            old_payload = second["THIRD_PUSH_Q"].get_nowait()
+            new_payload = second["THIRD_PUSH_Q"].get_nowait()
+            self.assertEqual(old_payload["channels"], ["dingtalk"])
+            self.assertEqual(old_payload["settings"]["dingtalk_webhook"], "https://old.example.invalid")
+            self.assertEqual(new_payload["channels"], ["wecom"])
+            self.assertEqual(new_payload["settings"]["wecom_webhook"], "https://new.example.invalid")
+
+            self.assertIsNotNone(second["save_third_push_setting"](sms_enabled=True, call_enabled=False))
+            timers[0].run(first["CONFIG_FILE_WATCH_STATE"].after_id)
+            self.assertFalse(first["enqueue_third_push"]("disabled call", event_type="call"))
+            self.assertTrue(first["enqueue_third_push"]("SMS"))
+            self.assertEqual(first["THIRD_PUSH_Q"].get_nowait()["channels"], ["wecom"])
+            self.assertIsNotNone(first["save_third_push_setting"](enabled=False))
+            timers[1].run(second["CONFIG_FILE_WATCH_STATE"].after_id)
+            self.assertFalse(second["enqueue_third_push"]("disabled push"))
+            self.assertEqual((second["PORT"], second["BAUD"], second["MODE"]), ("COM1", 115200, "Manual"))
+
+    def test_push_window_sync_refreshes_clean_form_and_preserves_unsaved_draft(self):
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty):
+                namespace = self.make_namespace()
+                form = make_form(self.push_state(namespace))
+                form.state_provider = lambda: self.push_state(namespace)
+                if dirty:
+                    form.entry_vars["wecom_webhook"].set("https://draft.example.invalid")
+                namespace["third_push_win"] = SimpleNamespace(
+                    winfo_exists=lambda: True,
+                    _sync_form_from_globals=form.sync_from_state_if_clean,
+                )
+                snapshot = snapshot_config_runtime(namespace["config"])
+                snapshot["third_push"].update(
+                    enabled="1", notify_type='["wecom"]',
+                    wecom_webhook="https://external.example.invalid",
+                )
+
+                changed = reload_shared_ui_config_namespace_runtime(
+                    namespace, load_snapshot=lambda _path: snapshot,
+                )
+
+                self.assertIn("三方推送", changed)
+                self.assertEqual(namespace["THIRD_PUSH_SETTINGS"]["wecom_webhook"], "https://external.example.invalid")
+                self.assertEqual(form.entry_vars["wecom_webhook"].get(),
+                                 "https://draft.example.invalid" if dirty else "https://external.example.invalid")
+                self.assertEqual(form.is_dirty(), dirty)
+
+    def test_saving_one_switch_before_watch_reload_keeps_external_push_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.ini")
+            initial = self.make_namespace()["config"]
+            initial.set("third_push", "enabled", "1")
+            initial.set("third_push", "notify_type", '["dingtalk"]')
+            initial.set("third_push", "dingtalk_webhook", "https://old.example.invalid")
+            with open(path, "w", encoding="utf-8") as file_obj:
+                initial.write(file_obj)
+            namespaces = [self.make_namespace(), self.make_namespace()]
+            for namespace in namespaces:
+                namespace["config"].read(path, encoding="utf-8")
+                remember_config_snapshot(namespace["config"])
+                apply_third_push_settings_namespace_runtime(
+                    namespace, read_third_push_settings(namespace["config"]),
+                )
+                namespace["safe_save_config"] = lambda ns=namespace: safe_save_config_runtime(
+                    config=ns["config"], config_file=path, config_lock=ns["CONFIG_LOCK"],
+                )
+                namespace["THIRD_PUSH_Q"] = queue.Queue()
+                install_third_push_namespace_bindings(namespace)
+            first, second = namespaces
+            first["save_third_push_setting"](
+                notify_type=["wecom"], settings={"wecom_webhook": "https://external.example.invalid"},
+            )
+            self.assertEqual(second["THIRD_PUSH_TYPES"], ["dingtalk"])
+            self.assertIsNotNone(second["save_third_push_setting"](call_enabled=False))
+            self.assertEqual(second["THIRD_PUSH_TYPES"], ["wecom"])
+            self.assertEqual(second["THIRD_PUSH_SETTINGS"]["wecom_webhook"], "https://external.example.invalid")
+            self.assertFalse(second["enqueue_third_push"]("call", event_type="call"))
+            self.assertTrue(second["enqueue_third_push"]("SMS"))
+            self.assertEqual(second["THIRD_PUSH_Q"].get_nowait()["channels"], ["wecom"])
+            second["save_third_push_setting"](sms_enabled=False)
+            self.assertEqual(second["THIRD_PUSH_TYPES"], ["wecom"])
+            self.assertFalse(second["enqueue_third_push"]("disabled SMS"))
+
+            third = self.make_namespace()
+            third["config"].read(path, encoding="utf-8")
+            remember_config_snapshot(third["config"])
+            apply_third_push_settings_namespace_runtime(third, read_third_push_settings(initial))
+            third["safe_save_config"] = lambda: safe_save_config_runtime(
+                config=third["config"], config_file=path, config_lock=third["CONFIG_LOCK"],
+            )
+            install_third_push_namespace_bindings(third)
+            self.assertIsNotNone(third["save_third_push_setting"](enabled=False))
+            self.assertEqual(third["THIRD_PUSH_TYPES"], ["wecom"])
+            self.assertFalse(third["THIRD_PUSH_ENABLED"])
+
+    def test_push_window_refresh_failure_keeps_synced_runtime_and_redacts_error(self):
+        namespace = self.make_namespace()
+        namespace["third_push_win"] = SimpleNamespace(
+            winfo_exists=lambda: True,
+            _sync_form_from_globals=lambda: (_ for _ in ()).throw(RuntimeError("synthetic-sensitive-value")),
+        )
+        snapshot = snapshot_config_runtime(namespace["config"])
+        snapshot["third_push"]["enabled"] = "1"
+
+        changed = reload_shared_ui_config_namespace_runtime(
+            namespace, load_snapshot=lambda _path: snapshot,
+        )
+
+        self.assertIn("三方推送", changed)
+        self.assertTrue(namespace["THIRD_PUSH_ENABLED"])
+        logs = [item[1] for item in namespace["calls"] if isinstance(item, tuple) and item[0] == "log"]
+        self.assertIn("Refresh synced third-push settings window failed (RuntimeError)", logs)
+        self.assertTrue(all("synthetic-sensitive-value" not in message for message in logs))
+
+    def test_push_parse_failure_rolls_back_config_and_preserves_runtime(self):
+        namespace = self.make_namespace()
+        before = snapshot_config_runtime(namespace["config"])
+        before_push = self.push_state(namespace)
+        with patch("sms_ui.config_sync_namespace_runtime.read_third_push_settings",
+                   side_effect=ValueError("synthetic-sensitive-value")):
+            result = reload_shared_ui_config_namespace_runtime(
+                namespace, load_snapshot=lambda _path: self.disk_snapshot(),
+            )
+        self.assertFalse(result)
+        self.assertEqual(snapshot_config_runtime(namespace["config"]), before)
+        self.assertEqual(self.push_state(namespace), before_push)
+        self.assertTrue(namespace["POPUP_ENABLED"])
 
     def test_start_watch_forwards_ui_lifecycle_and_callback(self):
         namespace = self.make_namespace()

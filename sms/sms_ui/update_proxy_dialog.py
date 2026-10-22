@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import messagebox
 
+from sms_ui.settings_form_sync import bind_settings_form_sync
+
 
 DEFAULT_API_PROXY_BASE = "https://github-api.daybyday.top/"
 DEFAULT_PROXY_BASE = "https://gh-proxy.com/"
@@ -13,6 +15,7 @@ def open_update_proxy_dialog(
     on_save,
     on_test,
     center_window,
+    *, register_external_refresh=None, get_values=None,
 ):
     win = tk.Toplevel(parent)
     win.withdraw()
@@ -33,12 +36,20 @@ def open_update_proxy_dialog(
 
     tk.Label(frame, text="下载代理前缀 proxy_base：").grid(row=2, column=0, sticky="w")
     tk.Entry(frame, textvariable=proxy_var, width=44).grid(row=3, column=0, pady=(4, 10), sticky="w")
+    sync_committed = bind_settings_form_sync(
+        win, {
+            "api_proxy_base": (api_var.get, api_var.set),
+            "proxy_base": (proxy_var.get, proxy_var.set),
+        },
+        register_external_refresh=register_external_refresh, get_values=get_values,
+    )
 
     def save():
         try:
             result = on_save(api_var.get(), proxy_var.get(), win)
             if result is False:
                 raise RuntimeError("配置保存失败")
+            sync_committed()
             messagebox.showinfo("完成", "代理设置已保存", parent=win)
         except Exception as exc:
             messagebox.showerror("保存失败", f"代理设置保存失败：{exc}", parent=win)

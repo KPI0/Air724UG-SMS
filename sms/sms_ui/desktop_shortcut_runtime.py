@@ -35,19 +35,25 @@ def open_desktop_shortcut_dialog_runtime(
     system_ui,
     center_window,
     open_dialog,
+    register_external_refresh=None,
 ):
     default_name = desktop_shortcut_default_name(config)
 
     def save_name(name):
         save_desktop_shortcut_name_runtime(config, name, save_config)
+        return desktop_shortcut_default_name(config)
 
     def apply_now(name):
-        save_name(name)
+        name = save_name(name)
         create_shortcut(name)
         system_ui(f"✅ 桌面快捷方式已创建：{name}.lnk", "normal")
 
     def save_only(name):
-        save_name(name)
+        name = save_name(name)
         system_ui(f"💾 已保存桌面快捷方式：{name}", "normal")
 
-    open_dialog(parent, default_name, apply_now, save_only, center_window)
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+        refresh_options["get_values"] = lambda: {"name": desktop_shortcut_default_name(config)}
+    open_dialog(parent, default_name, apply_now, save_only, center_window, **refresh_options)

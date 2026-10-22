@@ -4,12 +4,13 @@ from sms_core.cloud_command_security import (
     normalize_cloud_command_permissions,
     read_cloud_command_permissions,
 )
-from sms_core.config_schema import DEFAULT_UI_CONFIG
+from sms_core.config_schema import DEFAULT_UI_CONFIG, DEFAULT_UPDATE_CONFIG
 from sms_core.config_runtime import (
     load_config_snapshot,
     read_startup_config_values,
     reload_config_runtime,
 )
+from sms_core.third_push_config import read_third_push_settings
 from sms_ui.config_sync_runtime import (
     ConfigReloadFailureLogState,
     clear_config_reload_failure_runtime,
@@ -18,6 +19,10 @@ from sms_ui.config_sync_runtime import (
 )
 from sms_ui.call_popup_namespace_runtime import close_phone_popups_namespace_runtime
 from sms_ui.sms_font_dialog import validated_tk_color
+from sms_ui.third_push_namespace_runtime import (
+    apply_third_push_settings_namespace_runtime,
+    third_push_settings_snapshot_namespace_runtime,
+)
 
 
 def _safe_log(namespace, message):
@@ -67,8 +72,43 @@ def _notify_config_sync_refreshers(namespace, group):
             callback()
             refreshed += 1
         except Exception as exc:
-            _safe_log(namespace, f"Refresh synced {group} settings window failed: {exc!r}")
+            _safe_log(namespace, f"Refresh synced {group} settings window failed ({type(exc).__name__})")
     return refreshed
+
+
+def _read_editor_config(config):
+    return {
+        "update_proxy": {
+            key: config.get("update", key, fallback=default)
+            for key, default in DEFAULT_UPDATE_CONFIG.items()
+        },
+        "desktop_shortcut": {
+            "name": config.get(
+                "ui", "desktop_shortcut_name",
+                fallback=DEFAULT_UI_CONFIG["desktop_shortcut_name"],
+            ),
+        },
+    }
+
+
+def refresh_autostart_menu_namespace_runtime(namespace):
+    check_enabled = namespace.get("is_autostart_enabled")
+    variable = namespace.get("autostart_var")
+    if check_enabled is None or variable is None:
+        return False
+    try:
+        enabled = bool(check_enabled())
+        if bool(variable.get()) == enabled:
+            return False
+        variable.set(enabled)
+        namespace["system_ui"](
+            "⚙️ 已同步开机自启状态：" + ("已开启" if enabled else "已关闭"),
+            "normal",
+        )
+        return True
+    except Exception as exc:
+        _safe_log(namespace, f"Refresh autostart menu failed ({type(exc).__name__})")
+        return False
 
 
 def reload_shared_ui_config_namespace_runtime(
@@ -79,18 +119,28 @@ def reload_shared_ui_config_namespace_runtime(
 ):
     if namespace.get("_CONFIG_SAVE_ACTIVE"):
         return False
-    try:
-        values = reload_config_runtime(
-            config=namespace["config"],
-            config_file=namespace["CONFIG_FILE"],
-            config_lock=namespace["CONFIG_LOCK"],
-            load_snapshot=load_snapshot,
-            read_values=lambda merged_config: read_values(
+
+    def read_synced_values(merged_config):
+        return (
+            read_values(
                 merged_config,
                 default_voice_text=namespace["DEFAULT_VOICE_TEXT"],
                 log_error=namespace.get("log_file_only"),
             ),
+            read_third_push_settings(merged_config),
+            _read_editor_config(merged_config),
         )
+
+    try:
+        with namespace["CONFIG_LOCK"]:
+            previous_editor_values = _read_editor_config(namespace["config"])
+            values, push_settings, editor_values = reload_config_runtime(
+                config=namespace["config"],
+                config_file=namespace["CONFIG_FILE"],
+                config_lock=namespace["CONFIG_LOCK"],
+                load_snapshot=load_snapshot,
+                read_values=read_synced_values,
+            )
     except Exception as exc:
         state = namespace.setdefault(
             "_CONFIG_SYNC_RELOAD_FAILURE_STATE",
@@ -245,6 +295,29 @@ def reload_shared_ui_config_namespace_runtime(
         changed_groups.append("安全设置")
         _notify_config_sync_refreshers(namespace, "security")
 
+    current_push_settings = third_push_settings_snapshot_namespace_runtime(namespace)
+    if current_push_settings != push_settings:
+        apply_third_push_settings_namespace_runtime(namespace, push_settings)
+        changed_groups.append("三方推送")
+        win = namespace.get("third_push_win")
+        try:
+            if win is not None and win.winfo_exists():
+                win._sync_form_from_globals()
+        except Exception as exc:
+            _safe_log(namespace, f"Refresh synced third-push settings window failed ({type(exc).__name__})")
+
+    for group, label in (
+        ("update_proxy", "更新代理"),
+        ("desktop_shortcut", "快捷方式名称"),
+    ):
+        if previous_editor_values[group] != editor_values[group]:
+            changed_groups.append(label)
+
+    # A local save may already have merged another instance's file changes.
+    # Refresh clean fields even when the runtime now matches the disk snapshot.
+    for group in ("voice_text", "sms_font", "log_cleanup", "update_proxy", "desktop_shortcut"):
+        _notify_config_sync_refreshers(namespace, group)
+
     if changed_groups:
         try:
             namespace["system_ui"](
@@ -273,4 +346,5 @@ def start_config_file_watch_namespace_runtime(
         is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set() or bool(namespace.get("is_exiting")) or bool(namespace.get("_CONFIG_SAVE_ACTIVE")),
         on_change=namespace["reload_shared_ui_config"],
         log_error=namespace.get("log_file_only"),
+        on_tick=lambda: refresh_autostart_menu_namespace_runtime(namespace),
     )

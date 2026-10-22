@@ -18,7 +18,7 @@ class _Deadline:
     def remaining(self):
         remaining = self.end - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("推送响应超过总等待时间，无法确认是否送达")
+            raise TimeoutError("请求超时：HTTP 响应超过总等待时间")
         return remaining
 
 
@@ -113,17 +113,18 @@ class _HTTPSHandler(urllib.request.HTTPSHandler):
 class _HTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         if urllib.parse.urlsplit(newurl).scheme.lower() not in ("http", "https"):
-            raise urllib.error.HTTPError(newurl, code, "不支持的推送重定向协议", headers, fp)
+            raise urllib.error.HTTPError(newurl, code, "不支持的 HTTP 重定向协议", headers, fp)
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def urlopen_with_deadline(request, *, timeout=15):
+def urlopen_with_deadline(request, *, timeout=15, use_system_proxies=True):
     deadline = _Deadline(timeout)
     # Keep urllib's platform proxies and HTTPS certificate verification. Each
     # redirect reuses this deadline; no helper request is left running on timeout.
-    opener = urllib.request.build_opener(
-        _HTTPHandler(deadline), _HTTPSHandler(deadline), _HTTPRedirectHandler()
-    )
+    handlers = [_HTTPHandler(deadline), _HTTPSHandler(deadline), _HTTPRedirectHandler()]
+    if not use_system_proxies:
+        handlers.insert(0, urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
     response = opener.open(request, timeout=deadline.remaining())
     try:
         deadline.remaining()

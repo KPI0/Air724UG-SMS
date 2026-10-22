@@ -2,6 +2,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from sms_core import serial_sender
 from sms_core.serial_sender import (
     AtCommandResponseWaiter,
     AtCommandResponseCoordinator,
@@ -32,6 +33,8 @@ class FakeSerial:
         if self.fail_write:
             raise RuntimeError("write failed")
         self.writes.append(payload)
+        if payload == b"AT+CMGF=0\r\n":
+            serial_sender.DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR.observe_line("OK", connection=self)
 
     def flush(self):
         self.flush_count += 1
@@ -690,8 +693,8 @@ class SerialSenderResultTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual([locked for _seconds, locked in sleep_calls], [False, False])
-        self.assertEqual([seconds for seconds, _locked in sleep_calls], [0.3, 1.5])
+        self.assertEqual([locked for _seconds, locked in sleep_calls], [False])
+        self.assertEqual([seconds for seconds, _locked in sleep_calls], [1.5])
         self.assertEqual(ui_lines[0], ("📤 发送短信至 +1234：", "normal"))
         self.assertIn(">>> 发送: AT+CMGF=0\\r\\n", debug)
 
@@ -800,6 +803,8 @@ class SerialSenderResultTests(unittest.TestCase):
                 super().write(payload)
                 if payload.startswith(b"AT+CMGS="):
                     self.cmgs_written.set()
+                elif payload == b"\x1b":
+                    coordinator.observe_line("OK", connection=self)
 
         serial_obj = WaitingSerial()
         coordinator = SmsPduSendCoordinator()

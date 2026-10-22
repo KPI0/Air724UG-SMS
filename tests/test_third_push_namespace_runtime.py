@@ -1,12 +1,14 @@
 ﻿import configparser
 import os
+import queue
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
 from sms_core.config_runtime import remember_config_snapshot, snapshot_config_runtime
-from sms_core.third_push_config import ThirdPushSettings
+from sms_core.third_push_config import ThirdPushSettings, write_third_push_settings
+from sms_ui.third_push_app_runtime import enqueue_third_push_app_runtime
 import sms_ui.third_push_namespace_runtime as runtime
 
 
@@ -159,16 +161,17 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
 
     def test_save_forwards_current_state_and_applies_result(self):
         namespace = self.make_namespace()
+        write_third_push_settings(namespace["config"], ThirdPushSettings(
+            True, False, True, ["dingtalk"], {"dingtalk_webhook": "url"},
+        ))
 
         def save_runtime(**kwargs):
             current = kwargs["current_settings"]()
-            self.assertEqual(current, ThirdPushSettings(
-                True,
-                False,
-                True,
-                ["dingtalk"],
-                {"dingtalk_webhook": "url"},
-            ))
+            self.assertTrue(current.enabled)
+            self.assertFalse(current.sms_enabled)
+            self.assertTrue(current.call_enabled)
+            self.assertEqual(current.channels, ["dingtalk"])
+            self.assertEqual(current.settings["dingtalk_webhook"], "url")
             next_settings = ThirdPushSettings(False, True, False, ["wecom"], {"wecom_webhook": "hook"})
             kwargs["apply_settings"](next_settings)
             self.assertIs(kwargs["config"], namespace["config"])
@@ -183,6 +186,80 @@ class ThirdPushNamespaceRuntimeTests(unittest.TestCase):
         self.assertFalse(namespace["THIRD_PUSH_ENABLED"])
         self.assertEqual(namespace["THIRD_PUSH_SETTINGS"], {"wecom_webhook": "hook"})
         self.assertIn(("save_config",), namespace["calls"])
+
+    def test_enqueue_keeps_complete_snapshot_when_configuration_changes_between_reads(self):
+        namespace = self.make_namespace()
+        namespace["THIRD_PUSH_Q"] = queue.Queue()
+        original = ThirdPushSettings(True, True, True, ["dingtalk"], {"dingtalk_webhook": "old"})
+        updated = ThirdPushSettings(False, False, False, ["wecom"], {"wecom_webhook": "new"})
+        runtime.apply_third_push_settings_namespace_runtime(namespace, original)
+
+        def enqueue(raw, **kwargs):
+            enabled = kwargs["enabled"]
+
+            def read_enabled():
+                value = enabled()
+                runtime.apply_third_push_settings_namespace_runtime(namespace, updated)
+                return value
+
+            return enqueue_third_push_app_runtime(raw, **dict(kwargs, enabled=read_enabled))
+
+        with patch.object(runtime, "enqueue_third_push_app_runtime", side_effect=enqueue):
+            self.assertTrue(runtime.enqueue_third_push_namespace_runtime(namespace, "synthetic"))
+
+        payload = namespace["THIRD_PUSH_Q"].get_nowait()
+        self.assertEqual(payload["channels"], ["dingtalk"])
+        self.assertEqual(payload["settings"], {"dingtalk_webhook": "old"})
+        self.assertFalse(runtime.enqueue_third_push_namespace_runtime(namespace, "disabled"))
+
+    def test_snapshot_waits_for_complete_configuration_publish(self):
+        entered = threading.Event()
+        release = threading.Event()
+        errors, snapshots = [], []
+
+        class PausedNamespace(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                if key == "THIRD_PUSH_ENABLED":
+                    entered.set()
+                    if not release.wait(2):
+                        raise RuntimeError("synthetic publish timeout")
+
+        namespace = PausedNamespace(self.make_namespace())
+        updated = ThirdPushSettings(False, True, False, ["wecom"], {"wecom_webhook": "new"})
+
+        def publish():
+            try:
+                runtime.apply_third_push_settings_namespace_runtime(namespace, updated)
+            except Exception as exc:
+                errors.append(exc)
+
+        writer = threading.Thread(target=publish)
+        reader = threading.Thread(target=lambda: snapshots.append(
+            runtime.third_push_settings_snapshot_namespace_runtime(namespace),
+        ))
+        writer.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            lock = namespace["_THIRD_PUSH_SETTINGS_LOCK"]
+            acquired = lock.acquire(blocking=False)
+            if acquired:
+                lock.release()
+            self.assertFalse(acquired)
+            reader.start()
+        finally:
+            release.set()
+            writer.join(2)
+            if reader.ident is not None:
+                reader.join(2)
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(snapshots, [updated])
+        snapshots[0].settings["wecom_webhook"] = "changed snapshot"
+        snapshots[0].channels.append("bark")
+        self.assertEqual(namespace["THIRD_PUSH_SETTINGS"], {"wecom_webhook": "new"})
+        self.assertEqual(namespace["THIRD_PUSH_TYPES"], ["wecom"])
 
     def test_worker_forwards_runtime_context(self):
         namespace = self.make_namespace()

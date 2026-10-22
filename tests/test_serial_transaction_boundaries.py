@@ -21,6 +21,8 @@ class SyntheticModem:
         elif payload.endswith(b"\x1a"):
             self.sms.observe_line("+CMGS: 1", connection=self)
             self.sms.observe_line("OK", connection=self)
+        elif payload == b"\x1b":
+            self.sms.observe_line("OK", connection=self)
         else:
             self.at.observe_line(self.command_reply, connection=self)
         return len(payload)
@@ -184,7 +186,10 @@ class SerialTransactionBoundaryTests(unittest.TestCase):
             self.assertGreater(len(modem.writes), offset[0])
         else:
             self.assertFalse(result[0], "Changed cloud context reported success")
-            self.assertEqual(modem.writes[offset[0]:], [], "Command was committed after context changed")
+            expected_cleanup = ([b"\x1b"] if command == "CLOUD:SEND_SMS"
+                                and pause_write == 3 and change != "generation" else [])
+            self.assertEqual(modem.writes[offset[0]:], expected_cleanup,
+                             "Only original-connection SMS cleanup may follow context revocation")
         self.assertIsNone(at._active)
         self.assertIsNone(sms._active)
 

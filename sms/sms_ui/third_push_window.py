@@ -83,7 +83,7 @@ def open_third_push_window_dialog(
         values = form.collect(validate=True)
         if values is not None:
             if on_save(values, win) is not False:
-                form.mark_all_saved()
+                form.sync_from_state()
                 status_var.set("✅ 配置已保存")
 
     def test_push():
@@ -95,7 +95,7 @@ def open_third_push_window_dialog(
             return
         result = on_test(values, win)
         if result is not False:
-            form.mark_all_saved()
+            form.sync_from_state()
             status_var.set("✅ 配置已保存，测试已加入队列" if result == "queued" else "✅ 配置已保存")
 
     def close():
@@ -162,7 +162,8 @@ def open_third_push_window_runtime(
         if save_setting(**kwargs) is None:
             messagebox.showerror("保存失败", "三方推送配置保存失败，请检查配置文件是否可写。", parent=win)
             return False
-        system_ui(third_push_saved_status(kwargs["enabled"], kwargs["notify_type"]), "normal")
+        committed = state_provider()
+        system_ui(third_push_saved_status(committed["enabled"], committed["channels"]), "normal")
         return True
 
     def option_values(option, value, values, win):
@@ -185,7 +186,8 @@ def open_third_push_window_runtime(
             "sms_enabled": "短信事件推送",
             "call_enabled": "电话事件推送",
         }
-        system_ui(f"📡 {labels.get(option, option)}已{'开启' if value else '关闭'}", "normal")
+        committed_value = state_provider()[option]
+        system_ui(f"📡 {labels.get(option, option)}已{'开启' if committed_value else '关闭'}", "normal")
         return True
 
     def test_values(values, win):
@@ -193,12 +195,13 @@ def open_third_push_window_runtime(
         if save_setting(**kwargs) is None:
             messagebox.showerror("保存失败", "三方推送配置保存失败，请检查配置文件是否可写。", parent=win)
             return False
+        committed = state_provider()
         queued = enqueue_push(
             THIRD_PUSH_TEST_MESSAGE,
             show_success=True,
             show_result=True,
-            channels=kwargs["notify_type"],
-            settings=kwargs["settings"],
+            channels=committed["channels"],
+            settings=committed["settings"],
         )
         if queued:
             system_ui("📡 三方推送配置已保存，测试已加入队列", "normal")

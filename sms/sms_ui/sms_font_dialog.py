@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import colorchooser, messagebox
 
 from sms_core.config_schema import SMS_FONT_SIZE_MAX, SMS_FONT_SIZE_MIN
+from sms_ui.settings_form_sync import bind_settings_form_sync
 
 
 def validated_tk_color(widget, value, *, default="#ff0000"):
@@ -13,7 +14,10 @@ def validated_tk_color(widget, value, *, default="#ff0000"):
     return color
 
 
-def open_sms_font_dialog(parent, current_size, current_color, on_save, center_window):
+def open_sms_font_dialog(
+    parent, current_size, current_color, on_save, center_window,
+    *, register_external_refresh=None, get_values=None,
+):
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("短信字体设置")
@@ -170,6 +174,13 @@ def open_sms_font_dialog(parent, current_size, current_color, on_save, center_wi
         traces.clear()
 
     win.bind("<Destroy>", release_preview_traces, add="+")
+    bind_settings_form_sync(
+        win, {
+            "size": (size_var.get, size_var.set),
+            "color": (color_var.get, color_var.set),
+        },
+        register_external_refresh=register_external_refresh, get_values=get_values,
+    )
 
     win.update_idletasks()
     center_window(win, parent)

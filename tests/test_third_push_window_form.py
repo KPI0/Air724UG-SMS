@@ -127,6 +127,34 @@ class ThirdPushWindowFormTests(unittest.TestCase):
         self.assertFalse(bool(form.call_push_var.get()))
         self.assertFalse(form.is_dirty())
 
+    def test_immediate_switch_save_refreshes_merged_parameters_unless_draft_is_dirty(self):
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty):
+                state = {
+                    "enabled": True, "sms_enabled": True, "call_enabled": True,
+                    "channels": ["dingtalk"], "settings": {"wecom_webhook": "old"},
+                }
+                form = make_form(state)
+                if dirty:
+                    form.entry_vars["wecom_webhook"].set("draft")
+
+                def save(option, value, *_args):
+                    state[option] = value
+                    state["channels"] = ["wecom"]
+                    state["settings"] = {"wecom_webhook": "merged"}
+                    return True
+
+                form.on_option_changed = save
+                form.call_push_var.set(0)
+                form._option_toggled("call_enabled", form.call_push_var)
+
+                self.assertFalse(form.call_push_var.get())
+                self.assertEqual(form.entry_vars["wecom_webhook"].get(), "draft" if dirty else "merged")
+                self.assertEqual(form.is_dirty(), dirty)
+                if not dirty:
+                    self.assertTrue(form.channel_vars["wecom"].get())
+                    self.assertFalse(form.channel_vars["dingtalk"].get())
+
     def test_reopen_sync_preserves_dirty_draft_but_refreshes_clean_form(self):
         state = {
             "enabled": True,
@@ -237,6 +265,34 @@ class ThirdPushWindowFormTests(unittest.TestCase):
         self.assertIn(("sms_result", True), calls)
         self.assertIn(("save_result", True), calls)
         show_info.assert_not_called()
+
+    def test_test_push_uses_committed_channels_and_parameters_after_save(self):
+        calls = []
+        state = {
+            "enabled": True, "sms_enabled": True, "call_enabled": True,
+            "channels": ["dingtalk"], "settings": {"dingtalk_webhook": "old"},
+        }
+
+        def save(**_kwargs):
+            state["channels"] = ["wecom"]
+            state["settings"] = {"wecom_webhook": "merged"}
+            return object()
+
+        def dialog(_parent, _state, _save, on_test, *_args, **_kwargs):
+            result = on_test((True, True, True, ["dingtalk"], {"dingtalk_webhook": "requested"}), "window")
+            self.assertEqual(result, "queued")
+            return "window"
+
+        with patch("sms_ui.third_push_window.open_third_push_window_dialog", side_effect=dialog):
+            open_third_push_window_runtime(
+                "root", None, lambda: state, lambda: None, save,
+                lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+                lambda *_args: None, lambda *_args: False, lambda _win: None, "center",
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["channels"], ["wecom"])
+        self.assertEqual(calls[0][1]["settings"], {"wecom_webhook": "merged"})
 
 
 if __name__ == "__main__":

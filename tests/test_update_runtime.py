@@ -61,9 +61,7 @@ class UpdateRuntimeTests(unittest.TestCase):
         response = Mock(wraps=stream)
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        opener = Mock()
-        opener.open.return_value = response
-        with patch.object(updates, "_build_no_proxy_opener", return_value=opener):
+        with patch.object(updates, "urlopen_with_deadline", return_value=response):
             with self.assertRaises(ValueError):
                 updates.http_get_json("https://example.invalid/release", retries=1)
         self.assertLessEqual(stream.tell(), 1024 * 1024 + 1)
@@ -71,15 +69,13 @@ class UpdateRuntimeTests(unittest.TestCase):
     def test_http_json_accepts_valid_utf8_and_rejects_corrupt_data(self):
         for payload in (b'{"tag_name":"v4.0.0"}', b'{"tag_name":"v4.0.0\xff"}', b'not json'):
             with self.subTest(payload=payload):
-                opener = Mock()
-                opener.open.return_value = BytesIO(payload)
-                with patch.object(updates, "_build_no_proxy_opener", return_value=opener):
+                with patch.object(updates, "urlopen_with_deadline", return_value=BytesIO(payload)) as open_response:
                     if payload == b'{"tag_name":"v4.0.0"}':
                         self.assertEqual(updates.http_get_json("https://example.invalid/release"), {"tag_name": "v4.0.0"})
                     else:
                         with self.assertRaises(ValueError):
                             updates.http_get_json("https://example.invalid/release")
-                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(open_response.call_count, 1)
 
     def test_version_tuple_normalizes_tags_and_bad_parts(self):
         self.assertEqual(version_tuple("v3.6.7"), (3, 6, 7))

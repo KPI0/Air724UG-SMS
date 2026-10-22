@@ -3,6 +3,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from sms_core import serial_sender
 from sms_core.cloud_payloads import build_sms_event_payload, identity_payload
 from sms_core.cloud_sms_event_runtime import CloudSmsEventDrainState
 from sms_core.serial_sender import SmsPduSendCoordinator, send_text_sms_pdu_async
@@ -21,7 +22,9 @@ class ModemSerial:
 
     def write(self, payload):
         self.writes.append(payload)
-        if payload.startswith(b"AT+CMGS="):
+        if payload == b"AT+CMGF=0\r\n":
+            serial_sender.DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR.observe_line("OK", connection=self)
+        elif payload.startswith(b"AT+CMGS="):
             self.coordinator.observe_line(">")
         elif payload.endswith(b"\x1a"):
             result = self.results.pop(0)
@@ -149,6 +152,7 @@ class SmsSentRuntimeTests(unittest.TestCase):
             threading.RLock(), lambda: serial, "10086", body,
             response_coordinator=coordinator, sleep_func=lambda _seconds: None,
             segment_timeout=0.01, prompt_timeout=0.01, thread_registry=registry,
+            abort_timeout=0.01,
             on_sent=on_sent, log_error=log_error,
         )
         thread.join(2)

@@ -96,6 +96,7 @@ def schedule_config_file_watch_runtime(
     on_change,
     signature_func=config_file_signature_runtime,
     log_error=None,
+    on_tick=None,
 ):
     state.generation += 1
     generation = state.generation
@@ -139,6 +140,8 @@ def schedule_config_file_watch_runtime(
         try:
             if is_stopping():
                 return
+            if on_tick is not None:
+                on_tick()
             next_signature = signature_func(config_file)
             if next_signature != state.signature:
                 if next_signature is None:

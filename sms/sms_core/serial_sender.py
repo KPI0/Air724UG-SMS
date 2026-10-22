@@ -51,6 +51,7 @@ TRUSTED_MODEM_LOG_SOURCE = "ril.proatc"
 TRUSTED_CMGS_RESULT_SOURCE = "lib_sms rsp"
 SMS_PDU_SEND_DEFAULT_TIMEOUT = 45.0
 SMS_PDU_PROMPT_TIMEOUT = 10.0
+SMS_PDU_ABORT_TIMEOUT = 2.0
 AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT = 10.0
 DEFAULT_SERIAL_TRANSACTION_LOCK = threading.RLock()
 DEFAULT_SERIAL_WRITE_LOCK = threading.RLock()
@@ -104,6 +105,8 @@ class SmsPduSendWaiter:
         self._prompt_or_terminal_event = threading.Event()
         self._prompt_seen = False
         self._write_started = not wait_for_write
+        self._terminal_event = threading.Event()
+        self._abort_started = False
 
     def mark_write_started(self):
         with self._lock:
@@ -133,6 +136,20 @@ class SmsPduSendWaiter:
 
     def cancel(self, error="短信发送已取消"):
         self.fail(error)
+
+    def terminal_received(self):
+        return self._terminal_event.is_set()
+
+    def begin_abort(self):
+        with self._lock:
+            if self._terminal_event.is_set():
+                return False
+            self._abort_started = True
+            return True
+
+    def wait_terminal(self, timeout):
+        # Cancellation wakes the caller, but does not end the modem transaction.
+        return self._terminal_event.wait(float(timeout))
 
     def mark_pdu_send_started(self):
         with self._lock:
@@ -167,25 +184,33 @@ class SmsPduSendWaiter:
 
         upper = body.upper()
         if _is_sms_send_error_line(line, body, upper, self.cmgs_len):
+            self._terminal_event.set()
             self._complete(SmsPduSendResponse(False, body, str(line or "")))
-            return
+            return True
+
+        if self._abort_started and _is_final_ok_line(line, body):
+            self._terminal_event.set()
+            return True
 
         if _is_sms_prompt_line(line, body):
             with self._lock:
                 self._prompt_seen = True
             self._prompt_or_terminal_event.set()
-            return
+            return True
 
         with self._lock:
             result_phase = self._result_phase
         if result_phase and _is_cmgs_result_line(line, body, upper, self.cmgs_len):
             self._saw_cmgs = True
             if _response_has_final_ok(upper):
+                self._terminal_event.set()
                 self._complete(SmsPduSendResponse(True, "", str(line or "")))
-            return
+            return True
 
         if result_phase and self._saw_cmgs and _is_final_ok_line(line, body):
+            self._terminal_event.set()
             self._complete(SmsPduSendResponse(True, "", str(line or "")))
+        return _is_final_ok_line(line, body)
 
     def done(self):
         return self._event.is_set()
@@ -226,7 +251,7 @@ class SmsPduSendCoordinator:
         ):
             return
         if waiter is not None:
-            waiter.observe_line(line)
+            return waiter.observe_line(line)
 
     def finish(self, waiter):
         with self._lock:
@@ -531,13 +556,18 @@ def _write_sms_pdu_after_prompt(waiter, writer):
 
 def _write_serial_obj_bytes(
     serial_obj, payload, debug_message=None, push_debug=None, *,
-    write_guard=None, before_write=None,
+    write_guard=None, before_write=None, after_write=None, sms_waiter=None, flush_output=True,
 ):
     # Validate after every sender lock has been acquired, and keep the caller's
     # context locked through the write so a queued action cannot change calls.
     with DEFAULT_SERIAL_WRITE_LOCK, (write_guard() if write_guard else nullcontext(True)) as allowed:
         if not allowed:
             return SerialCommandResult(False, "指令所属状态已变化，已取消发送")
+        recovery_error = serial_sms_recovery_error(serial_obj)
+        if recovery_error:
+            if push_debug:
+                push_debug(f">>> 发送失败: {recovery_error}")
+            return SerialCommandResult(False, recovery_error)
         reservation = _OTA_RESERVATIONS.get(id(serial_obj))
         if reservation:
             if reservation[2] > time.monotonic():
@@ -552,10 +582,22 @@ def _write_serial_obj_bytes(
             return SerialCommandResult(False, error)
 
         try:
-            if before_write is not None and before_write() is False:
-                return SerialCommandResult(False, "指令已取消，未写入串口")
-            serial_obj.write(payload)
-            serial_obj.flush()
+            def commit_bytes():
+                if before_write is not None and before_write() is False:
+                    return SerialCommandResult(False, "指令已取消，未写入串口")
+                written = serial_obj.write(payload)
+                if after_write is not None:
+                    after_write(written)
+                if written is not None and written != len(payload):
+                    return SerialCommandResult(False, "串口写入不完整")
+                return SerialCommandResult(True)
+
+            result = (_write_sms_pdu_after_prompt(sms_waiter, commit_bytes)
+                      if sms_waiter is not None else commit_bytes())
+            if not result.ok:
+                return result
+            if flush_output:
+                serial_obj.flush()
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             if push_debug:
@@ -565,6 +607,106 @@ def _write_serial_obj_bytes(
     if debug_message and push_debug:
         push_debug(debug_message)
     return SerialCommandResult(True)
+
+
+def serial_sms_recovery_error(serial_obj):
+    error = getattr(serial_obj, "_sms_recovery_error", "")
+    return error if isinstance(error, str) else ""
+
+
+def _isolate_sms_serial(serial_obj):
+    # Closing/reopening a host handle cannot prove the modem left PDU input.
+    # Keep reads alive and reject every sender until the user resets the device.
+    error = "短信事务收尾未获确认，已暂停此串口发送，请重启设备后重新连接"
+    serial_obj._sms_recovery_error = error
+    return error
+
+
+def _send_sms_segment(
+    response_coordinator, connection, cmgs_len, pdu_str, suffix,
+    write_bytes, recover_bytes, isolate_serial, prompt_timeout, segment_timeout,
+    abort_timeout,
+):
+    waiter, result = _begin_sms_segment_response(
+        response_coordinator, suffix, connection=connection, cmgs_len=cmgs_len,
+    )
+    if not result.ok:
+        return result
+    cmgs_attempted = False
+    pdu_may_be_submitted = False
+
+    def begin_pdu():
+        nonlocal pdu_may_be_submitted
+        # A write exception may occur after Ctrl-Z reached the driver. Only an
+        # explicit short count proves that the final byte was not submitted.
+        pdu_may_be_submitted = True
+
+    def record_pdu_write(written):
+        nonlocal pdu_may_be_submitted
+        if isinstance(written, int) and 0 <= written < len(pdu_str.encode("utf-8")) + 1:
+            pdu_may_be_submitted = False
+
+    def begin_cmgs():
+        nonlocal cmgs_attempted
+        marker = getattr(waiter, "mark_write_started", None)
+        if callable(marker) and marker() is False:
+            return False
+        cmgs_attempted = True
+        return True
+
+    try:
+        try:
+            command = f"AT+CMGS={cmgs_len}"
+            result = write_bytes(
+                (command + "\r\n").encode("utf-8"),
+                f">>> 发送: {command}{suffix}\\r\\n", before_write=begin_cmgs,
+            )
+            if result.ok:
+                result = _wait_sms_prompt(waiter, prompt_timeout)
+            if result.ok:
+                result = write_bytes(
+                    pdu_str.encode("utf-8") + b"\x1a",
+                    f">>> 发送 PDU 正文及 Ctrl+Z{suffix}，等待模组响应...",
+                    sms_waiter=waiter,
+                    before_write=begin_pdu, after_write=record_pdu_write,
+                )
+            if result.ok:
+                result = _wait_sms_segment_response(waiter, segment_timeout)
+        except Exception as exc:
+            result = SerialCommandResult(False, str(exc) or exc.__class__.__name__)
+        if result.ok:
+            return result
+
+        _cancel_sms_segment_response(waiter, result.error)
+        terminal_received = getattr(waiter, "terminal_received", lambda: False)
+        if not cmgs_attempted or terminal_received():
+            return result
+        wait_terminal = getattr(waiter, "wait_terminal", None)
+        recovered = False
+        try:
+            if not pdu_may_be_submitted:
+                abort_result = recover_bytes(
+                    b"\x1b", ">>> 取消短信输入，等待原事务结束",
+                    before_write=getattr(waiter, "begin_abort", None),
+                    flush_output=False,
+                )
+                recovered = terminal_received()
+                can_wait = abort_result.ok
+            else:
+                # Ctrl+Z may already have submitted the SMS. Only its original
+                # terminal response can safely release the transaction now.
+                can_wait = True
+            if not recovered and can_wait and callable(wait_terminal):
+                recovered = wait_terminal(abort_timeout)
+        except Exception:
+            recovered = False
+        if not recovered:
+            recovery_error = isolate_serial()
+            if recovery_error:
+                return SerialCommandResult(False, f"{result.error}；{recovery_error}")
+        return result
+    finally:
+        _finish_sms_segment_response(response_coordinator, waiter)
 
 
 def write_serial_command_result(serial_obj, command, append_crlf=True, push_debug=None, *, write_guard=None):
@@ -614,6 +756,9 @@ def write_text_sms_pdu(
     response_coordinator=None,
     segment_timeout=SMS_PDU_SEND_DEFAULT_TIMEOUT,
     prompt_timeout=None,
+    *,
+    abort_timeout=SMS_PDU_ABORT_TIMEOUT,
+    command_response_coordinator=None,
 ):
     if not _is_serial_open(serial_obj):
         if push_debug:
@@ -637,59 +782,32 @@ def write_text_sms_pdu(
             port_ui(message, "sms")
 
         with DEFAULT_SERIAL_TRANSACTION_LOCK:
-            command = "AT+CMGF=0"
-            result = _write_serial_obj_bytes(
-                serial_obj,
-                (command + "\r\n").encode("utf-8"),
-                f">>> 发送: {command}\\r\\n",
-                push_debug,
+            def isolate_serial():
+                with DEFAULT_SERIAL_WRITE_LOCK:
+                    return _isolate_sms_serial(serial_obj)
+
+            result = _initialize_sms_pdu_mode(
+                nullcontext(), lambda: serial_obj, serial_obj,
+                command_response_coordinator or DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+                min(float(segment_timeout), AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT),
+                isolate_serial, push_debug,
             )
             if not result.ok:
                 return _sms_send_error(result.error, push_debug, port_ui)
-            sleep_func(0.3)
 
             for index, (pdu_str, cmgs_len) in enumerate(pdus, start=1):
-                command = f"AT+CMGS={cmgs_len}"
                 suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""
-                waiter, begin_result = _begin_sms_segment_response(
-                    response_coordinator,
-                    suffix,
-                    connection=serial_obj,
-                    cmgs_len=cmgs_len,
+
+                def write_bytes(payload, debug_message, **kwargs):
+                    return _write_serial_obj_bytes(
+                        serial_obj, payload, debug_message, push_debug, **kwargs,
+                    )
+
+                response = _send_sms_segment(
+                    response_coordinator, serial_obj, cmgs_len, pdu_str, suffix,
+                    write_bytes, write_bytes, isolate_serial,
+                    prompt_timeout, segment_timeout, abort_timeout,
                 )
-                if not begin_result.ok:
-                    return _sms_send_error(begin_result.error, push_debug, port_ui)
-                result = _write_serial_obj_bytes(
-                    serial_obj,
-                    (command + "\r\n").encode("utf-8"),
-                    f">>> 发送: {command}{suffix}\\r\\n",
-                    push_debug,
-                    before_write=getattr(waiter, "mark_write_started", None),
-                )
-                if not result.ok:
-                    _cancel_sms_segment_response(waiter, result.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    return _sms_send_error(result.error, push_debug, port_ui)
-                prompt_response = _wait_sms_prompt(waiter, prompt_timeout)
-                if not prompt_response.ok:
-                    _cancel_sms_segment_response(waiter, prompt_response.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    return _sms_send_error(prompt_response.error, push_debug, port_ui)
-                result = _write_sms_pdu_after_prompt(
-                    waiter,
-                    lambda: _write_serial_obj_bytes(
-                        serial_obj,
-                        pdu_str.encode("utf-8") + b"\x1a",
-                        f">>> 发送 PDU 正文及 Ctrl+Z{suffix}，等待模组响应...",
-                        push_debug,
-                    ),
-                )
-                if not result.ok:
-                    _cancel_sms_segment_response(waiter, result.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    return _sms_send_error(result.error, push_debug, port_ui)
-                response = _wait_sms_segment_response(waiter, segment_timeout)
-                _finish_sms_segment_response(response_coordinator, waiter)
                 if not response.ok:
                     return _sms_send_error(response.error, push_debug, port_ui)
                 if push_debug:
@@ -728,7 +846,10 @@ def _write_bytes_locked(
     push_debug=None,
     expected_serial=None,
     before_write=None,
+    after_write=None,
     call_write_guard=None,
+    sms_waiter=None,
+    flush_output=True,
 ):
     with serial_lock:
         serial_obj = get_serial()
@@ -757,6 +878,9 @@ def _write_bytes_locked(
             push_debug,
             write_guard=write_guard,
             before_write=before_write,
+            after_write=after_write,
+            sms_waiter=sms_waiter,
+            flush_output=flush_output,
         )
 
 
@@ -879,6 +1003,35 @@ def write_serial_command_confirmed_locked(
         )
 
 
+def _initialize_sms_pdu_mode(
+    serial_lock, get_serial, transaction_serial, response_coordinator,
+    response_timeout, isolate_serial, push_debug=None,
+):
+    attempted = False
+    terminal_received = False
+
+    def begin_write():
+        nonlocal attempted
+        attempted = True
+
+    def on_response(response):
+        nonlocal terminal_received
+        # The AT waiter supplies a source-validated line for a modem terminal;
+        # local cancellation and timeout responses have no received line.
+        terminal_received = bool(getattr(response, "line", ""))
+
+    result = _write_confirmed_command_locked(
+        serial_lock, get_serial, transaction_serial, "AT+CMGF=0",
+        response_coordinator, response_timeout, push_debug,
+        before_write=begin_write, on_modem_response=on_response,
+    )
+    if not result.ok and attempted and not terminal_received:
+        recovery_error = isolate_serial()
+        if recovery_error:
+            return SerialCommandResult(False, f"{result.error}；{recovery_error}")
+    return result
+
+
 def write_serial_command_sequence_confirmed_locked(
     serial_lock,
     get_serial,
@@ -928,6 +1081,9 @@ def write_text_sms_pdu_locked(
     command_response_coordinator=None,
     segment_timeout=SMS_PDU_SEND_DEFAULT_TIMEOUT,
     prompt_timeout=None,
+    *,
+    get_recovery_serial=None,
+    abort_timeout=SMS_PDU_ABORT_TIMEOUT,
 ):
     try:
         phone = normalize_sms_destination(phone)
@@ -951,83 +1107,48 @@ def write_text_sms_pdu_locked(
                 _sms_send_error("串口未连接", push_debug, port_ui)
                 return False
 
-            command = "AT+CMGF=0"
-            if command_response_coordinator is not None:
-                result = _write_confirmed_command_locked(
-                    serial_lock,
-                    get_serial,
-                    transaction_serial,
-                    command,
-                    command_response_coordinator,
-                    min(float(segment_timeout), AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT),
-                    push_debug,
-                )
-            else:
-                result = _write_bytes_locked(
-                    serial_lock,
-                    get_serial,
-                    (command + "\r\n").encode("utf-8"),
-                    f">>> 发送: {command}\\r\\n",
-                    push_debug,
-                    expected_serial=transaction_serial,
-                )
+            recovery_getter = get_recovery_serial or get_serial
+
+            def isolate_serial():
+                with serial_lock, DEFAULT_SERIAL_WRITE_LOCK:
+                    if recovery_getter() is transaction_serial:
+                        return _isolate_sms_serial(transaction_serial)
+                return ""
+
+            result = _initialize_sms_pdu_mode(
+                serial_lock,
+                get_serial,
+                transaction_serial,
+                command_response_coordinator or DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+                min(float(segment_timeout), AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT),
+                isolate_serial,
+                push_debug,
+            )
             if not result.ok:
                 if port_ui:
                     port_ui(f"❌ 发送短信失败：{result.error}", "normal")
                 return False
-            if command_response_coordinator is None:
-                sleep_func(0.3)
 
             for index, (pdu_str, cmgs_len) in enumerate(pdus, start=1):
                 suffix = f" ({index}/{len(pdus)})" if len(pdus) > 1 else ""
-                command = f"AT+CMGS={cmgs_len}"
-                waiter, begin_result = _begin_sms_segment_response(
-                    response_coordinator,
-                    suffix,
-                    connection=transaction_serial,
-                    cmgs_len=cmgs_len,
+
+                def write_bytes(payload, debug_message, **kwargs):
+                    return _write_bytes_locked(
+                        serial_lock, get_serial, payload, debug_message, push_debug,
+                        expected_serial=transaction_serial, **kwargs,
+                    )
+
+                def recover_bytes(payload, debug_message, **kwargs):
+                    return _write_bytes_locked(
+                        serial_lock, recovery_getter, payload, debug_message, push_debug,
+                        expected_serial=transaction_serial, **kwargs,
+                    )
+
+                response = _send_sms_segment(
+                    response_coordinator, transaction_serial, cmgs_len, pdu_str, suffix,
+                    write_bytes, recover_bytes, isolate_serial,
+                    prompt_timeout, segment_timeout, abort_timeout,
                 )
-                if not begin_result.ok:
-                    return _sms_send_error(begin_result.error, push_debug, port_ui)
-                result = _write_bytes_locked(
-                    serial_lock,
-                    get_serial,
-                    (command + "\r\n").encode("utf-8"),
-                    f">>> 发送: {command}{suffix}\\r\\n",
-                    push_debug,
-                    expected_serial=transaction_serial,
-                    before_write=getattr(waiter, "mark_write_started", None),
-                )
-                if not result.ok:
-                    _cancel_sms_segment_response(waiter, result.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    if port_ui:
-                        port_ui(f"❌ 发送短信失败：{result.error}", "normal")
-                    return False
-                prompt_response = _wait_sms_prompt(waiter, prompt_timeout)
-                if not prompt_response.ok:
-                    _cancel_sms_segment_response(waiter, prompt_response.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    return _sms_send_error(prompt_response.error, push_debug, port_ui)
-                result = _write_sms_pdu_after_prompt(
-                    waiter,
-                    lambda: _write_bytes_locked(
-                        serial_lock,
-                        get_serial,
-                        pdu_str.encode("utf-8") + b"\x1a",
-                        f">>> 发送 PDU 正文及 Ctrl+Z{suffix}，等待模组响应...",
-                        push_debug,
-                        expected_serial=transaction_serial,
-                    ),
-                )
-                if not result.ok:
-                    _cancel_sms_segment_response(waiter, result.error)
-                    _finish_sms_segment_response(response_coordinator, waiter)
-                    if port_ui:
-                        port_ui(f"❌ 发送短信失败：{result.error}", "normal")
-                    return False
-                response = _wait_sms_segment_response(waiter, segment_timeout)
-                _finish_sms_segment_response(response_coordinator, waiter)
                 if not response.ok:
                     return _sms_send_error(response.error, push_debug, port_ui)
                 if push_debug:
@@ -1197,6 +1318,10 @@ def send_text_sms_pdu_async(
     prompt_timeout=None,
     thread_registry=DEFAULT_SMS_SEND_THREAD_REGISTRY,
     on_sent=None,
+    *,
+    get_recovery_serial=None,
+    abort_timeout=SMS_PDU_ABORT_TIMEOUT,
+    command_response_coordinator=None,
 ):
     coordinator = response_coordinator or DEFAULT_SMS_PDU_SEND_COORDINATOR
     thread_holder = {}
@@ -1217,8 +1342,11 @@ def send_text_sms_pdu_async(
                 port_ui=port_ui,
                 sleep_func=sleep_func,
                 response_coordinator=coordinator,
+                command_response_coordinator=command_response_coordinator,
                 segment_timeout=segment_timeout,
                 prompt_timeout=prompt_timeout,
+                get_recovery_serial=get_recovery_serial,
+                abort_timeout=abort_timeout,
             )
             if sent and on_sent is not None:
                 try:

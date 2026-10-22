@@ -237,11 +237,13 @@ class ThirdPushFormController:
             return
 
         if option == "enabled" and value:
-            self.mark_all_saved()
+            self.sync_from_state()
         else:
             self.mark_option_saved(option, value)
             if self._dirty:
                 self.on_dirty_changed(True)
+            else:
+                self.sync_from_state()
 
     def _channel_toggled(self, channel):
         self.select_channel(channel)

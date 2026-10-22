@@ -293,10 +293,12 @@ def run_serial_reader_namespace_runtime(
 
     def observe_sms_send_line(line, *, call_state_snapshot=None):
         connection = namespace.get("serial_obj")
-        sms_send_coordinator.observe_line(
+        sms_consumed = sms_send_coordinator.observe_line(
             line,
             connection=connection,
         )
+        if sms_consumed:
+            return
         return call_with_state_snapshot(
             command_response_coordinator.observe_line, line, connection=connection,
             call_state_snapshot=call_state_snapshot, check_current=False,

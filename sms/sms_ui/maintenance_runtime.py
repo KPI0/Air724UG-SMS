@@ -2,8 +2,10 @@ import queue
 import threading
 from dataclasses import dataclass, field
 
-from sms_core.config_runtime import restore_config_section, snapshot_config_section
-from sms_core.config_schema import normalize_log_retention_days
+from sms_core.config_runtime import (
+    read_startup_config_values, restore_config_section, snapshot_config_section,
+)
+from sms_core.config_schema import DEFAULT_VOICE_TEXT, normalize_log_retention_days
 from sms_core.threading_runtime import start_registered_daemon_thread
 from sms_core.updates import (
     format_proxy_test_result,
@@ -212,8 +214,13 @@ def apply_log_cleanup_runtime(
         system_ui(f"❌ 自动日志清理配置保存失败：{exc}", "normal")
         return False
 
-    set_cleanup_state(days, True)
-    system_ui(log_cleanup_status(days, interval_hours), "normal")
+    committed = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
+    set_cleanup_state(committed.log_retention_days, committed.auto_log_cleanup)
+    status = (
+        log_cleanup_status(committed.log_retention_days, interval_hours)
+        if committed.auto_log_cleanup else "❌ 自动日志清理：已关闭"
+    )
+    system_ui(status, "normal")
     schedule_cleanup(restart=True, first_delay_sec=60)
     return True
 
@@ -230,6 +237,8 @@ def open_log_cleanup_dialog_runtime(
     schedule_cleanup,
     center_window,
     open_dialog=open_log_cleanup_dialog,
+    register_external_refresh=None,
+    get_values=None,
 ):
     def apply_cleanup(days):
         return apply_log_cleanup_runtime(
@@ -242,7 +251,12 @@ def open_log_cleanup_dialog_runtime(
             interval_hours=interval_hours,
         )
 
-    open_dialog(parent, current_days, interval_hours, apply_cleanup, center_window)
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+    if get_values is not None:
+        refresh_options["get_values"] = get_values
+    open_dialog(parent, current_days, interval_hours, apply_cleanup, center_window, **refresh_options)
 
 
 def open_log_cleanup_dialog_app_runtime(
@@ -257,6 +271,7 @@ def open_log_cleanup_dialog_app_runtime(
     schedule_cleanup,
     center_window,
     open_dialog=open_log_cleanup_dialog,
+    register_external_refresh=None,
 ):
     return open_log_cleanup_dialog_runtime(
         parent,
@@ -269,6 +284,8 @@ def open_log_cleanup_dialog_app_runtime(
         schedule_cleanup=schedule_cleanup,
         center_window=center_window,
         open_dialog=open_dialog,
+        register_external_refresh=register_external_refresh,
+        get_values=(lambda: {"days": get_retention_days()}) if register_external_refresh is not None else None,
     )
 
 
@@ -416,6 +433,7 @@ def open_update_proxy_dialog_runtime(
     thread_registry=None,
     open_dialog=open_update_proxy_dialog,
     test_async=test_update_proxy_async,
+    register_external_refresh=None,
 ):
     def save(api_proxy_base, proxy_base, _win):
         return save_update_proxy_config(config, api_proxy_base, proxy_base, save_config)
@@ -439,6 +457,13 @@ def open_update_proxy_dialog_runtime(
             **test_kwargs,
         )
 
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+        refresh_options["get_values"] = lambda: {
+            key: config.get("update", key, fallback=default)
+            for key, default in UPDATE_CONFIG_DEFAULTS.items()
+        }
     open_dialog(
         parent,
         config.get(
@@ -454,4 +479,5 @@ def open_update_proxy_dialog_runtime(
         save,
         test_connection,
         center_window,
+        **refresh_options,
     )

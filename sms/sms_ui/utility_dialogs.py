@@ -2,6 +2,8 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox
 
+from sms_ui.settings_form_sync import bind_settings_form_sync
+
 
 def open_about_dialog(parent, app_version, project_url, center_window):
     win = tk.Toplevel(parent)
@@ -55,7 +57,10 @@ def open_about_dialog(parent, app_version, project_url, center_window):
     win.bind("<Escape>", lambda _e: win.destroy())
 
 
-def open_voice_text_dialog(parent, current_text, on_preview, on_save, center_window):
+def open_voice_text_dialog(
+    parent, current_text, on_preview, on_save, center_window,
+    *, register_external_refresh=None, get_values=None,
+):
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("语音播报自定义")
@@ -68,6 +73,15 @@ def open_voice_text_dialog(parent, current_text, on_preview, on_save, center_win
     text = tk.Text(win, width=42, height=4, font=("微软雅黑", 10))
     text.grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 10))
     text.insert("1.0", current_text)
+
+    def replace_text(value):
+        text.delete("1.0", "end")
+        text.insert("1.0", value)
+
+    bind_settings_form_sync(
+        win, {"text": (lambda: text.get("1.0", "end-1c"), replace_text)},
+        register_external_refresh=register_external_refresh, get_values=get_values,
+    )
 
     def read_text():
         value = text.get("1.0", "end").strip()
@@ -112,6 +126,7 @@ def open_log_cleanup_dialog(
     interval_hours,
     on_apply,
     center_window,
+    *, register_external_refresh=None, get_values=None,
 ):
     win = tk.Toplevel(parent)
     win.withdraw()
@@ -128,6 +143,10 @@ def open_log_cleanup_dialog(
     days_var = tk.StringVar(value=str(current_days))
     days_entry = tk.Entry(frame, textvariable=days_var, width=10)
     days_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    bind_settings_form_sync(
+        win, {"days": (days_var.get, days_var.set)},
+        register_external_refresh=register_external_refresh, get_values=get_values,
+    )
     tk.Label(frame, text="天以前的日志", font=("微软雅黑", 10)).grid(
         row=0, column=2, sticky="w", padx=(6, 0)
     )
@@ -184,7 +203,10 @@ def open_log_cleanup_dialog(
     win.bind("<Escape>", lambda _e: win.destroy())
 
 
-def open_desktop_shortcut_dialog(parent, default_name, on_apply, on_save, center_window):
+def open_desktop_shortcut_dialog(
+    parent, default_name, on_apply, on_save, center_window,
+    *, register_external_refresh=None, get_values=None,
+):
     win = tk.Toplevel(parent)
     win.withdraw()
     win.title("创建桌面快捷方式")
@@ -204,6 +226,10 @@ def open_desktop_shortcut_dialog(parent, default_name, on_apply, on_save, center
     name_var = tk.StringVar(value=default_name)
     entry = tk.Entry(frame, textvariable=name_var, width=28)
     entry.grid(row=1, column=0, pady=(6, 12), sticky="w")
+    sync_committed = bind_settings_form_sync(
+        win, {"name": (name_var.get, name_var.set)},
+        register_external_refresh=register_external_refresh, get_values=get_values,
+    )
 
     def read_name():
         name = name_var.get().strip()
@@ -217,7 +243,9 @@ def open_desktop_shortcut_dialog(parent, default_name, on_apply, on_save, center
         if name is None:
             return
         try:
-            on_apply(name)
+            if on_apply(name) is False:
+                raise RuntimeError("配置保存失败")
+            sync_committed()
             messagebox.showinfo("完成", "桌面快捷方式已创建", parent=win)
         except Exception as exc:
             messagebox.showerror("失败", str(exc), parent=win)
@@ -230,6 +258,7 @@ def open_desktop_shortcut_dialog(parent, default_name, on_apply, on_save, center
             result = on_save(name)
             if result is False:
                 raise RuntimeError("配置保存失败")
+            sync_committed()
             messagebox.showinfo("已保存", "名称已保存，下次可直接应用", parent=win)
         except Exception as exc:
             messagebox.showerror("失败", str(exc), parent=win)

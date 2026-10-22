@@ -243,7 +243,6 @@ def is_ring_line(line: str) -> bool:
 
 def is_hangup_event(line: str) -> bool:
     text = _serial_body(line)
-    compact = re.sub(r"\s+", "", text).upper()
     ciev = CIEV_CALL_RE.match(text)
     return (
         text in ("NO CARRIER", "BUSY", "NO ANSWER")

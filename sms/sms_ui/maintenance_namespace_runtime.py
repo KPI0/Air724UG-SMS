@@ -40,6 +40,9 @@ def open_log_cleanup_dialog_namespace_runtime(
         system_ui=namespace["system_ui"],
         schedule_cleanup=namespace["schedule_auto_log_cleanup"],
         center_window=namespace["center_window"],
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "log_cleanup", callback,
+        ),
     )
 
 
@@ -60,6 +63,9 @@ def open_update_proxy_dialog_namespace_runtime(
         is_stopping=lambda: namespace["TK_SHUTDOWN"].is_set()
         or bool(namespace.get("is_exiting")),
         thread_registry=namespace.get("UPDATE_THREAD_REGISTRY"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "update_proxy", callback,
+        ),
     )
 
 

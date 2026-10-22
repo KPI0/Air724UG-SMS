@@ -29,6 +29,10 @@ def open_sms_font_dialog_namespace_runtime(
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_sms_font_dialog"],
         log_error=namespace.get("log_file_only"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "sms_font", callback,
+        ),
+        get_values=lambda: {"size": namespace["SMS_FONT_SIZE"], "color": namespace["SMS_FONT_COLOR"]},
     )
 
 
@@ -48,6 +52,10 @@ def open_voice_text_dialog_namespace_runtime(
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_voice_text_dialog"],
         log_error=namespace.get("log_file_only"),
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "voice_text", callback,
+        ),
+        get_values=lambda: {"text": namespace["VOICE_TEXT"]},
     )
 
 
@@ -116,6 +124,9 @@ def open_desktop_shortcut_dialog_namespace_runtime(
         system_ui=namespace["system_ui"],
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_desktop_shortcut_dialog"],
+        register_external_refresh=lambda callback: namespace["register_config_sync_refresher"](
+            "desktop_shortcut", callback,
+        ),
     )
 
 

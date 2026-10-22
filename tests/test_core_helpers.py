@@ -50,6 +50,7 @@ from sms_core.serial_parsers import (
     parse_temperature,
 )
 from sms_core.serial_sender import (
+    AtCommandResponseCoordinator,
     SmsPduSendResponse,
     write_serial_command,
     write_serial_command_sequence,
@@ -90,9 +91,12 @@ class CoreHelperTests(unittest.TestCase):
             self.is_open = is_open
             self.writes = []
             self.flush_count = 0
+            self.at_responses = AtCommandResponseCoordinator()
 
         def write(self, payload):
             self.writes.append(payload)
+            if payload == b"AT+CMGF=0\r\n":
+                self.at_responses.observe_line("OK", connection=self)
 
         def flush(self):
             self.flush_count += 1
@@ -629,6 +633,7 @@ class CoreHelperTests(unittest.TestCase):
                 port_ui=lambda *args: ui_lines.append(args),
                 sleep_func=lambda _seconds: None,
                 response_coordinator=self.FakeSmsCoordinator(),
+                command_response_coordinator=serial_obj.at_responses,
             )
         )
 

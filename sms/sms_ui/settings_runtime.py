@@ -7,7 +7,10 @@ from sms_core.cloud_command_security import (
     normalize_cloud_command_permissions,
     read_cloud_command_permissions,
 )
-from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_core.config_runtime import (
+    read_startup_config_values, restore_config_section, snapshot_config_section,
+)
+from sms_core.config_schema import DEFAULT_VOICE_TEXT
 from sms_ui.sms_font_dialog import validated_tk_color
 from sms_ui.settings_dialogs import (
     open_call_filter_setting_dialog,
@@ -280,21 +283,29 @@ def open_voice_text_dialog_runtime(
     center_window,
     open_dialog,
     log_error=None,
+    register_external_refresh=None,
+    get_values=None,
 ):
     def preview(text):
         generate_voice(force=True, text=text, play_after=True, preview=True)
 
     def save(text):
         if save_ui_config_values(config, {"voice_text": text}, safe_save, log_error=log_error):
-            set_voice_text(text)
+            committed = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
+            set_voice_text(committed.voice_text)
             generate_voice(force=True)
-            system_ui("🔊 已更新语音播报内容：" + text, "normal")
+            system_ui("🔊 已更新语音播报内容：" + committed.voice_text, "normal")
             return True
         else:
             system_ui(_save_failed_status(), "normal")
             return False
 
-    open_dialog(parent, current_text, preview, save, center_window)
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+    if get_values is not None:
+        refresh_options["get_values"] = get_values
+    open_dialog(parent, current_text, preview, save, center_window, **refresh_options)
 
 
 def open_sms_font_dialog_runtime(
@@ -310,6 +321,8 @@ def open_sms_font_dialog_runtime(
     center_window,
     open_dialog,
     log_error=None,
+    register_external_refresh=None,
+    get_values=None,
 ):
     def save_font(size, color):
         color = validated_tk_color(parent, color)
@@ -327,14 +340,24 @@ def open_sms_font_dialog_runtime(
             log_error=log_error,
         )
         if saved:
-            set_font(size, color)
+            committed = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
+            committed_color = validated_tk_color(parent, committed.sms_font_color)
+            if committed_color is None:
+                committed_color = color
+                _safe_log(log_error, "Ignored invalid merged SMS font color; retained a valid color")
+            set_font(committed.sms_font_size, committed_color)
             apply_font_style()
-            system_ui(f"🎨 已更新短信字体：字号 {size}，颜色 {color}", "normal")
+            system_ui(f"🎨 已更新短信字体：字号 {committed.sms_font_size}，颜色 {committed_color}", "normal")
         else:
             system_ui(_save_failed_status(), "normal")
         return saved
 
-    open_dialog(parent, current_size, current_color, save_font, center_window)
+    refresh_options = {}
+    if register_external_refresh is not None:
+        refresh_options["register_external_refresh"] = register_external_refresh
+    if get_values is not None:
+        refresh_options["get_values"] = get_values
+    open_dialog(parent, current_size, current_color, save_font, center_window, **refresh_options)
 
 
 def open_keywords_setting_runtime(

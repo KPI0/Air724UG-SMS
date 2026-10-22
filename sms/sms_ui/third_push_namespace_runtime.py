@@ -1,4 +1,10 @@
-from sms_core.third_push_config import ensure_third_push_config_values, read_third_push_settings
+import threading
+
+from sms_core.third_push_config import (
+    ThirdPushSettings,
+    ensure_third_push_config_values,
+    read_third_push_settings,
+)
 from sms_core.config_runtime import (
     reload_config_runtime,
     restore_config_section,
@@ -9,7 +15,6 @@ from sms_ui.third_push_app_runtime import (
     open_third_push_values_app_runtime,
     save_third_push_setting_runtime,
     show_third_push_test_result_app_runtime,
-    third_push_settings_from_values,
     third_push_worker_app_runtime,
 )
 
@@ -27,12 +32,33 @@ def ensure_third_push_config_namespace_runtime(namespace, *, save=False):
     return changed
 
 
+def _third_push_settings_lock(namespace):
+    lock = namespace.get("_THIRD_PUSH_SETTINGS_LOCK")
+    if lock is None:
+        lock = namespace.setdefault("_THIRD_PUSH_SETTINGS_LOCK", threading.RLock())
+    return lock
+
+
+def third_push_settings_snapshot_namespace_runtime(namespace):
+    with _third_push_settings_lock(namespace):
+        return ThirdPushSettings(
+            namespace["THIRD_PUSH_ENABLED"],
+            namespace["THIRD_PUSH_SMS_ENABLED"],
+            namespace["THIRD_PUSH_CALL_ENABLED"],
+            list(namespace["THIRD_PUSH_TYPES"] or []),
+            dict(namespace["THIRD_PUSH_SETTINGS"] or {}),
+        )
+
+
 def apply_third_push_settings_namespace_runtime(namespace, settings):
-    namespace.__setitem__("THIRD_PUSH_ENABLED", settings.enabled)
-    namespace.__setitem__("THIRD_PUSH_SMS_ENABLED", settings.sms_enabled)
-    namespace.__setitem__("THIRD_PUSH_CALL_ENABLED", settings.call_enabled)
-    namespace.__setitem__("THIRD_PUSH_TYPES", list(settings.channels or []))
-    namespace.__setitem__("THIRD_PUSH_SETTINGS", dict(settings.settings or {}))
+    channels = list(settings.channels or [])
+    parameters = dict(settings.settings or {})
+    with _third_push_settings_lock(namespace):
+        namespace.__setitem__("THIRD_PUSH_ENABLED", settings.enabled)
+        namespace.__setitem__("THIRD_PUSH_SMS_ENABLED", settings.sms_enabled)
+        namespace.__setitem__("THIRD_PUSH_CALL_ENABLED", settings.call_enabled)
+        namespace.__setitem__("THIRD_PUSH_TYPES", channels)
+        namespace.__setitem__("THIRD_PUSH_SETTINGS", parameters)
 
 
 def _log_config_reload_failure(namespace, exc):
@@ -90,13 +116,7 @@ def save_third_push_setting_namespace_runtime(
     settings=None,
 ):
     return save_third_push_setting_runtime(
-        current_settings=lambda: third_push_settings_from_values(
-            namespace["THIRD_PUSH_ENABLED"],
-            namespace["THIRD_PUSH_SMS_ENABLED"],
-            namespace["THIRD_PUSH_CALL_ENABLED"],
-            namespace["THIRD_PUSH_TYPES"],
-            namespace["THIRD_PUSH_SETTINGS"],
-        ),
+        current_settings=lambda: read_third_push_settings(namespace["config"]),
         apply_settings=lambda next_settings: apply_third_push_settings_namespace_runtime(namespace, next_settings),
         config=namespace["config"],
         save_config=namespace["safe_save_config"],
@@ -153,14 +173,15 @@ def enqueue_third_push_namespace_runtime(
             merged_variables["local_number"] = local_number
         if not str(merged_variables.get("self_number") or "").strip():
             merged_variables["self_number"] = local_number
+    push_settings = third_push_settings_snapshot_namespace_runtime(namespace)
     return enqueue_third_push_app_runtime(
         raw_msg,
         push_queue=namespace["THIRD_PUSH_Q"],
-        enabled=lambda: namespace["THIRD_PUSH_ENABLED"],
-        sms_enabled=lambda: namespace["THIRD_PUSH_SMS_ENABLED"],
-        call_enabled=lambda: namespace["THIRD_PUSH_CALL_ENABLED"],
-        configured_channels=lambda: namespace["THIRD_PUSH_TYPES"],
-        current_settings=lambda: namespace["THIRD_PUSH_SETTINGS"],
+        enabled=lambda: push_settings.enabled,
+        sms_enabled=lambda: push_settings.sms_enabled,
+        call_enabled=lambda: push_settings.call_enabled,
+        configured_channels=lambda: push_settings.channels,
+        current_settings=lambda: push_settings.settings,
         channels=channels,
         settings=settings,
         template=template,
@@ -196,3 +217,4 @@ def open_third_push_window_namespace_runtime(namespace):
         set_window=lambda win: namespace.__setitem__("third_push_win", win),
         center_window=namespace["center_window"],
     )
+

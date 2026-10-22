@@ -27,6 +27,12 @@ def send_manual_sms_namespace_runtime(
             raise RuntimeError("串口连接或设备身份已变化，已取消短信发送，请重新提交")
         return serial
 
+    def get_recovery_serial():
+        if (namespace.get("serial_obj") is serial
+                and namespace.get("serial_connection_generation", 0) == generation):
+            return serial
+        return None
+
     def record_sent():
         if not namespace.get("CLOUD_CONTROL_ENABLED", True):
             return "disabled"
@@ -61,4 +67,7 @@ def send_manual_sms_namespace_runtime(
         port_ui=namespace["port_ui"],
         log_error=namespace.get("log_file_only"),
         on_sent=record_sent,
+        get_recovery_serial=get_recovery_serial,
+        response_coordinator=namespace.get("SMS_SEND_COORDINATOR"),
+        command_response_coordinator=namespace.get("SERIAL_COMMAND_RESPONSE_COORDINATOR"),
     )

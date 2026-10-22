@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 import json
 import re
-import ssl
 import time
 from urllib.parse import urlsplit
+import urllib.error
 import urllib.request
+
+from sms_core.http_deadline import urlopen_with_deadline
 
 
 MAX_RELEASE_JSON_BYTES = 1024 * 1024
@@ -163,7 +165,6 @@ def check_latest_release(
 
 def http_get_json(url: str, timeout=8, retries=3):
     last_err = None
-    opener = _build_no_proxy_opener()
 
     for index in range(retries):
         try:
@@ -172,7 +173,7 @@ def http_get_json(url: str, timeout=8, retries=3):
                 headers={"User-Agent": "sms-updater", "Accept": "application/vnd.github+json"},
                 method="GET",
             )
-            with opener.open(req, timeout=timeout) as resp:
+            with urlopen_with_deadline(req, timeout=timeout, use_system_proxies=False) as resp:
                 data = resp.read(MAX_RELEASE_JSON_BYTES + 1)
                 if len(data) > MAX_RELEASE_JSON_BYTES:
                     raise ValueError("更新服务响应过大，已停止读取")
@@ -180,30 +181,37 @@ def http_get_json(url: str, timeout=8, retries=3):
         except ValueError:
             raise
         except Exception as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
             last_err = exc
-            _sleep_backoff(0.6, index)
+            if index + 1 < retries:
+                _sleep_backoff(0.6, index)
 
     raise last_err
 
 
 def http_probe(url: str, timeout=8, retries=2):
     last_err = None
-    opener = _build_no_proxy_opener()
 
     for index in range(retries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "sms-updater"}, method="HEAD")
-            with opener.open(req, timeout=timeout) as resp:
+            with urlopen_with_deadline(req, timeout=timeout, use_system_proxies=False) as resp:
                 return True, f"HTTP {getattr(resp, 'status', 200)}"
-        except Exception:
+        except Exception as head_error:
+            if isinstance(head_error, urllib.error.HTTPError):
+                head_error.close()
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "sms-updater"}, method="GET")
-                with opener.open(req, timeout=timeout) as resp:
+                with urlopen_with_deadline(req, timeout=timeout, use_system_proxies=False) as resp:
                     resp.read(64)
                     return True, f"HTTP {getattr(resp, 'status', 200)}"
             except Exception as exc:
+                if isinstance(exc, urllib.error.HTTPError):
+                    exc.close()
                 last_err = exc
-                _sleep_backoff(0.4, index)
+                if index + 1 < retries:
+                    _sleep_backoff(0.4, index)
 
     raise last_err
 
@@ -213,7 +221,7 @@ def classify_update_error(exc: Exception) -> str:
     lower_text = text.lower()
     if "sslv3_alert_handshake_failure" in text or "sslv3 alert handshake failure" in lower_text:
         return "TLS握手失败（代理节点/线路不兼容或被干扰）"
-    if "timed out" in lower_text:
+    if isinstance(exc, TimeoutError) or "timed out" in lower_text or "请求超时" in text:
         return "连接超时（线路慢/被阻断）"
     if "name or service not known" in lower_text or "getaddrinfo failed" in lower_text:
         return "DNS 解析失败"
@@ -297,14 +305,6 @@ def format_proxy_test_result(result: dict):
     if download_ok:
         lines.append("提示：下载代理可用，下载链接将优先使用它。")
     return "\n".join(lines)
-
-
-def _build_no_proxy_opener():
-    ctx = ssl.create_default_context()
-    return urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        urllib.request.HTTPSHandler(context=ctx),
-    )
 
 
 def _sleep_backoff(base_seconds, index):

@@ -1,6 +1,11 @@
 from sms_core.third_push import dispatch_push_item, third_push_state
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
-from sms_core.third_push_config import ThirdPushSettings, update_third_push_settings, write_third_push_settings
+from sms_core.third_push_config import (
+    ThirdPushSettings,
+    read_third_push_settings,
+    update_third_push_settings,
+    write_third_push_settings,
+)
 from sms_core.third_push_runtime import enqueue_third_push_runtime, third_push_worker_runtime
 from sms_core.third_push import format_message as format_third_push_message
 from sms_core.third_push import send_channel as send_third_push_channel
@@ -41,8 +46,9 @@ def save_third_push_setting_runtime(
         restore_config_section(config, "third_push", config_snapshot)
         return None
 
-    apply_settings(next_settings)
-    return next_settings
+    committed_settings = read_third_push_settings(config)
+    apply_settings(committed_settings)
+    return committed_settings
 
 
 def third_push_settings_from_values(enabled, sms_enabled, call_enabled, channels, settings):

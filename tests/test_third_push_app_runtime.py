@@ -97,6 +97,28 @@ class ThirdPushAppRuntimeTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(dict(config.items("third_push", raw=True)), before)
 
+    def test_save_applies_committed_configuration_after_external_merge(self):
+        config = configparser.ConfigParser(interpolation=None)
+        applied = []
+
+        def save_config():
+            config.set("third_push", "notify_type", '["wecom"]')
+            config.set("third_push", "wecom_webhook", "https://merged.example.invalid")
+            return True
+
+        result = save_third_push_setting_runtime(
+            current_settings=lambda: ThirdPushSettings(True, True, True, ["dingtalk"], {}),
+            apply_settings=applied.append,
+            config=config,
+            save_config=save_config,
+            call_enabled=False,
+        )
+
+        self.assertEqual(result.channels, ["wecom"])
+        self.assertEqual(result.settings["wecom_webhook"], "https://merged.example.invalid")
+        self.assertFalse(result.call_enabled)
+        self.assertEqual(applied, [result])
+
     def test_open_third_push_app_runtime_builds_state_and_forwards_callbacks(self):
         calls = []
 

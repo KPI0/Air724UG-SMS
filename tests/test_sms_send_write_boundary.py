@@ -27,6 +27,8 @@ class SmsWriteBoundaryTests(unittest.TestCase):
                 elif payload.endswith(b'\x1a'):
                     sms.observe_line('+CMGS: 7', connection=self)
                     sms.observe_line('OK', connection=self)
+                elif payload == b'\x1b':
+                    sms.observe_line('OK', connection=self)
                 return len(payload)
 
             def flush(self):
@@ -40,14 +42,16 @@ class SmsWriteBoundaryTests(unittest.TestCase):
         def run():
             try:
                 kwargs = dict(response_coordinator=sms, prompt_timeout=0.03,
-                              segment_timeout=0.03, sleep_func=lambda _seconds: None)
+                              segment_timeout=0.03, abort_timeout=0.03,
+                              sleep_func=lambda _seconds: None)
                 if locked:
                     result = serial_sender.write_text_sms_pdu_locked(
                         threading.RLock(), lambda: modem, '10086', 'synthetic-only',
                         command_response_coordinator=at, **kwargs)
                 else:
                     result = serial_sender.write_text_sms_pdu(
-                        modem, '10086', 'synthetic-only', **kwargs)
+                        modem, '10086', 'synthetic-only',
+                        command_response_coordinator=at, **kwargs)
                 results.append(result)
             except Exception as exc:
                 errors.append(type(exc).__name__)
@@ -110,7 +114,7 @@ class SmsWriteBoundaryTests(unittest.TestCase):
             with self.subTest(locked=locked):
                 result, writes = self.run_case(locked, '', True, fail_cmgs=True)
                 self.assertFalse(result)
-                self.assertEqual(writes, [b'AT+CMGF=0\r\n'])
+                self.assertEqual(writes, [b'AT+CMGF=0\r\n', b'\x1b'])
                 next_result, _writes = self.run_case(locked, '', True)
                 self.assertTrue(next_result)
 

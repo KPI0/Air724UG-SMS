@@ -36,6 +36,7 @@ from sms_core.serial_sender import (
     AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
     DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     DEFAULT_SMS_PDU_SEND_COORDINATOR,
+    serial_sms_recovery_error,
     start_registered_serial_worker,
     write_serial_command_sequence_confirmed_locked,
     write_text_sms_pdu_locked,
@@ -397,6 +398,14 @@ def send_cloud_serial_command_namespace_runtime(
         context_error = context_error or command_context.rejection_reason(namespace)
         return None if context_error else command_context.serial
 
+    def get_recovery_serial():
+        # ESC ends the admitted modem transaction even after cloud revocation.
+        # It must never be sent to a replacement connection or generation.
+        if (namespace.get("serial_obj") is command_context.serial
+                and namespace.get("serial_connection_generation", 0) == command_context.generation):
+            return command_context.serial
+        return None
+
     with namespace["serial_lock"]:
         get_command_serial()
     if context_error:
@@ -459,6 +468,7 @@ def send_cloud_serial_command_namespace_runtime(
                 port_ui=namespace.get("port_ui"),
                 response_coordinator=sms_coordinator,
                 command_response_coordinator=command_coordinator,
+                get_recovery_serial=get_recovery_serial,
             ),
             set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
                 namespace["serial_lock"],
@@ -479,7 +489,12 @@ def send_cloud_serial_command_namespace_runtime(
         call_context.finish(bool(result[0]))
         if stale_error:
             return False, stale_error
-    return (False, context_error) if context_error else result
+    if context_error:
+        result = False, context_error
+    recovery_error = serial_sms_recovery_error(command_context.serial)
+    if not result[0] and recovery_error and recovery_error not in str(result[1]):
+        return False, f"{result[1]}；{recovery_error}"
+    return result
 
 
 def apply_cloud_modem_health_namespace_runtime(namespace, result):
