@@ -2,9 +2,14 @@ import asyncio
 from sms_core.cloud_firmware_ota import handle_firmware_ota
 import inspect
 import threading
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 
-from sms_core.cloud_command_context import capture_cloud_serial_command_context, set_cloud_command_authorized
+from sms_core.call_command_context import call_state_lock
+from sms_core.cloud_command_context import (
+    capture_cloud_serial_command_context, cloud_connection_is_current,
+    set_cloud_login_authorized,
+)
 from sms_core.cloud_auth import command_text
 from sms_core.cloud_message_runtime import (
     handle_device_call_state_runtime,
@@ -395,8 +400,16 @@ def send_cloud_serial_command_namespace_runtime(
         nonlocal context_error
         # All three transaction writers call this under serial_lock before
         # selecting a connection and after the final write lock for each write.
-        context_error = context_error or command_context.rejection_reason(namespace)
+        with call_state_lock(namespace):
+            context_error = context_error or command_context.rejection_reason(namespace)
         return None if context_error else command_context.serial
+
+    @contextmanager
+    def command_write_guard():
+        with call_state_lock(namespace):
+            allowed = get_command_serial() is command_context.serial
+            with (call_context.write_guard() if call_context is not None else nullcontext(True)) as call_allowed:
+                yield allowed and call_allowed
 
     def get_recovery_serial():
         # ESC ends the admitted modem transaction even after cloud revocation.
@@ -434,7 +447,7 @@ def send_cloud_serial_command_namespace_runtime(
             (next_command,),
             response_coordinator=command_coordinator,
             response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
-            write_guard=call_context.write_guard if call_context is not None else None,
+            write_guard=command_write_guard,
             before_write=call_context.before_write if call_context is not None else None,
         )
 
@@ -469,12 +482,14 @@ def send_cloud_serial_command_namespace_runtime(
                 response_coordinator=sms_coordinator,
                 command_response_coordinator=command_coordinator,
                 get_recovery_serial=get_recovery_serial,
+                write_guard=command_write_guard,
             ),
             set_own_number_transaction=lambda phone: write_serial_command_sequence_confirmed_locked(
                 namespace["serial_lock"],
                 get_command_serial,
                 build_own_number_commands(phone),
                 response_coordinator=command_coordinator,
+                write_guard=command_write_guard,
             ),
             set_current_dial_num=(None if call_context is not None else
                                   lambda value: namespace.__setitem__("current_dial_num", value)),
@@ -497,21 +512,36 @@ def send_cloud_serial_command_namespace_runtime(
     return result
 
 
-def apply_cloud_modem_health_namespace_runtime(namespace, result):
+def apply_cloud_modem_health_namespace_runtime(namespace, result, *, command_context=None):
     health = namespace.get("CLOUD_MODEM_HEALTH")
     if health is None or not isinstance(result, tuple) or len(result) < 2:
         return result
     ok, info = bool(result[0]), str(result[1] or "")
-    health_snapshot = health.record(ok, info)
+    if command_context is None:
+        health_snapshot = health.record(ok, info)
+    else:
+        with namespace["serial_lock"]:
+            if (namespace.get("serial_obj") is not command_context.serial
+                    or namespace.get("serial_connection_generation", 0) != command_context.generation):
+                return result
+            health_snapshot = health.record(ok, info, connection=command_context.serial,
+                                            generation=command_context.generation)
     if health_snapshot.get("request_reconnect"):
         namespace["_cloud_log"](
             "连续 AT 响应超时，Modem 无响应，正在安全重连串口",
             show_main=True,
         )
-        try:
-            namespace["safe_close_serial"]()
-        finally:
-            namespace["serial_wakeup_event"].set()
+        if command_context is None:
+            try:
+                namespace["safe_close_serial"]()
+            finally:
+                namespace["serial_wakeup_event"].set()
+        elif not serial_sms_recovery_error(command_context.serial):
+            closed = namespace["safe_close_serial"](
+                expected_serial=command_context.serial, expected_generation=command_context.generation,
+            )
+            if closed is not False:
+                namespace["serial_wakeup_event"].set()
     metadata = {
         "modem_unresponsive": bool(health_snapshot.get("modem_unresponsive")),
         "consecutive_at_timeouts": int(health_snapshot.get("consecutive_at_timeouts") or 0),
@@ -543,7 +573,7 @@ async def run_registered_cloud_serial_command_namespace_runtime(
     def finish(result):
         if not result_future.done():
             result_future.set_result(
-                apply_cloud_modem_health_namespace_runtime(namespace, result)
+                apply_cloud_modem_health_namespace_runtime(namespace, result, command_context=command_context)
             )
 
     def worker():
@@ -606,12 +636,10 @@ async def handle_cloud_message_namespace_runtime(
 
     def set_authorized(value):
         authorized = bool(value)
-        set_cloud_command_authorized(namespace, authorized)
+        if not set_cloud_login_authorized(namespace, ws, authorized):
+            return
         if not authorized:
             interrupt_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), lock_held=True)
-        if authorized:
-            namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
-            namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
 
     def prepare_serial_command(command_data):
         command_context = capture_cloud_serial_command_context(
@@ -654,8 +682,8 @@ async def handle_cloud_message_namespace_runtime(
         handle_device_call_state_message=handle_device_call_state_message,
         handle_firmware_ota_message=lambda data: handle_firmware_ota(namespace, ws, data),
         auth_ack_matches=lambda data: (
-            ws is namespace["cloud_ws_conn"]
+            cloud_connection_is_current(namespace, ws)
             and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())
         ),
-        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None),
+        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None) or call_state_lock(namespace),
     )

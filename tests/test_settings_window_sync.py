@@ -227,11 +227,11 @@ class SettingsWindowSyncTests(unittest.TestCase):
         self.assertEqual(name.get(), "External name")
         win.destroy()
 
-    def test_publication_setting_does_not_change_runtime_or_trigger_actions(self):
-        self.second["register_current_cloud_device"] = lambda: self.fail("publication was not selected")
+    def test_publication_setting_syncs_without_connecting_disabled_cloud_control(self):
+        self.second["restart_cloud_control"] = lambda **_: self.fail("cloud control is disabled")
         changed = self.save_external("cloud_control", auto_upload="1")
-        self.assertFalse(self.second["CLOUD_AUTO_UPLOAD"])
-        self.assertNotIn("主动公开设备", changed)
+        self.assertTrue(self.second["CLOUD_AUTO_UPLOAD"])
+        self.assertIn("主动公开设备", changed)
 
     def test_voice_save_before_watch_refresh_uses_merged_text_for_runtime(self):
         win = self.open_window(open_voice_text_dialog_namespace_runtime)

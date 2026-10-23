@@ -1,6 +1,7 @@
 from sms_core.cloud_runtime import (
     CloudControlSettings,
     cloud_control_state,
+    read_cloud_control_settings,
     restart_cloud_control_runtime,
     start_cloud_control_runtime,
     stop_cloud_control_runtime,
@@ -54,11 +55,12 @@ def save_cloud_control_setting_runtime(
             raise RuntimeError("配置保存失败")
     except Exception as exc:
         restore_config_section(config, "cloud_control", config_snapshot)
-        system_ui(f"❌ 云端控制配置保存失败：{exc}", "normal")
+        system_ui(f"❌ 云端控制配置保存失败，请检查配置文件权限及磁盘空间（{type(exc).__name__}）。", "normal")
         return None
 
-    apply_settings(settings)
-    return settings
+    committed_settings = read_cloud_control_settings(config)
+    apply_settings(committed_settings)
+    return committed_settings
 
 
 def start_cloud_control_app_runtime(

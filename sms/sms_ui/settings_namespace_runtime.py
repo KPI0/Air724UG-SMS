@@ -1,4 +1,5 @@
 from sms_ui.desktop_shortcut_runtime import open_desktop_shortcut_dialog_runtime
+from sms_core.cloud_command_context import set_cloud_command_permissions
 from sms_ui.serial_settings_runtime import open_serial_setting_runtime
 from sms_ui.settings_runtime import (
     open_call_filter_setting_runtime,
@@ -69,10 +70,7 @@ def open_security_settings_namespace_runtime(
         namespace.get("CLOUD_SENSITIVE_COMMAND_PERMISSIONS", {}),
         config=namespace["config"],
         safe_save=namespace["safe_save_config"],
-        set_permissions=lambda permissions: namespace.__setitem__(
-            "CLOUD_SENSITIVE_COMMAND_PERMISSIONS",
-            dict(permissions),
-        ),
+        set_permissions=lambda permissions: set_cloud_command_permissions(namespace, permissions),
         system_ui=namespace["system_ui"],
         center_window=namespace["center_window"],
         open_dialog=namespace["_ui_open_security_settings_dialog"],

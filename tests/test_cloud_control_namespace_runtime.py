@@ -200,6 +200,10 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
 
     def test_save_cloud_control_setting_namespace_runtime_forwards_current_state(self):
         namespace = self.base_namespace()
+        namespace["config"]["cloud_control"] = {
+            "enabled": "1", "url": "wss://stored.example/ws/device",
+            "device_secret": "stored-secret", "reconnect_interval": "9", "auto_upload": "1",
+        }
         calls = []
 
         result = save_cloud_control_setting_namespace_runtime(
@@ -212,10 +216,10 @@ class CloudControlNamespaceRuntimeTests(unittest.TestCase):
         self.assertIs(calls[0]["config"], namespace["config"])
         self.assertIs(calls[0]["apply_settings"], namespace["apply_cloud_control_settings"])
         self.assertEqual(result.enabled, True)
-        self.assertEqual(result.url, "ws://host")
-        self.assertEqual(result.reconnect_interval, 5)
-        self.assertEqual(result.device_secret, "secret")
-        self.assertEqual(result.auto_upload, False)
+        self.assertEqual(result.url, "wss://stored.example/ws/device")
+        self.assertEqual(result.reconnect_interval, 9)
+        self.assertEqual(result.device_secret, "stored-secret")
+        self.assertEqual(result.auto_upload, True)
 
     def test_cloud_log_namespace_runtime_filters_file_and_main_messages(self):
         namespace = self.base_namespace()

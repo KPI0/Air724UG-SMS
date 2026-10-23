@@ -1,5 +1,8 @@
 import unittest
 import queue
+import subprocess
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from sms_core.app_launch import (
     build_restart_helper_command,
@@ -8,10 +11,124 @@ from sms_core.app_launch import (
     filtered_restart_args,
     prepare_restart_helper_launch,
     restart_software_runtime,
+    wait_for_process_exit,
+    maybe_run_restart_helper_mode,
 )
 
 
 class AppLaunchRestartTests(unittest.TestCase):
+    def test_process_wait_access_denied_is_reported_instead_of_launching_early(self):
+        kernel = SimpleNamespace(OpenProcess=Mock(return_value=0), GetLastError=Mock(return_value=5),
+            WaitForSingleObject=Mock(), CloseHandle=Mock())
+        slept = []
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+            "ctypes.windll", SimpleNamespace(kernel32=kernel), create=True
+        ):
+            with self.assertRaises(OSError):
+                wait_for_process_exit(2468, sleep_func=slept.append)
+        self.assertEqual(slept, [])
+
+    def test_process_wait_failure_closes_handle_and_stops_restart(self):
+        kernel = SimpleNamespace(OpenProcess=Mock(return_value=16),
+            WaitForSingleObject=Mock(return_value=0xFFFFFFFF), CloseHandle=Mock(),
+            GetLastError=Mock(return_value=6))
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+            "ctypes.windll", SimpleNamespace(kernel32=kernel), create=True
+        ):
+            with self.assertRaises(OSError):
+                wait_for_process_exit(2468, sleep_func=lambda _seconds: None)
+        kernel.CloseHandle.assert_called_once_with(16)
+
+    def test_process_wait_accepts_already_exited_pid_and_waits_for_live_original(self):
+        for handle in (0, 16):
+            with self.subTest(handle=handle):
+                kernel = SimpleNamespace(OpenProcess=Mock(return_value=handle), GetLastError=Mock(return_value=87),
+                    WaitForSingleObject=Mock(side_effect=(0x102, 0)), CloseHandle=Mock())
+                slept = []
+                with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+                    "ctypes.windll", SimpleNamespace(kernel32=kernel), create=True
+                ):
+                    wait_for_process_exit(2468, sleep_func=slept.append)
+                self.assertEqual(slept, [0.3])
+                if handle:
+                    self.assertEqual(kernel.WaitForSingleObject.call_count, 2)
+                    kernel.CloseHandle.assert_called_once_with(16)
+
+    def test_helper_wait_error_reports_failure_and_does_not_launch(self):
+        errors, launches = [], []
+        with self.assertRaises(SystemExit) as result:
+            maybe_run_restart_helper_mode("--restart-helper",
+                argv=["sms.exe", "--restart-helper", "2468", ""],
+                wait_func=lambda _pid: (_ for _ in ()).throw(OSError("synthetic wait failure")),
+                launch_func=lambda *args, **kwargs: launches.append(args),
+                error_func=lambda *args: errors.append(args))
+        self.assertEqual(result.exception.code, 1)
+        self.assertEqual(launches, [])
+        self.assertIn("synthetic wait failure", errors[0][1])
+
+    def test_cancel_windows_helper_stops_onefile_process_tree_before_waiting(self):
+        calls = []
+        process = SimpleNamespace(pid=2468, poll=lambda: None,
+            terminate=lambda: calls.append("parent-only-terminate"),
+            wait=lambda **kwargs: calls.append(("wait", kwargs)))
+
+        def run(command, **kwargs):
+            calls.append(("tree", command, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+            "sms_core.app_launch.subprocess.run", side_effect=run
+        ):
+            self.assertTrue(cancel_launched_process(process, timeout=1.5))
+        self.assertEqual(calls[0][0], "tree")
+        self.assertEqual(calls[0][1][1:], ["/PID", "2468", "/T", "/F"])
+        self.assertEqual(calls[0][2]["timeout"], 1.5)
+        self.assertEqual(calls[0][2]["stdout"], subprocess.DEVNULL)
+        self.assertEqual(calls[0][2]["stderr"], subprocess.DEVNULL)
+        self.assertTrue(calls[0][2]["creationflags"] & subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(calls[1], ("wait", {"timeout": 1.5}))
+
+    def test_windows_tree_failure_does_not_fall_back_to_parent_only_success(self):
+        calls = []
+        process = SimpleNamespace(pid=2468, poll=lambda: None,
+            terminate=lambda: calls.append("terminate"), wait=lambda **kwargs: calls.append("wait"))
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+            "sms_core.app_launch.subprocess.run", return_value=SimpleNamespace(returncode=1)
+        ):
+            self.assertFalse(cancel_launched_process(process))
+        self.assertEqual(calls, [])
+
+    def test_windows_tree_timeout_is_not_reported_as_cancelled(self):
+        process = SimpleNamespace(pid=2468, poll=lambda: None, terminate=lambda: None)
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch(
+            "sms_core.app_launch.subprocess.run", side_effect=subprocess.TimeoutExpired("taskkill", 2)
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                cancel_launched_process(process)
+
+    def test_exited_windows_parent_does_not_prove_child_cancellation(self):
+        process = SimpleNamespace(pid=2468, poll=lambda: 0)
+        with patch("sms_core.app_launch.sys.platform", "win32"), patch("sms_core.app_launch.subprocess.run") as run:
+            self.assertFalse(cancel_launched_process(process))
+            run.assert_not_called()
+
+    def test_non_windows_helper_preserves_terminate_and_kill_fallback(self):
+        calls = []
+        waits = iter((subprocess.TimeoutExpired("helper", 1), None))
+
+        def wait(**kwargs):
+            calls.append("wait")
+            result = next(waits)
+            if result is not None:
+                raise result
+
+        process = SimpleNamespace(pid=2468, poll=lambda: None, terminate=lambda: calls.append("terminate"),
+            kill=lambda: calls.append("kill"), wait=wait)
+        with patch("sms_core.app_launch.sys.platform", "linux"), patch("sms_core.app_launch.subprocess.run") as run:
+            self.assertTrue(cancel_launched_process(process, timeout=1))
+            run.assert_not_called()
+        self.assertEqual(calls, ["terminate", "wait", "kill", "wait"])
+
     def test_cancel_launched_process_terminates_running_helper(self):
         calls = []
 
@@ -326,6 +443,36 @@ class AppLaunchRestartTests(unittest.TestCase):
 
         self.assertIn(("cancel", "helper-process"), calls)
         self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_reports_helper_cancel_failure_instead_of_original_cleanup_status(self):
+        for cancellation in (False, OSError("synthetic cancellation failure")):
+            with self.subTest(cancellation=type(cancellation).__name__):
+                calls = []
+
+                def cancel(_helper):
+                    if isinstance(cancellation, Exception):
+                        raise cancellation
+                    return cancellation
+
+                result = restart_software_runtime(**self._runtime_kwargs(
+                    calls, wait_worker_threads=lambda *a, **kwargs: False, cancel_launch=cancel))
+                self.assertEqual(result.status, "helper_cancel_failed")
+                self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_cleanup_exception_is_logged_when_helper_cancel_failure_overrides_result(self):
+        calls = []
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, cancel_launch=lambda _helper: False,
+            safe_close_serial=lambda: (_ for _ in ()).throw(OSError("synthetic cleanup"))))
+        self.assertEqual(result.status, "helper_cancel_failed")
+        self.assertTrue(any(item[0] == "log_error" and "synthetic cleanup" in item[1] for item in calls))
+
+    def test_helper_cancel_failure_does_not_suppress_system_exit(self):
+        calls = []
+        with self.assertRaises(SystemExit):
+            restart_software_runtime(**self._runtime_kwargs(
+                calls, cancel_launch=lambda _helper: False,
+                safe_close_serial=lambda: (_ for _ in ()).throw(SystemExit(3))))
 
     def test_restart_does_not_release_mutex_when_final_flush_raises(self):
         calls = []

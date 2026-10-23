@@ -57,6 +57,17 @@ def cloud_auto_upload_action(was_public, auto_upload, connected, has_loop, has_c
     return ""
 
 
+def cloud_control_connection_action(previous, settings):
+    if not settings.enabled:
+        return "stop" if previous.enabled else ""
+    if any(getattr(previous, field) != getattr(settings, field)
+           for field in ("enabled", "url", "device_secret", "reconnect_interval")):
+        return "restart"
+    if previous.auto_upload != settings.auto_upload:
+        return "register" if settings.auto_upload else "unregister"
+    return ""
+
+
 def cloud_start_thread_action(thread_alive, stop_requested):
     if thread_alive and stop_requested:
         return "restarting"

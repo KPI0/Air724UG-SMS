@@ -288,14 +288,8 @@ def _initialize_config():
 
 
 def apply_cloud_control_settings(settings: CloudControlSettings):
-    global CLOUD_CONTROL_ENABLED, CLOUD_WS_URL, CLOUD_DEVICE_SECRET
-    global CLOUD_WS_RECONNECT_INTERVAL, CLOUD_AUTO_UPLOAD
-
-    CLOUD_CONTROL_ENABLED = settings.enabled
-    CLOUD_WS_URL = settings.url
-    CLOUD_DEVICE_SECRET = settings.device_secret
-    CLOUD_WS_RECONNECT_INTERVAL = settings.reconnect_interval
-    CLOUD_AUTO_UPLOAD = settings.auto_upload
+    from sms_ui.cloud_control_namespace_runtime import apply_cloud_control_settings_namespace_runtime
+    apply_cloud_control_settings_namespace_runtime(globals(), settings)
 
 
 def _initialize_cloud_settings():

@@ -6,7 +6,7 @@ import tkinter as tk
 from types import SimpleNamespace
 import unittest
 
-from sms_core.app_launch import restart_software_runtime
+from sms_core.app_launch import RestartRuntimeResult, restart_software_runtime
 from sms_core.app_shutdown import safe_set_events
 from sms_core.third_push_runtime import third_push_worker_runtime
 from sms_ui.app_restart_runtime import start_restart_software_app_runtime
@@ -160,6 +160,18 @@ class RestartUiIntegrationTests(unittest.TestCase):
         self.assertIn(('cancel',), self.calls)
         self.assertFalse(self.state['exiting'])
         self.assertEqual(self.errors[0][0], self.owner)
+        self.assertFalse(any(item[0] == 'exit' for item in self.calls))
+
+    def test_helper_cancel_failure_is_visible_on_owner_ui_without_claiming_safe_retry(self):
+        options = self.options()
+        options['restart_runtime'] = lambda **kwargs: RestartRuntimeResult('helper_cancel_failed')
+        self.assertEqual(start_restart_software_app_runtime(**options), 'started')
+        self.run_ui()
+        self.assertEqual(self.errors[0][0], self.owner)
+        message = self.errors[0][1][1]
+        self.assertIn('重启助手未确认停止', message)
+        self.assertIn('退出当前软件后仍可能自动重新启动', message)
+        self.assertNotIn('再次选择重启或退出', message)
         self.assertFalse(any(item[0] == 'exit' for item in self.calls))
 
     def _check_cleanup_survives_launch_failure(self, already_running):

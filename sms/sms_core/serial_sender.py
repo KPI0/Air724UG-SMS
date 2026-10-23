@@ -1005,7 +1005,7 @@ def write_serial_command_confirmed_locked(
 
 def _initialize_sms_pdu_mode(
     serial_lock, get_serial, transaction_serial, response_coordinator,
-    response_timeout, isolate_serial, push_debug=None,
+    response_timeout, isolate_serial, push_debug=None, *, write_guard=None,
 ):
     attempted = False
     terminal_received = False
@@ -1023,7 +1023,7 @@ def _initialize_sms_pdu_mode(
     result = _write_confirmed_command_locked(
         serial_lock, get_serial, transaction_serial, "AT+CMGF=0",
         response_coordinator, response_timeout, push_debug,
-        before_write=begin_write, on_modem_response=on_response,
+        before_write=begin_write, on_modem_response=on_response, write_guard=write_guard,
     )
     if not result.ok and attempted and not terminal_received:
         recovery_error = isolate_serial()
@@ -1084,6 +1084,7 @@ def write_text_sms_pdu_locked(
     *,
     get_recovery_serial=None,
     abort_timeout=SMS_PDU_ABORT_TIMEOUT,
+    write_guard=None,
 ):
     try:
         phone = normalize_sms_destination(phone)
@@ -1123,6 +1124,7 @@ def write_text_sms_pdu_locked(
                 min(float(segment_timeout), AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT),
                 isolate_serial,
                 push_debug,
+                write_guard=write_guard,
             )
             if not result.ok:
                 if port_ui:
@@ -1135,7 +1137,7 @@ def write_text_sms_pdu_locked(
                 def write_bytes(payload, debug_message, **kwargs):
                     return _write_bytes_locked(
                         serial_lock, get_serial, payload, debug_message, push_debug,
-                        expected_serial=transaction_serial, **kwargs,
+                        expected_serial=transaction_serial, call_write_guard=write_guard, **kwargs,
                     )
 
                 def recover_bytes(payload, debug_message, **kwargs):

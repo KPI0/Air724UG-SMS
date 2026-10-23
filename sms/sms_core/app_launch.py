@@ -88,7 +88,27 @@ def cancel_launched_process(process, timeout=2.0):
     if process is None:
         return False
     poll = getattr(process, "poll", None)
+    pid = getattr(process, "pid", None)
+    windows_tree = sys.platform == "win32" and type(pid) is int and pid > 0
     if callable(poll) and poll() is not None:
+        # An exited onefile parent does not prove its helper child has exited.
+        return not windows_tree
+
+    if windows_tree:
+        taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
+        result = subprocess.run(
+            [taskkill, "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=max(0.1, float(timeout)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        wait = getattr(process, "wait", None)
+        if callable(wait):
+            wait(timeout=max(0.1, float(timeout)))
         return True
 
     terminate = getattr(process, "terminate", None)
@@ -403,15 +423,23 @@ def restart_software_runtime(
         return RestartRuntimeResult("exited")
     finally:
         if helper_process is not None and not restart_committed:
+            cleanup_error = sys.exc_info()[1]
             try:
                 cancelled = cancel_launch(helper_process)
                 if cancelled is False:
-                    log_error("Cancel pending restart helper returned False")
+                    _safe_log(log_error, "Cancel pending restart helper returned False")
+                    if cleanup_error is not None:
+                        _safe_log(log_error, f"Restart cleanup also failed: {cleanup_error!r}")
+                        if not isinstance(cleanup_error, Exception):
+                            raise cleanup_error
+                    return RestartRuntimeResult("helper_cancel_failed")
             except Exception as exc:
-                try:
-                    log_error(f"Cancel pending restart helper failed: {exc!r}")
-                except Exception:
-                    pass
+                _safe_log(log_error, f"Cancel pending restart helper failed: {exc!r}")
+                if cleanup_error is not None:
+                    _safe_log(log_error, f"Restart cleanup also failed: {cleanup_error!r}")
+                    if not isinstance(cleanup_error, Exception):
+                        raise cleanup_error
+                return RestartRuntimeResult("helper_cancel_failed", exc)
 
 
 def show_early_error(title: str, message: str):
@@ -424,32 +452,43 @@ def show_early_error(title: str, message: str):
 
 
 def wait_for_process_exit(pid: int, sleep_func=time.sleep):
-    try:
-        import ctypes
-
-        target_pid = int(pid)
-        if target_pid <= 0:
-            return
-
-        synchronize = 0x00100000
-        wait_object_0 = 0x00000000
-        wait_timeout = 0x00000102
-
-        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, target_pid)
-        if handle:
-            try:
-                while True:
-                    result = ctypes.windll.kernel32.WaitForSingleObject(handle, 200)
-                    if result == wait_object_0:
-                        break
-                    if result != wait_timeout:
-                        break
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        else:
-            sleep_func(2.0)
-    except Exception:
+    target_pid = int(pid)
+    if target_pid <= 0:
+        raise ValueError("原进程编号无效，已停止重启")
+    if sys.platform != "win32":
         sleep_func(2.0)
+        sleep_func(0.3)
+        return
+
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    open_process = kernel32.OpenProcess
+    wait_for_single_object = kernel32.WaitForSingleObject
+    close_handle = kernel32.CloseHandle
+    # Process handles must retain pointer width on 64-bit Windows.
+    open_process.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    open_process.restype = ctypes.c_void_p
+    wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    wait_for_single_object.restype = ctypes.c_ulong
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    handle = open_process(0x00100000, False, target_pid)
+    if not handle:
+        error = kernel32.GetLastError()
+        # ERROR_INVALID_PARAMETER means this positive PID is no longer present.
+        if error != 87:
+            raise OSError(error, "无法确认原进程已退出，已停止重启")
+    else:
+        try:
+            while True:
+                result = wait_for_single_object(handle, 200)
+                if result == 0:
+                    break
+                if result != 0x00000102:
+                    raise OSError(kernel32.GetLastError(), "等待原进程退出失败，已停止重启")
+        finally:
+            close_handle(handle)
 
     sleep_func(0.3)
 

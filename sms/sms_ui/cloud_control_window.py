@@ -2,7 +2,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from sms_core.cloud_runtime import (
-    cloud_auto_upload_action,
+    CloudControlSettings,
+    cloud_control_connection_action,
     cloud_control_save_kwargs,
 )
 from sms_ui.cloud_control_window_form import (
@@ -45,23 +46,29 @@ def open_cloud_control_window_dialog(
         on_enabled_changed,
         open_security_settings,
     )
-    win._sync_form_from_state = form.sync_from_state
+    win._sync_form_from_state = form.refresh_synced_fields
+    win._refresh_synced_fields = form.refresh_synced_fields
 
     def save_only():
         values = form.read()
         if values is not None:
-            on_save(values, win)
+            if on_save(values, win) is not False:
+                form.refresh_after_save()
 
     def connect():
         values = form.read(force_enabled=True)
         if values is not None:
             form.enabled_var.set(True)
             if on_connect(values, win) is False:
-                form.sync_from_state()
+                form.restore_toggles()
+            else:
+                form.refresh_after_save()
 
     def disconnect():
         if on_disconnect(form.disconnect_values(), win) is False:
-            form.sync_from_state()
+            form.restore_toggles()
+        else:
+            form.refresh_after_save(("enabled",))
 
     def close():
         on_close(win)
@@ -102,27 +109,45 @@ def open_cloud_control_window_runtime(
     if sync_existing_window(current_window, "_sync_form_from_state"):
         return current_window
 
-    def on_auto_upload_changed(auto_upload, _win):
-        was_public = bool(state_provider().get("auto_upload"))
-        if save_setting(auto_upload=auto_upload) in (None, False):
-            # The checkbox is toggled by Tk before the transactional save
-            # completes.  Keep the form and any dependent cloud state aligned
-            # with the last persisted settings when the save is rejected.
-            try:
-                _win._sync_form_from_state()
-            except Exception:
-                pass
+    def settings_from_state():
+        state = state_provider()
+        return CloudControlSettings(
+            enabled=bool(state["enabled"]), auto_upload=bool(state["auto_upload"]),
+            url=state["url"], device_secret=state["secret"],
+            reconnect_interval=state["reconnect_interval"],
+        )
+
+    def save_and_update_connection(kwargs, *, reconnect=False, explicit_fields=()):
+        previous = settings_from_state()
+        kwargs = {
+            key: value for key, value in kwargs.items()
+            if key in explicit_fields or value != getattr(previous, key)
+        }
+        saved = save_setting(**kwargs)
+        if saved in (None, False):
             return False
+        if not isinstance(saved, CloudControlSettings):
+            # Retain compatibility with callbacks that return only success.
+            saved = CloudControlSettings(**{**vars(previous), **kwargs})
+        action = cloud_control_connection_action(previous, saved)
+        if reconnect:
+            action = "restart" if saved.enabled else "stop"
         try:
-            connected, has_loop, has_conn = connection_state_provider()
-            action = cloud_auto_upload_action(was_public, auto_upload, connected, has_loop, has_conn)
-            if action == "register":
-                register_current()
+            if action == "restart":
+                restart_control(show_errors=True)
+            elif action == "stop":
+                stop_control()
+            elif action == "register":
+                if all(connection_state_provider()):
+                    register_current()
             elif action == "unregister":
                 schedule_unregister("auto_upload_disabled")
-        except Exception:
-            pass
+        except Exception as exc:
+            cloud_log(f"云端配置已保存，连接状态更新失败（{type(exc).__name__}），请重新连接", show_main=True)
         return True
+
+    def on_auto_upload_changed(auto_upload, _win):
+        return save_and_update_connection({"auto_upload": auto_upload}, explicit_fields=("auto_upload",))
 
     def on_enabled_changed(enabled, values, _win):
         if enabled:
@@ -130,48 +155,33 @@ def open_cloud_control_window_runtime(
         else:
             kwargs = {"enabled": False}
 
-        if save_setting(**kwargs) in (None, False):
-            try:
-                _win._sync_form_from_state()
-            except Exception:
-                pass
+        if not save_and_update_connection(kwargs, reconnect=True, explicit_fields=("enabled",)):
             return False
 
         if enabled:
-            restart_control(show_errors=True)
             cloud_log("云端控制已启用")
         else:
-            stop_control()
             cloud_log("云端控制已关闭")
         return True
 
     def save_values(values, win):
         kwargs = cloud_control_save_kwargs(values)
-        if save_setting(**kwargs) in (None, False):
+        if not save_and_update_connection(kwargs, reconnect=True):
             messagebox.showerror("保存失败", "云端控制配置保存失败，请检查配置文件是否可写。", parent=win)
-            try:
-                win._sync_form_from_state()
-            except Exception:
-                pass
             return False
         messagebox.showinfo("配置已保存", "云端控制配置已成功保存！", parent=win)
-        if kwargs["enabled"]:
-            restart_control(show_errors=True)
-        else:
-            stop_control()
         cloud_log("配置已保存")
         return True
 
     def connect_values(values, _win):
-        if save_setting(**cloud_control_save_kwargs(values, enabled_override=True)) in (None, False):
-            return False
-        restart_control(show_errors=True)
-        return True
+        return save_and_update_connection(
+            cloud_control_save_kwargs(values, enabled_override=True), reconnect=True,
+            explicit_fields=("enabled",),
+        )
 
     def disconnect_values(values, _win):
-        if save_setting(**cloud_control_save_kwargs(values, enabled_override=False)) in (None, False):
+        if not save_and_update_connection({"enabled": False}, reconnect=True, explicit_fields=("enabled",)):
             return False
-        stop_control()
         cloud_log("已手动断开")
         return True
 

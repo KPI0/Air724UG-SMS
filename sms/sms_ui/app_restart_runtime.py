@@ -96,6 +96,9 @@ def start_restart_software_app_runtime(
         )
 
     def failure_message(result):
+        if getattr(result, "status", None) == "helper_cancel_failed":
+            return ("重启助手未确认停止，退出当前软件后仍可能自动重新启动。"
+                    "请先在任务管理器检查并结束本次重启助手，再重启或退出当前软件；详情请查看日志。")
         if getattr(result, "status", None) == "launch_failed":
             return "启动重启助手失败，当前软件将继续运行。请检查日志后重试。"
         return "后台清理未能完成，窗口已保留。请再次选择重启或退出，并检查日志中的错误。"

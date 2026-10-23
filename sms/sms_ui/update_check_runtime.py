@@ -34,7 +34,8 @@ def handle_update_check_plan(
     )
     if ok:
         try:
-            open_url(plan.download_url)
+            if open_url(plan.download_url) is False:
+                raise RuntimeError("浏览器未能打开下载链接")
         except Exception as exc:
             # If the browser fails to open, swallowing the error leaves the
             # user waiting with nothing. Surface the URL so they can copy it

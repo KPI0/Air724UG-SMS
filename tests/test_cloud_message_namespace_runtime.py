@@ -19,8 +19,11 @@ from sms_core.cloud_message_namespace_runtime import (
 )
 from sms_core.serial_sender import AtCommandResponseCoordinator, SerialCommandResult
 from sms_core.cloud_modem_health import CloudModemHealthState
+from sms_core.cloud_runtime import CloudControlSettings
+from sms_core.cloud_sms_event_runtime import CloudSmsEventDrainState
 from sms_core.cloud_serial_log_runtime import CloudSerialLogDrainState
 from sms_core.threading_runtime import WorkerThreadRegistry
+from sms_ui.cloud_control_namespace_runtime import apply_cloud_control_settings_namespace_runtime
 
 
 class FakeLoop:
@@ -448,6 +451,9 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["status_payload"](), {"status": "ok"})
         self.assertEqual(forwarded["show_window"](), "show")
         self.assertEqual(forwarded["hide_window"](), "hide")
+        # The result future can settle before the worker's finally unregisters it.
+        for worker in namespace["SERIAL_COMMAND_THREAD_REGISTRY"].snapshot():
+            worker.join(timeout=1)
         self.assertEqual(namespace["SERIAL_COMMAND_THREAD_REGISTRY"].snapshot(), ())
 
     def test_handle_cloud_message_namespace_runtime_remembers_authorized_session(self):
@@ -472,6 +478,24 @@ class CloudMessageNamespaceRuntimeTests(unittest.TestCase):
             namespace["cloud_authenticated_ws_url"],
             "wss://example.com/ws/device",
         )
+
+    def test_login_ack_during_synced_reconnect_cannot_restore_authorization(self):
+        namespace = self.base_namespace()
+        namespace["cloud_stop_event"] = threading.Event()
+        namespace["CLOUD_CONTROL_ENABLED"] = True
+        namespace["CLOUD_WS_RECONNECT_INTERVAL"] = 5
+        namespace["CLOUD_SMS_EVENT_DRAIN_STATE"] = CloudSmsEventDrainState()
+        namespace["_cloud_log"] = lambda *_args, **_kwargs: None
+        apply_cloud_control_settings_namespace_runtime(namespace, CloudControlSettings(
+            True, namespace["CLOUD_WS_URL"], 9, namespace["CLOUD_DEVICE_SECRET"], False,
+        ))
+        result = asyncio.run(handle_cloud_message_namespace_runtime(
+            namespace, namespace["cloud_ws_conn"],
+            '{"type":"device_login_ack","auth_status":"authorized","imei":"861"}',
+        ))
+        self.assertEqual(result, "stale_ack")
+        self.assertFalse(namespace["cloud_device_authorized"])
+        self.assertNotIn("cloud_authenticated_secret", namespace)
 
 
 async def _async_value(value):

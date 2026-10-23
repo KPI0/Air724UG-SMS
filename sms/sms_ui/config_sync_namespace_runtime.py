@@ -11,6 +11,9 @@ from sms_core.config_runtime import (
     reload_config_runtime,
 )
 from sms_core.third_push_config import read_third_push_settings
+from sms_core.cloud_control_settings import read_cloud_control_settings
+from sms_core.cloud_command_context import set_cloud_command_permissions
+from sms_ui.cloud_control_namespace_runtime import sync_cloud_control_settings_namespace_runtime
 from sms_ui.config_sync_runtime import (
     ConfigReloadFailureLogState,
     clear_config_reload_failure_runtime,
@@ -129,12 +132,13 @@ def reload_shared_ui_config_namespace_runtime(
             ),
             read_third_push_settings(merged_config),
             _read_editor_config(merged_config),
+            read_cloud_control_settings(merged_config),
         )
 
     try:
         with namespace["CONFIG_LOCK"]:
             previous_editor_values = _read_editor_config(namespace["config"])
-            values, push_settings, editor_values = reload_config_runtime(
+            values, push_settings, editor_values, cloud_settings = reload_config_runtime(
                 config=namespace["config"],
                 config_file=namespace["CONFIG_FILE"],
                 config_lock=namespace["CONFIG_LOCK"],
@@ -290,10 +294,18 @@ def reload_shared_ui_config_namespace_runtime(
         )
     )
     security_changed = current_permissions != command_permissions
-    namespace["CLOUD_SENSITIVE_COMMAND_PERMISSIONS"] = command_permissions
+    set_cloud_command_permissions(namespace, command_permissions)
     if security_changed:
         changed_groups.append("安全设置")
         _notify_config_sync_refreshers(namespace, "security")
+
+    changed_groups.extend(sync_cloud_control_settings_namespace_runtime(namespace, cloud_settings))
+    cloud_win = namespace.get("cloud_control_win")
+    try:
+        if cloud_win is not None and cloud_win.winfo_exists():
+            cloud_win._refresh_synced_fields()
+    except Exception as exc:
+        _safe_log(namespace, f"Refresh synced cloud settings window failed ({type(exc).__name__})")
 
     current_push_settings = third_push_settings_snapshot_namespace_runtime(namespace)
     if current_push_settings != push_settings:

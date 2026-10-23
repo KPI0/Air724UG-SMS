@@ -67,7 +67,7 @@ class CloudControlWindowFormTests(unittest.TestCase):
             lambda enabled, read_values, win: calls.append((enabled, read_values, win))
             or callback_result
         )
-        form.sync_from_state = lambda: form.enabled_var.set(not initial_value)
+        form.restore_toggles = lambda: form.enabled_var.set(not initial_value)
         return form
 
     def test_enabled_toggle_on_validates_and_applies_current_values(self):

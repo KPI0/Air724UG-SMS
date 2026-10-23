@@ -93,7 +93,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "apply" for call in calls))
         self.assertEqual(dict(config.items("cloud_control", raw=True)), before)
         self.assertEqual(calls[0][0], "ui")
-        self.assertIn("disk", calls[0][1][0])
+        self.assertIn("RuntimeError", calls[0][1][0])
 
     def test_save_cloud_control_setting_runtime_reports_false_save_result(self):
         calls = []
@@ -522,7 +522,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertTrue(observed[1]["enabled"])
         self.assertEqual(observed[1]["url"], "wss://new.example/ws/device")
 
-    def test_open_cloud_control_window_reverts_auto_upload_after_save_failure(self):
+    def test_open_cloud_control_window_rejects_auto_upload_after_save_failure(self):
         calls = []
 
         class FakeWindow:
@@ -545,7 +545,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
             result = open_cloud_control_window_runtime(
                 "root",
                 None,
-                lambda: {"enabled": False, "auto_upload": False},
+                lambda: {"enabled": False, "auto_upload": False, "url": "", "secret": "", "reconnect_interval": 5},
                 "status",
                 lambda: None,
                 lambda **_: None,
@@ -561,8 +561,9 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "window")
-        self.assertIn(("sync",), calls)
-        self.assertIn(("result", False, {"enabled": False, "auto_upload": False}), calls)
+        self.assertNotIn(("sync",), calls)
+        self.assertIn(("result", False, {"enabled": False, "auto_upload": False,
+                                       "url": "", "secret": "", "reconnect_interval": 5}), calls)
         self.assertNotIn(("register",), calls)
         self.assertFalse(any(item[0] == "unregister" for item in calls))
 
@@ -587,7 +588,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
             result = open_cloud_control_window_runtime(
                 "root",
                 None,
-                lambda: {"enabled": False, "auto_upload": False},
+                lambda: {"enabled": False, "auto_upload": False, "url": "", "secret": "", "reconnect_interval": 5},
                 "status",
                 lambda: None,
                 lambda **kwargs: calls.append(("save", kwargs)) or object(),
@@ -606,9 +607,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
         self.assertIn(("save", {
             "enabled": True,
             "url": "wss://example.test/ws/device",
-            "reconnect_interval": 5,
             "device_secret": "secret",
-            "auto_upload": False,
         }), calls)
         self.assertIn(("restart", {"show_errors": True}), calls)
         self.assertIn(("save", {"enabled": False}), calls)

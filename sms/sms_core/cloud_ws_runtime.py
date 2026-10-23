@@ -159,6 +159,8 @@ async def wait_cloud_login_ack_runtime(
             continue
 
         with auth_ack_lock if auth_ack_lock is not None else nullcontext():
+            if stop_event.is_set():
+                return False
             if auth_ack_matches is not None and not auth_ack_matches(data):
                 continue
             status = auth_status_from_ack(data)
@@ -275,6 +277,8 @@ async def cloud_ws_main_runtime(
             log(f"正在连接：{url}", show_main=True)
 
             async with connect(url, **cloud_websocket_connect_kwargs(url)) as ws:
+                if stop_event.is_set():
+                    break
                 set_connection_state(ws, connected=True, authorized=False)
                 set_cloud_status("🌐 等待授权", "#b26a00")
                 log(f"已连接：{url}", show_main=True)

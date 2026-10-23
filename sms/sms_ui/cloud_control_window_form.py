@@ -3,6 +3,7 @@ from tkinter import messagebox, ttk
 
 from sms_core.cloud_protocol import normalize_cloud_ws_url
 from sms_ui.cloud_placeholder_entry import CloudPlaceholderEntry, configure_placeholder_style
+from sms_ui.settings_form_sync import bind_settings_form_sync
 
 
 def show_url_reference(parent):
@@ -54,6 +55,26 @@ class CloudControlFormController:
         self._build_options(frame)
         self._build_fields(frame)
         self._build_status(frame, status_var)
+        fields = {
+            "enabled": (lambda: "1" if self.enabled_var.get() else "0",
+                        lambda value: self.enabled_var.set(value == "1")),
+            "auto_upload": (lambda: "1" if self.auto_upload_var.get() else "0",
+                            lambda value: self.auto_upload_var.set(value == "1")),
+            "url": (self.url_field.get, self.url_field.set_value),
+            "secret": (self.secret_field.get, self.secret_field.set_value),
+            "reconnect_interval": (self.reconnect_var.get, self.reconnect_var.set),
+        }
+
+        def synced_values():
+            latest = dict(self.state_provider())
+            for key in ("enabled", "auto_upload"):
+                latest[key] = "1" if latest[key] else "0"
+            return latest
+
+        bind_settings_form_sync(
+            win, fields, get_values=synced_values,
+            register_external_refresh=lambda refresh: setattr(self, "_refresh_fields", refresh),
+        )
 
     def _expose_legacy_window_vars(self):
         self.win._enabled_var = self.enabled_var
@@ -130,11 +151,10 @@ class CloudControlFormController:
             return
         result = self.on_auto_upload_changed(auto_upload, self.win)
         if result is False:
-            # A failed transactional save must not leave the visual toggle
-            # ahead of the persisted state.  The runtime callback normally
-            # refreshes the complete form; this local fallback also keeps the
-            # controller safe for injected callbacks used by tests/embedders.
+            # Revert the immediate checkbox without discarding text drafts.
             self.auto_upload_var.set(not auto_upload)
+        elif result is True and hasattr(self, "_refresh_fields"):
+            self.refresh_after_save(("auto_upload",))
 
     def _enabled_toggled(self):
         enabled = bool(self.enabled_var.get())
@@ -148,36 +168,52 @@ class CloudControlFormController:
         result = self.on_enabled_changed(enabled, values, self.win)
         if result is False:
             try:
-                self.sync_from_state()
+                self.restore_toggles()
             except Exception:
                 self.enabled_var.set(not enabled)
+        elif result is True and hasattr(self, "_refresh_fields"):
+            self.refresh_after_save(None if enabled else ("enabled",))
 
     def sync_from_state(self):
+        self._refresh_fields(committed=True)
+
+    def refresh_synced_fields(self):
+        self._refresh_fields()
+
+    def refresh_after_save(self, fields=None):
+        self._refresh_fields(committed=fields is None, committed_fields=fields or ())
+
+    def restore_toggles(self):
         latest = self.state_provider()
         self.enabled_var.set(latest["enabled"])
         self.auto_upload_var.set(latest["auto_upload"])
-        self.url_field.set_value(latest["url"])
-        self.secret_field.set_value(latest["secret"])
-        self.reconnect_var.set(str(latest["reconnect_interval"]))
+        self._refresh_fields(committed_fields=("enabled", "auto_upload"))
 
     def read(self, force_enabled=False):
-        url = normalize_cloud_ws_url(self.url_field.get())
-        if url:
-            self.url_field.set_value(url)
-        enabled = bool(self.enabled_var.get()) or bool(force_enabled)
-        interval = self._read_interval()
-        if interval is None:
-            return None
+        confirmed_url = None
+        while True:
+            url = normalize_cloud_ws_url(self.url_field.get())
+            if url:
+                self.url_field.set_value(url)
+            enabled = bool(self.enabled_var.get()) or bool(force_enabled)
+            interval = self._read_interval()
+            if interval is None:
+                return None
 
-        secret = self.secret_field.get()
-        if enabled and not secret:
-            messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=self.win)
-            return None
+            secret = self.secret_field.get()
+            if enabled and not secret:
+                messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=self.win)
+                return None
 
-        if enabled and url.lower().startswith("ws://") and not confirm_insecure_ws(self.win):
-            return None
+            if enabled and url.lower().startswith("ws://") and url != confirmed_url:
+                if not confirm_insecure_ws(self.win):
+                    return None
+                confirmed_url = url
+                # A modal dialog runs Tk callbacks, including shared-config
+                # refreshes. Re-read the live fields after it returns.
+                continue
 
-        return enabled, url, interval, secret, bool(self.auto_upload_var.get())
+            return enabled, url, interval, secret, bool(self.auto_upload_var.get())
 
     def _read_interval(self):
         try:

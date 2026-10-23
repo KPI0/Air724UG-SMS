@@ -1,7 +1,10 @@
 import inspect
 import time
+from sms_core.call_command_context import call_state_lock
 from sms_core.cloud_firmware_ota import stop_firmware_ota
-from sms_core.cloud_command_context import set_cloud_command_authorized
+from sms_core.cloud_command_context import (
+    cloud_connection_is_current, set_cloud_command_authorized, set_cloud_login_authorized,
+)
 from sms_core.cloud_protocol import cloud_login_ack_matches_imei
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain, stop_cloud_sms_event_drain
 
@@ -27,21 +30,18 @@ async def wait_cloud_login_ack_namespace_runtime(
     result = await wait_runtime(
         ws,
         stop_event=namespace["cloud_stop_event"],
-        set_authorized=lambda value: set_cloud_command_authorized(namespace, value),
+        set_authorized=lambda value: set_cloud_login_authorized(namespace, ws, value),
         set_auth_status_from_ack=namespace["set_cloud_auth_status_from_ack"],
         log=namespace["_cloud_log"],
         safe_preview=namespace["_cloud_safe_preview"],
         timeout=timeout,
         monotonic=namespace.get("time", time).monotonic,
         auth_ack_matches=lambda data: (
-            ws is namespace["cloud_ws_conn"]
+            cloud_connection_is_current(namespace, ws)
             and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())
         ),
-        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None),
+        auth_ack_lock=getattr(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"), "lock", None) or call_state_lock(namespace),
     )
-    if namespace.get("cloud_device_authorized"):
-        namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
-        namespace["cloud_authenticated_ws_url"] = namespace.get("CLOUD_WS_URL", "")
     return result
 
 
@@ -62,29 +62,34 @@ async def send_cloud_register_namespace_runtime(
         serial_generation = max(0, int(namespace.get("serial_connection_generation", 0)))
     except (TypeError, ValueError):
         serial_generation = 0
-    authenticated_url = str(namespace.get("cloud_authenticated_ws_url") or "").strip()
-    current_url = str(namespace.get("CLOUD_WS_URL") or "").strip()
-    previous_session_secret = (
-        namespace.get("cloud_authenticated_secret", "")
-        if authenticated_url and authenticated_url == current_url
-        else ""
-    )
-    send_kwargs = dict(
-        auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
-        build_payload=namespace["_cloud_build_register_payload"],
-        timestamp=namespace["_cloud_now_ts"],
-        identity_payload=namespace["_cloud_identity_payload"],
-        secret=namespace["CLOUD_DEVICE_SECRET"],
-        serial_port=namespace["PORT"],
-        serial_baud=namespace["BAUD"],
-        serial_mode=namespace["MODE"],
-        runtime_imei=namespace["_cloud_runtime_imei"],
-        log=namespace["_cloud_log"],
-        previous_session_secret=previous_session_secret,
-        serial_connected=serial_connected,
-        control_available=serial_connected,
-        serial_connection_generation=serial_generation,
-    )
+    # Settings publication uses this lock too: credentials must belong to the
+    # still-current connection, including after waiting for the serial lock.
+    with call_state_lock(namespace):
+        if not cloud_connection_is_current(namespace, ws):
+            return "cancelled"
+        authenticated_url = str(namespace.get("cloud_authenticated_ws_url") or "").strip()
+        current_url = str(namespace.get("CLOUD_WS_URL") or "").strip()
+        previous_session_secret = (
+            namespace.get("cloud_authenticated_secret", "")
+            if authenticated_url and authenticated_url == current_url
+            else ""
+        )
+        send_kwargs = dict(
+            auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
+            build_payload=namespace["_cloud_build_register_payload"],
+            timestamp=namespace["_cloud_now_ts"],
+            identity_payload=namespace["_cloud_identity_payload"],
+            secret=namespace["CLOUD_DEVICE_SECRET"],
+            serial_port=namespace["PORT"],
+            serial_baud=namespace["BAUD"],
+            serial_mode=namespace["MODE"],
+            runtime_imei=namespace["_cloud_runtime_imei"],
+            log=namespace["_cloud_log"],
+            previous_session_secret=previous_session_secret,
+            serial_connected=serial_connected,
+            control_available=serial_connected,
+            serial_connection_generation=serial_generation,
+        )
     try:
         signature = inspect.signature(send_runtime)
         accepts_kwargs = any(
@@ -97,12 +102,22 @@ async def send_cloud_register_namespace_runtime(
                     send_kwargs.pop(key, None)
     except (TypeError, ValueError):
         pass
+    with call_state_lock(namespace):
+        if (
+            not cloud_connection_is_current(namespace, ws)
+            or current_url != str(namespace.get("CLOUD_WS_URL") or "").strip()
+            or send_kwargs["secret"] != namespace["CLOUD_DEVICE_SECRET"]
+            or send_kwargs["auto_upload"] != namespace["CLOUD_AUTO_UPLOAD"]
+        ):
+            return "cancelled"
     result = await send_runtime(
         ws,
         **send_kwargs,
     )
     if result in (True, "sent"):
-        namespace["cloud_last_channel_status"] = (ws, serial_generation, serial_connected)
+        with call_state_lock(namespace):
+            if cloud_connection_is_current(namespace, ws):
+                namespace["cloud_last_channel_status"] = (ws, serial_generation, serial_connected)
     return result
 
 

@@ -1,18 +1,98 @@
 import asyncio
 import threading
+from contextlib import nullcontext
 
 from sms_core.config_runtime import reload_config_runtime
+from sms_core.call_command_context import call_state_lock
 from sms_core.cloud_command_context import set_cloud_command_authorized
-from sms_core.cloud_runtime import read_cloud_control_settings
+from sms_core.cloud_runtime import (
+    CloudControlSettings, cloud_control_connection_action, read_cloud_control_settings,
+)
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain
 from sms_ui.cloud_control_app_runtime import (
-    cloud_control_settings_from_values,
     open_cloud_control_values_app_runtime,
     restart_cloud_control_app_runtime,
+    register_current_cloud_connection,
     save_cloud_control_setting_runtime,
     start_cloud_control_app_runtime,
     stop_cloud_control_app_runtime,
 )
+
+
+def cloud_control_settings_snapshot_namespace_runtime(namespace):
+    with call_state_lock(namespace):
+        return CloudControlSettings(
+            enabled=bool(namespace.get("CLOUD_CONTROL_ENABLED", False)),
+            url=namespace.get("CLOUD_WS_URL", ""),
+            reconnect_interval=namespace.get("CLOUD_WS_RECONNECT_INTERVAL", 5),
+            device_secret=namespace.get("CLOUD_DEVICE_SECRET", ""),
+            auto_upload=bool(namespace.get("CLOUD_AUTO_UPLOAD", False)),
+        )
+
+
+def apply_cloud_control_settings_namespace_runtime(namespace, settings):
+    event_state = namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE")
+    with event_state.lock if event_state is not None else nullcontext(), call_state_lock(namespace):
+        previous = cloud_control_settings_snapshot_namespace_runtime(namespace)
+        if (
+            previous.enabled != settings.enabled or previous.url != settings.url
+            or previous.device_secret != settings.device_secret
+            or previous.reconnect_interval != settings.reconnect_interval
+        ):
+            stop_event = namespace.get("cloud_stop_event")
+            if stop_event is not None:
+                stop_event.set()
+            set_cloud_command_authorized(namespace, False)
+            interrupt_cloud_sms_event_drain(event_state, lock_held=True)
+        namespace["CLOUD_CONTROL_ENABLED"] = settings.enabled
+        namespace["CLOUD_WS_URL"] = settings.url
+        namespace["CLOUD_DEVICE_SECRET"] = settings.device_secret
+        namespace["CLOUD_WS_RECONNECT_INTERVAL"] = settings.reconnect_interval
+        namespace["CLOUD_AUTO_UPLOAD"] = settings.auto_upload
+
+
+def sync_cloud_control_settings_namespace_runtime(namespace, settings):
+    previous = cloud_control_settings_snapshot_namespace_runtime(namespace)
+    changed = tuple(label for field, label in (
+        ("enabled", "云端控制开关"), ("url", "云端服务器地址"),
+        ("reconnect_interval", "云端重连间隔"), ("device_secret", "云端设备密钥"),
+        ("auto_upload", "主动公开设备"),
+    ) if getattr(previous, field) != getattr(settings, field))
+    if not changed:
+        return changed
+    apply_settings = namespace.get("apply_cloud_control_settings")
+    if apply_settings is None:
+        apply_cloud_control_settings_namespace_runtime(namespace, settings)
+    else:
+        apply_settings(settings)
+    try:
+        action = cloud_control_connection_action(previous, settings)
+        if action == "stop":
+            namespace["stop_cloud_control"]()
+        elif action == "restart":
+            namespace["restart_cloud_control"](show_errors=False)
+        elif action in ("register", "unregister"):
+            if action == "register":
+                if namespace.get("cloud_connected") and namespace.get("cloud_ws_loop") is not None and namespace.get("cloud_ws_conn") is not None:
+                    register_current_cloud_connection(
+                        lambda: namespace["cloud_ws_loop"], lambda: namespace["cloud_ws_conn"],
+                        namespace["_cloud_send_register"],
+                        namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+                    )
+            else:
+                namespace["_cloud_schedule_unregister"]("auto_upload_disabled")
+    except Exception as exc:
+        log_error = namespace.get("log_file_only")
+        if log_error is not None:
+            try:
+                log_error(f"Apply synced cloud connection state failed ({type(exc).__name__})")
+            except Exception:
+                pass
+        try:
+            namespace["system_ui"]("❌ 云端设置已同步，连接状态更新失败，请在云端控制中重新连接。", "normal")
+        except Exception:
+            pass
+    return changed
 
 
 def refresh_cloud_control_settings_namespace_runtime(
@@ -38,7 +118,7 @@ def refresh_cloud_control_settings_namespace_runtime(
                 pass
         return False
 
-    namespace["apply_cloud_control_settings"](settings)
+    sync_cloud_control_settings_namespace_runtime(namespace, settings)
     return True
 
 
@@ -48,6 +128,8 @@ def start_cloud_control_namespace_runtime(
     show_errors=False,
     start_app_runtime=start_cloud_control_app_runtime,
 ):
+    if not namespace.get("CLOUD_CONTROL_ENABLED", False):
+        return False
     return start_app_runtime(
         websockets_available=namespace["websockets"] is not None,
         url=namespace["CLOUD_WS_URL"],
@@ -74,6 +156,10 @@ def stop_cloud_control_namespace_runtime(
     update_status=True,
     stop_app_runtime=stop_cloud_control_app_runtime,
 ):
+    if update_status:
+        with namespace["cloud_ws_lock"]:
+            namespace["cloud_restart_seq"] += 1
+
     def set_authorized(value):
         set_cloud_command_authorized(namespace, value)
         if not value:
@@ -131,13 +217,7 @@ def save_cloud_control_setting_namespace_runtime(
     save_app_runtime=save_cloud_control_setting_runtime,
 ):
     return save_app_runtime(
-        current_settings=lambda: cloud_control_settings_from_values(
-            enabled=namespace["CLOUD_CONTROL_ENABLED"],
-            url=namespace["CLOUD_WS_URL"],
-            reconnect_interval=namespace["CLOUD_WS_RECONNECT_INTERVAL"],
-            device_secret=namespace["CLOUD_DEVICE_SECRET"],
-            auto_upload=namespace["CLOUD_AUTO_UPLOAD"],
-        ),
+        current_settings=lambda: read_cloud_control_settings(namespace["config"]),
         apply_settings=namespace["apply_cloud_control_settings"],
         config=namespace["config"],
         save_config=namespace["safe_save_config"],

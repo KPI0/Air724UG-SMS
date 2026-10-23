@@ -59,6 +59,8 @@ class LocalDialRequest:
     queued: bool = False
     submitted: bool = False
     finished: bool = False
+    command_context: object = None
+    serial_context: object = None
 
 
 def set_local_dial_number(namespace, number):
@@ -67,6 +69,8 @@ def set_local_dial_number(namespace, number):
         namespace["_local_dial_request"] = request
         namespace["_dial_state_generation"] = request if request is not None else object()
         namespace["current_dial_num"] = number
+        if request is not None:
+            request.command_context = capture_call_command_context(namespace, "ATH")
 
 
 def set_local_dial_popup(namespace, popup):

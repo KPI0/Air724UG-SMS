@@ -16,15 +16,23 @@ class CloudModemHealthState:
         self._consecutive_timeouts = 0
         self._unresponsive = False
         self._reconnect_requested = False
+        self._connection = None
+        self._generation = None
 
     @staticmethod
     def is_response_timeout(message):
         text = str(message or "").strip().lower()
         return any(marker in text for marker in MODEM_RESPONSE_TIMEOUT_MARKERS)
 
-    def record(self, ok, message=""):
+    def record(self, ok, message="", *, connection=None, generation=None):
         request_reconnect = False
         with self._lock:
+            if generation is not None and (connection is not self._connection or generation != self._generation):
+                self._connection = connection
+                self._generation = generation
+                self._consecutive_timeouts = 0
+                self._unresponsive = False
+                self._reconnect_requested = False
             if ok:
                 self._consecutive_timeouts = 0
                 self._unresponsive = False

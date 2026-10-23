@@ -4,6 +4,7 @@ import time
 from sms_core.config_runtime import safe_save_config_runtime
 from sms_ui.config_save_runtime import run_config_transaction_for_ui, save_config_for_ui
 from sms_core.serial_io_runtime import safe_close_serial_runtime
+from sms_core.serial_sender import serial_sms_recovery_error
 from sms_core.windows_runtime import close_windows_handle, create_named_mutex, port_mutex_name
 from sms_ui.app_instance_runtime import check_single_instance_app_runtime
 from sms_ui.thread_runtime import schedule_delayed_ui_runtime
@@ -35,26 +36,37 @@ def safe_save_config_namespace_runtime(namespace, *, defaults_by_section=None, u
     ))
 
 
-def safe_close_serial_namespace_runtime(namespace):
-    namespace.__setitem__(
-        "serial_connection_generation",
-        int(namespace.get("serial_connection_generation", 0)) + 1,
-    )
-    coordinator = namespace.get("SMS_SEND_COORDINATOR")
-    if coordinator is not None:
-        try:
-            coordinator.cancel_active("串口连接已关闭，短信发送已取消")
-        except Exception as exc:
-            _safe_log(namespace, f"Cancel active SMS send before serial close failed: {exc!r}")
-    command_coordinator = namespace.get("SERIAL_COMMAND_RESPONSE_COORDINATOR")
-    if command_coordinator is not None:
-        try:
-            command_coordinator.cancel_active("串口连接已关闭，AT 指令事务已取消")
-        except Exception as exc:
-            _safe_log(namespace, f"Cancel active AT transaction before serial close failed: {exc!r}")
+def safe_close_serial_namespace_runtime(namespace, *, expected_serial=None, expected_generation=None):
+    guarded = expected_generation is not None
+
+    def prepare_close(serial_obj):
+        if guarded and (serial_obj is not expected_serial
+                        or namespace.get("serial_connection_generation", 0) != expected_generation
+                        or serial_sms_recovery_error(serial_obj)):
+            return False
+        namespace.__setitem__(
+            "serial_connection_generation",
+            int(namespace.get("serial_connection_generation", 0)) + 1,
+        )
+        for name, reason in (
+            ("SMS_SEND_COORDINATOR", "串口连接已关闭，短信发送已取消"),
+            ("SERIAL_COMMAND_RESPONSE_COORDINATOR", "串口连接已关闭，AT 指令事务已取消"),
+        ):
+            coordinator = namespace.get(name)
+            if coordinator is not None:
+                try:
+                    coordinator.cancel_active(reason)
+                except Exception as exc:
+                    _safe_log(namespace, f"Cancel {name} before serial close failed: {type(exc).__name__}")
+        return True
+
+    if not guarded:
+        prepare_close(namespace.get("serial_obj"))
     close_kwargs = {}
     if namespace.get("serial_read_lock") is not None:
         close_kwargs["read_lock"] = namespace["serial_read_lock"]
+    if guarded:
+        close_kwargs["before_close"] = prepare_close
     result = safe_close_serial_runtime(
         namespace["serial_lock"],
         lambda: namespace["serial_obj"],
@@ -62,6 +74,8 @@ def safe_close_serial_namespace_runtime(namespace):
         namespace["unlock_port_mutex"],
         **close_kwargs,
     )
+    if result is False:
+        return False
     notify = namespace.get("_notify_cloud_channel_status")
     if notify is not None:
         try:

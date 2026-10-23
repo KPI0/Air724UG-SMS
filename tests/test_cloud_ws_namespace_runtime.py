@@ -1,5 +1,10 @@
 import asyncio
+import threading
 import unittest
+
+from sms_core.cloud_runtime import CloudControlSettings
+from sms_core.cloud_sms_event_runtime import CloudSmsEventDrainState
+from sms_ui.cloud_control_namespace_runtime import apply_cloud_control_settings_namespace_runtime
 
 from sms_core.cloud_ws_namespace_runtime import (
     cloud_thread_main_namespace_runtime,
@@ -26,7 +31,7 @@ class FakeWebsockets:
 class CloudWsNamespaceRuntimeTests(unittest.TestCase):
     def base_namespace(self):
         return {
-            "cloud_stop_event": "stop",
+            "cloud_stop_event": threading.Event(),
             "cloud_device_authorized": False,
             "cloud_ws_conn": None,
             "cloud_connected": False,
@@ -65,6 +70,7 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
 
     def test_wait_cloud_login_ack_namespace_runtime_forwards_and_sets_authorized(self):
         namespace = self.base_namespace()
+        namespace["cloud_ws_conn"] = "ws"
         calls = []
 
         async def wait_runtime(ws, **kwargs):
@@ -87,12 +93,13 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
             "wss://example.com/ws/device",
         )
         forwarded = calls[0][1]
-        self.assertEqual(forwarded["stop_event"], "stop")
+        self.assertIs(forwarded["stop_event"], namespace["cloud_stop_event"])
         self.assertEqual(forwarded["timeout"], 3.5)
         self.assertEqual(forwarded["monotonic"](), 10.0)
 
     def test_send_register_unregister_and_revoke_namespace_runtimes_forward_payload_context(self):
         namespace = self.base_namespace()
+        namespace["cloud_ws_conn"] = "ws"
         calls = []
 
         async def send_runtime(ws, **kwargs):
@@ -165,6 +172,80 @@ class CloudWsNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(forwarded["schedule_pending_sms_events"](), "schedule_sms")
         namespace["CLOUD_CONTROL_ENABLED"] = False
         self.assertFalse(forwarded["cloud_control_enabled"]())
+
+    def test_queued_registration_cannot_send_new_credentials_to_old_connection(self):
+        for replacement in (False, True):
+            with self.subTest(replacement=replacement):
+                namespace = self.base_namespace()
+                namespace["cloud_stop_event"] = threading.Event()
+                original_ws = object()
+                namespace["cloud_ws_conn"] = original_ws
+                sent = []
+
+                async def send_runtime(ws, **kwargs):
+                    sent.append(ws)
+                    return "sent"
+
+                pending = send_cloud_register_namespace_runtime(
+                    namespace, original_ws, send_runtime=send_runtime,
+                )
+                apply_cloud_control_settings_namespace_runtime(namespace, CloudControlSettings(
+                    True, "wss://next.example.invalid/ws/device", 5, "synthetic-next", False,
+                ))
+                if replacement:
+                    namespace["cloud_ws_conn"] = object()
+                    namespace["cloud_stop_event"].clear()
+                self.assertEqual(asyncio.run(pending), "cancelled")
+                self.assertEqual(sent, [])
+
+    def test_registration_rechecks_stop_after_serial_lock_wait(self):
+        namespace = self.base_namespace()
+        namespace["cloud_stop_event"] = threading.Event()
+        ws = object()
+        namespace["cloud_ws_conn"] = ws
+        sent = []
+
+        class SettingsChangedWhileWaiting:
+            def __enter__(self):
+                apply_cloud_control_settings_namespace_runtime(namespace, CloudControlSettings(
+                    False, "wss://next.example.invalid/ws/device", 5, "synthetic-next", False,
+                ))
+
+            def __exit__(self, *_args):
+                return False
+
+        namespace["serial_lock"] = SettingsChangedWhileWaiting()
+
+        async def send_runtime(ws, **kwargs):
+            sent.append(ws)
+            return "sent"
+
+        result = asyncio.run(send_cloud_register_namespace_runtime(
+            namespace, ws, send_runtime=send_runtime,
+        ))
+        self.assertEqual(result, "cancelled")
+        self.assertEqual(sent, [])
+
+    def test_late_login_ack_after_settings_change_cannot_restore_authorization(self):
+        namespace = self.base_namespace()
+        namespace["CLOUD_SMS_EVENT_DRAIN_STATE"] = CloudSmsEventDrainState()
+        original_secret = namespace["cloud_authenticated_secret"]
+        original_url = namespace["cloud_authenticated_ws_url"]
+
+        class PendingAck:
+            async def recv(self):
+                apply_cloud_control_settings_namespace_runtime(namespace, CloudControlSettings(
+                    True, "wss://next.example.invalid/ws/device", 5, "synthetic-next", False,
+                ))
+                return '{"type":"device_login_ack","auth_status":"authorized","imei":"861"}'
+
+        ws = PendingAck()
+        namespace["cloud_ws_conn"] = ws
+        result = asyncio.run(wait_cloud_login_ack_namespace_runtime(namespace, ws))
+        self.assertFalse(result)
+        self.assertFalse(namespace["cloud_device_authorized"])
+        self.assertEqual(namespace["cloud_authenticated_secret"], original_secret)
+        self.assertEqual(namespace["cloud_authenticated_ws_url"], original_url)
 
     def test_cloud_thread_main_namespace_runtime_forwards_thread_state(self):
         namespace = self.base_namespace()

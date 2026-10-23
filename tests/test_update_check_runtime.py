@@ -90,8 +90,31 @@ class UpdateCheckRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "update")
-        self.assertEqual(calls[0][0], "ask")
+        self.assertEqual([call[0] for call in calls], ["ask", "open"])
         self.assertEqual(calls[1], ("open", "https://example.com/app.zip"))
+
+    def test_handle_update_check_plan_surfaces_url_when_browser_returns_false(self):
+        calls = []
+
+        def open_url(url):
+            calls.append(("open", url))
+            return False
+
+        result = handle_update_check_plan(
+            SimpleNamespace(kind="update", latest_tag="v1.0.1", download_url="https://example.com/app.zip"),
+            "1.0.0",
+            show_info=lambda title, message: calls.append(("info", title, message)),
+            show_warning=lambda title, message: calls.append(("warning", title, message)),
+            ask_open_download=lambda title, message: True,
+            open_url=open_url,
+        )
+
+        self.assertEqual(result, "update")
+        self.assertEqual([call[0] for call in calls], ["open", "warning"])
+        self.assertEqual(calls[0], ("open", "https://example.com/app.zip"))
+        self.assertEqual(calls[1][1], "无法打开下载链接")
+        self.assertIn("请手动复制以下链接下载", calls[1][2])
+        self.assertIn("https://example.com/app.zip", calls[1][2])
 
     def test_handle_update_check_plan_surfaces_url_when_open_fails(self):
         # If the browser fails to open, the download URL must be shown so the

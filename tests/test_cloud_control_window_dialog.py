@@ -63,7 +63,7 @@ class FakeFrame:
 
 class CloudControlWindowDialogTests(unittest.TestCase):
     def test_cloud_window_does_not_force_itself_above_main_window(self):
-        fake_form = SimpleNamespace(sync_from_state=lambda: None)
+        fake_form = SimpleNamespace(refresh_synced_fields=lambda: None)
 
         with patch(
             "sms_ui.cloud_control_window.tk.Toplevel",

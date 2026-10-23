@@ -45,12 +45,15 @@ def safe_close_serial_runtime(
     unlock_port_mutex,
     *,
     read_lock=None,
+    before_close=None,
 ):
     read_guard = read_lock if read_lock is not None else serial_lock
     serial_guard = serial_lock if read_guard is not serial_lock else nullcontext()
     with read_guard:
         with serial_guard:
             serial_obj = get_serial()
+            if before_close is not None and before_close(serial_obj) is False:
+                return False
             try:
                 if serial_obj is not None:
                     serial_obj.close()
