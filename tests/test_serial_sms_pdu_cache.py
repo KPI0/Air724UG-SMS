@@ -1,7 +1,10 @@
 ﻿import unittest
 
+from unittest.mock import patch
+
 from sms_core.cloud_protocol import parse_sms_callback_head
-from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
+from sms_core.serial_runtime import SerialLineDecoder, SerialRuntimeState
+from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache, decode_incoming_sms_pdu
 
 
 def _swap_number_digits(number):
@@ -709,6 +712,144 @@ class SmsPduCorrectionCacheTests(unittest.TestCase):
         self.assertEqual(cache._complete_by_key, {})
         self.assertEqual(cache._segments_by_key, {})
         self.assertIsNone(cache._last_corrected_message)
+
+
+class SmsPduStreamBoundaryTests(unittest.TestCase):
+    header = "[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80"
+    boundary = "[I]-[TP-PID : ] 0 dcs:  8"
+
+    def setUp(self):
+        self.decoder = SerialLineDecoder()
+        self.state = SerialRuntimeState.create(parse_sms_callback_head)
+        self.cache = self.state.sms_pdu_cache
+        self.logs = []
+
+    def feed_line(self, line, now=1.0, chunk_size=11):
+        raw = (line + "\r\n").encode("ascii")
+        for offset in range(0, len(raw), chunk_size):
+            for decoded_line in self.decoder.feed(raw[offset:offset + chunk_size]):
+                self.state.sms_pipeline.observe_line(decoded_line, now, log=self.logs.append)
+
+    def feed_pdu(self, pdu, *, width=127, now=2.0):
+        for offset in range(0, len(pdu), width):
+            self.feed_line(pdu[offset:offset + width], now=now + offset)
+
+    def test_continuous_hex_lines_are_bounded_through_real_receive_path(self):
+        self.feed_line(self.header)
+        for index in range(1024):
+            self.feed_line("AB" * 64, now=100.0 + index)
+            self.assertLessEqual(sum(map(len, self.cache._pdu_lines)), 2048)
+
+        self.assertEqual(self.cache._pdu_lines, [])
+        self.assertEqual(len(self.logs), 1)
+        self.assertIn("PDU FRAME DROP", self.logs[0])
+        self.assertNotIn("AB" * 64, self.logs[0])
+
+    def test_single_hex_line_below_decoder_limit_cannot_overflow_pdu(self):
+        self.feed_line(self.header)
+        self.feed_line("A" * 2049, chunk_size=257)
+
+        self.assertEqual(self.decoder.text_buffer, "")
+        self.assertEqual(self.cache._pdu_lines, [])
+        self.assertEqual(len(self.logs), 1)
+
+    def test_limit_is_inclusive_and_first_excess_discards_entire_frame(self):
+        self.feed_line(self.header)
+        self.feed_line("AB" * 1024)
+        self.assertEqual(sum(map(len, self.cache._pdu_lines)), 2048)
+        self.assertEqual(self.logs, [])
+
+        self.feed_line("F")
+        self.assertEqual(self.cache._pdu_lines, [])
+        self.assertEqual(self.cache._pdu_hex_chars, 0)
+        self.assertEqual(len(self.logs), 1)
+
+    def test_discarded_tail_never_decodes_before_new_cmgr_frame(self):
+        pdu = _incoming_ucs2_pdu("10001", "SYNTHETIC VALID BODY")
+        self.feed_line(self.header)
+        with patch(
+            "sms_core.serial_sms_pdu_cache.decode_incoming_sms_pdu",
+            wraps=decode_incoming_sms_pdu,
+        ) as decode:
+            self.feed_line("A" * 2049)
+            self.feed_pdu(pdu, width=7)
+            self.feed_line(self.boundary, now=1000.0)
+            decode.assert_not_called()
+            self.assertEqual(self.cache._complete_by_key, {})
+
+            self.feed_line(self.header, now=1001.0)
+            self.feed_pdu(pdu, width=7, now=1002.0)
+            self.feed_line(self.boundary, now=2000.0)
+            decode.assert_called_once_with(pdu)
+
+        self.assertEqual(self.cache._pdu_hex_chars, 0)
+        self.assertEqual(len(self.logs), 1)
+        self.assertEqual(
+            self.cache.correct_single_pdu_callback_text(
+                "10001 26/06/28,11:15:50+32 SYNTHETIC VALID BOD\ufffd",
+                parse_sms_callback_head,
+                2001.0,
+            ),
+            "10001 26/06/28,11:15:50+32 SYNTHETIC VALID BODY",
+        )
+
+    def test_empty_and_non_hex_boundaries_end_discard_but_do_not_start_pdu(self):
+        pdu = _incoming_ucs2_pdu("10001", "SYNTHETIC VALID BODY")
+        for boundary in ("", self.boundary, "OK"):
+            with self.subTest(boundary=boundary):
+                self.setUp()
+                self.feed_line(self.header)
+                self.feed_line("A" * 2049)
+                self.feed_line(boundary)
+                self.feed_pdu(pdu)
+                self.feed_line(self.boundary, now=1000.0)
+
+                self.assertFalse(self.cache._collecting)
+                self.assertFalse(self.cache._discarding_pdu)
+                self.assertEqual(self.cache._pdu_hex_chars, 0)
+                self.assertEqual(self.cache._complete_by_key, {})
+
+    def test_next_cmgr_header_recovers_without_intermediate_boundary(self):
+        pdu = _incoming_ucs2_pdu("10001", "SYNTHETIC VALID BODY")
+        self.feed_line(self.header)
+        self.feed_line("A" * 2049)
+        self.feed_pdu(pdu)
+        self.feed_line(self.header)
+        self.feed_pdu(pdu, width=1)
+        self.feed_line(self.boundary, now=1000.0)
+
+        self.assertFalse(self.cache._discarding_pdu)
+        self.assertEqual(self.cache._pdu_hex_chars, 0)
+        self.assertEqual(sum(map(len, self.cache._complete_by_key.values())), 1)
+        self.assertEqual(len(self.logs), 1)
+
+    def test_reset_releases_discard_state_for_next_valid_frame(self):
+        pdu = _incoming_ucs2_pdu("10001", "SYNTHETIC VALID BODY")
+        self.feed_line(self.header)
+        self.feed_line("A" * 2049)
+        self.state.sms_pipeline.reset()
+
+        self.assertFalse(self.cache._collecting)
+        self.assertFalse(self.cache._discarding_pdu)
+        self.assertEqual(self.cache._pdu_hex_chars, 0)
+        self.feed_line(self.header)
+        self.feed_pdu(pdu)
+        self.feed_line(self.boundary, now=1000.0)
+        self.assertEqual(sum(map(len, self.cache._complete_by_key.values())), 1)
+
+    def test_valid_odd_nibble_wrapping_and_delayed_parts_remain_supported(self):
+        pdu = _incoming_ucs2_pdu("10001", "SYNTHETIC VALID BODY")
+        for width in (1, 7, 127):
+            with self.subTest(width=width):
+                self.setUp()
+                self.feed_line(self.header)
+                self.feed_pdu(pdu, width=width, now=100.0)
+                self.feed_line(self.boundary, now=1000.0)
+
+                self.assertEqual(sum(map(len, self.cache._complete_by_key.values())), 1)
+                self.assertEqual(self.cache._pdu_hex_chars, 0)
+                self.assertFalse(self.cache._discarding_pdu)
+                self.assertEqual(self.logs, [])
 
 
 if __name__ == "__main__":

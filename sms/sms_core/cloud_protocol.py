@@ -5,7 +5,7 @@ import urllib.parse
 CLOUD_WS_DEFAULT_PATH = "/ws/device"
 SMS_CALLBACK_HEAD_REGEX = re.compile(
     r"^\s*(?P<sender>[^\r\n]+?)\s+"
-    r"(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)\s*"
+    r"(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}[+-]\d+)\s*"
     r"(?P<body>.*)$",
     re.DOTALL,
 )

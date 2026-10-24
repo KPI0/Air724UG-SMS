@@ -5,6 +5,8 @@ from sms_core.long_sms_assembler import LongSmsAssembler
 from sms_core.serial_sms import CollectedSmsCallback
 from sms_core.serial_sms_pdu_cache import SmsPduCorrectionCache
 from sms_core.sms_pdu import ConcatSmsInfo
+from sms_core.sms_processing import process_pending_sms
+from sms_core.cloud_payloads import build_sms_event_payload
 from sms_core.sms_receive_pipeline import SmsReceivePipeline
 
 
@@ -100,6 +102,75 @@ class CapturingAssembler:
 
 
 class SmsReceivePipelineTests(unittest.TestCase):
+    def test_negative_timezone_collected_callback_delivers_only_body(self):
+        pipeline = SmsReceivePipeline(
+            parse_sms_callback_head,
+            SmsPduCorrectionCache(),
+            LongSmsAssembler(parse_sms_callback_head),
+        )
+        pending = pipeline.add_collected(
+            CollectedSmsCallback("Synthetic Sender 26/10/23,10:20:30-04 first", ["second"]),
+            now=1.0,
+        )
+
+        self.assertEqual(pending.full_msg, "first\nsecond")
+        pushed, payloads = [], []
+
+        def send_event(head, body, metadata=None):
+            payloads.append(build_sms_event_payload(
+                head, body, 1, {"imei": "000000000000001"}, metadata=metadata,
+            ))
+
+        process_pending_sms(
+            pending, [], False, "", "synthetic", {}, 3,
+            lambda body, variables=None: pushed.append((body, variables)),
+            send_event, lambda *_args: None, lambda: None, lambda _body: None,
+            lambda _item: None, lambda *_args: None,
+        )
+        self.assertEqual(pushed[0][0], "first\nsecond")
+        self.assertEqual(pushed[0][1]["sender"], "Synthetic Sender")
+        self.assertEqual(payloads[0]["phone"], "Synthetic Sender")
+        self.assertEqual(payloads[0]["content"], "first\nsecond")
+        self.assertEqual(payloads[0]["sms_time_identity"], "2026-10-23 10:20:30-04")
+
+    def test_negative_timezone_pdu_correction_preserves_callback_time(self):
+        cache = SmsPduCorrectionCache()
+        cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", 1.0)
+        cache.observe_line(_incoming_ucs2_pdu(
+            "10086", "complete PDU body", timestamp_hex="62608211510548",
+        ), 1.1)
+        cache.observe_line("ordinary log", 1.2)
+        pipeline = SmsReceivePipeline(parse_sms_callback_head, cache, LongSmsAssembler(parse_sms_callback_head))
+        pending = pipeline.add_collected(
+            CollectedSmsCallback("10086 26/06/28,11:15:50-04 complete PDU bo�", []), now=2.0,
+        )
+
+        self.assertEqual(pending.full_msg, "complete PDU body")
+        self.assertEqual(pending.callback_head, "10086 26/06/28,11:15:50-04 complete PDU body")
+
+    def test_negative_timezone_multipart_callbacks_complete_in_one_assembler(self):
+        assembler = LongSmsAssembler(parse_sms_callback_head)
+        pipeline = SmsReceivePipeline(parse_sms_callback_head, SmsPduCorrectionCache(), assembler)
+        result = None
+        for index, body in ((1, "first"), (2, "second")):
+            cache = pipeline.correction_cache
+            moment = float(index * 2)
+            cache.observe_line("[I]-[lib_sms rsp] +CMGR AT+CMGR=1 true OK +CMGR: 0,,80", moment)
+            cache.observe_line(_incoming_ucs2_pdu(
+                "10086", body, total=2, index=index, timestamp_hex="62608211510548",
+            ), moment + 0.1)
+            cache.observe_line("ordinary log", moment + 0.2)
+            result = pipeline.add_collected(
+                CollectedSmsCallback("10086 26/06/28,11:15:50-04 " + body, []), now=moment + 0.3,
+            )
+            if index == 1:
+                self.assertIsNone(result)
+
+        self.assertEqual(result.full_msg, "firstsecond")
+        self.assertEqual(result.callback_head, "10086 26/06/28,11:15:50-04 firstsecond")
+        self.assertEqual(result.concat_total, 2)
+        self.assertEqual(assembler._pending, {})
+
     def test_pipeline_add_collected_is_blind_forwarder(self):
         assembler = CapturingAssembler()
         cache = FailingSemanticCache()

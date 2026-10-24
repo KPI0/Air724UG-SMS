@@ -51,6 +51,15 @@ def _incoming_ucs2_pdu(sender, message, *, reference=0x2A, total=1, index=1, ref
 
 
 class SmsPduTests(unittest.TestCase):
+    def test_received_pdu_decodes_signed_timezone_quarter_hours(self):
+        for encoded, expected in (("00", "+00"), ("23", "+32"), ("40", "+04"), ("48", "-04"), ("88", "-08")):
+            with self.subTest(encoded=encoded):
+                pdu = _incoming_ucs2_pdu("10086", "A").replace("62608211510523", "626082115105" + encoded)
+                decoded = decode_received_pdu(pdu)
+
+                self.assertIsNotNone(decoded)
+                self.assertEqual(decoded.timestamp, "26/06/28,11:15:50" + expected)
+
     def test_received_pdu_field_order_remains_backward_compatible(self):
         decoded = ReceivedSmsPdu("10086", "正文", "26/08/02,12:20:48+32", 1, 2, 1, 8)
 

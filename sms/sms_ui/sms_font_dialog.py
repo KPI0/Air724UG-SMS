@@ -72,10 +72,10 @@ def open_sms_font_dialog(
         if height <= 1:
             height = 110
 
-        preview_size = min(size, max(8, int(height * 0.7)))
+        preview_size = max(SMS_FONT_SIZE_MIN, min(size, SMS_FONT_SIZE_MAX))
         preview_canvas.delete("all")
         try:
-            preview_canvas.create_text(
+            preview_text = preview_canvas.create_text(
                 width // 2,
                 height // 2,
                 text="短信内容",
@@ -84,7 +84,8 @@ def open_sms_font_dialog(
                 fill=color,
             )
         except Exception:
-            preview_canvas.create_text(
+            preview_size = 30
+            preview_text = preview_canvas.create_text(
                 width // 2,
                 height // 2,
                 text="短信内容",
@@ -92,6 +93,13 @@ def open_sms_font_dialog(
                 font=("微软雅黑", 30),
                 fill="#ff0000",
             )
+
+        while preview_size > SMS_FONT_SIZE_MIN:
+            bounds = preview_canvas.bbox(preview_text)
+            if bounds and bounds[2] - bounds[0] <= width - 8 and bounds[3] - bounds[1] <= height - 8:
+                break
+            preview_size -= 1
+            preview_canvas.itemconfigure(preview_text, font=("微软雅黑", preview_size))
 
     def pick_color():
         color = validated_tk_color(win, color_var.get())

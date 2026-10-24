@@ -9,7 +9,7 @@ from sms_core.sms_collected_event import CollectedPendingCandidates, pending_fro
 
 
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
-    r"^\s*[^\r\n]+?\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
+    r"^\s*[^\r\n]+?\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}[+-]\d+)"
 )
 DEFAULT_LONG_SMS_TTL = 180.0
 DEFAULT_COMPLETED_SMS_TTL = 30.0

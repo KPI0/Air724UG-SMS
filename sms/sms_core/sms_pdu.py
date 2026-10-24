@@ -175,10 +175,15 @@ def _decode_timestamp(scts_hex: str) -> str:
     if len(scts_hex) < 14:
         return ""
     fields = []
-    for i in range(0, 14, 2):
+    for i in range(0, 12, 2):
         pair = scts_hex[i:i + 2]
         fields.append(pair[1] + pair[0])
-    return f"{fields[0]}/{fields[1]}/{fields[2]},{fields[3]}:{fields[4]}:{fields[5]}+{fields[6]}"
+    timezone = int(scts_hex[12:14], 16)
+    # TP-SCTS stores a sign bit in the low semi-octet, followed by BCD
+    # quarter-hours; it is not an ordinary seventh date/time field.
+    quarters = (timezone & 0x07) * 10 + (timezone >> 4)
+    sign = "-" if timezone & 0x08 else "+"
+    return f"{fields[0]}/{fields[1]}/{fields[2]},{fields[3]}:{fields[4]}:{fields[5]}{sign}{quarters:02d}"
 
 
 def _hex_to_bytes(value):

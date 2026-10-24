@@ -27,6 +27,20 @@ from sms_core.status_text import format_connected_status, format_connecting_stat
 
 
 class CloudHelperTests(unittest.TestCase):
+    def test_sms_event_negative_timezone_keeps_sender_and_final_body(self):
+        payload = build_sms_event_payload(
+            "Synthetic Sender 26/10/23,10:20:30-04 first",
+            "first\nsecond",
+            1,
+            {"imei": "000000000000001"},
+            metadata={"sms_time_identity": "2026-10-23 10:20:30-04"},
+        )
+
+        self.assertEqual(payload["from"], "Synthetic Sender")
+        self.assertEqual(payload["phone"], "Synthetic Sender")
+        self.assertEqual(payload["content"], "first\nsecond")
+        self.assertEqual(payload["sms_time_identity"], "2026-10-23 10:20:30-04")
+
     def test_cloud_auth_status_from_ack(self):
         self.assertEqual(auth_status_from_ack({"auth_status": "ok"}), "authorized")
         self.assertEqual(auth_status_from_ack({"status": "auth_failed"}), "failed")

@@ -18,14 +18,16 @@ CMGR_LOG_RE = re.compile(r"\[I\]-\[lib_sms rsp\]\s+\+CMGR\b")
 HEX_LINE_RE = re.compile(r"^[0-9A-Fa-f]+$")
 SMS_CALLBACK_HEAD_RE = re.compile(
     r"^(?P<prefix>\s*[^\r\n]+?\s+"
-    r"\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+\s*)(?P<body>.*)$",
+    r"\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}[+-]\d+\s*)(?P<body>.*)$",
     re.DOTALL,
 )
 SMS_CALLBACK_TIMESTAMP_RE = re.compile(
-    r"^\s*[^\r\n]+?\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+)"
+    r"^\s*[^\r\n]+?\s+(?P<timestamp>\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}[+-]\d+)"
 )
 DEFAULT_PDU_MAX_SEGMENT_ENTRIES = 4096
 DEFAULT_PDU_MAX_COMPLETE_ENTRIES = 1024
+# 1024 octets leaves room beyond all one-octet length fields in a received PDU.
+MAX_RECEIVED_PDU_HEX_CHARS = 2048
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,8 @@ class SmsPduCorrectionCache:
         self.max_complete_entries = max(1, int(max_complete_entries or DEFAULT_PDU_MAX_COMPLETE_ENTRIES))
         self._collecting = False
         self._pdu_lines = []
+        self._pdu_hex_chars = 0
+        self._discarding_pdu = False
         self._complete_by_key = {}
         self._segments_by_key = {}
         self._last_corrected_message = None
@@ -66,6 +70,8 @@ class SmsPduCorrectionCache:
     def reset(self):
         self._collecting = False
         self._pdu_lines.clear()
+        self._pdu_hex_chars = 0
+        self._discarding_pdu = False
         self._complete_by_key.clear()
         self._segments_by_key.clear()
         self._last_corrected_message = None
@@ -75,13 +81,24 @@ class SmsPduCorrectionCache:
 
         if self._collecting:
             if text and HEX_LINE_RE.fullmatch(text):
-                self._pdu_lines.append(text)
+                if not self._discarding_pdu:
+                    if self._pdu_hex_chars + len(text) <= MAX_RECEIVED_PDU_HEX_CHARS:
+                        self._pdu_lines.append(text)
+                        self._pdu_hex_chars += len(text)
+                    else:
+                        self._pdu_lines.clear()
+                        self._pdu_hex_chars = 0
+                        # Keep consuming this frame so its tail cannot become another PDU.
+                        self._discarding_pdu = True
+                        _emit_cache_log(log, "[SMS] PDU FRAME DROP Reason=SIZE_LIMIT")
                 return
             self._finalize_pdu(now, log=log)
 
         if CMGR_LOG_RE.search(text):
             self._collecting = True
             self._pdu_lines = []
+            self._pdu_hex_chars = 0
+            self._discarding_pdu = False
 
         self._expire(now)
         self._enforce_cache_limits(log=log)
@@ -263,9 +280,13 @@ class SmsPduCorrectionCache:
         return []
 
     def _finalize_pdu(self, now: float, log=None):
-        pdu_hex = "".join(self._pdu_lines)
+        pdu_hex = "" if self._discarding_pdu else "".join(self._pdu_lines)
         self._collecting = False
         self._pdu_lines = []
+        self._pdu_hex_chars = 0
+        self._discarding_pdu = False
+        if not pdu_hex:
+            return
         decoded = decode_incoming_sms_pdu(pdu_hex)
         if decoded is None:
             return
@@ -681,7 +702,7 @@ def _callback_with_sender_and_body(callback_text, sender, body, parse_callback_h
     match = SMS_CALLBACK_HEAD_RE.match(text)
     if match:
         prefix = match.group("prefix")
-        timestamp_match = re.search(r"\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}\+\d+", prefix)
+        timestamp_match = re.search(r"\d{2}/\d{2}/\d{2},\d{2}:\d{2}:\d{2}[+-]\d+", prefix)
         if timestamp_match:
             timestamp = timestamp_match.group(0)
             spacing = prefix[timestamp_match.end():]

@@ -151,6 +151,14 @@ class CloudProtocolTests(unittest.TestCase):
         self.assertEqual(phone, "")
         self.assertEqual(message, text)
 
+    def test_parse_sms_callback_head_keeps_negative_timezone_out_of_body(self):
+        sender, message = parse_sms_callback_head(
+            "Synthetic Sender 26/10/23,10:20:30-04 first\nsecond"
+        )
+
+        self.assertEqual(sender, "Synthetic Sender")
+        self.assertEqual(message, "first\nsecond")
+
     def test_parse_sms_callback_head_handles_empty_input(self):
         """Should handle empty input gracefully."""
         phone, message = parse_sms_callback_head("")
