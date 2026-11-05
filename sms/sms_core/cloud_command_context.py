@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from sms_core.credential_policy import credential_error
 from sms_core.call_command_context import call_state_lock, capture_call_command_context
 from sms_core.cloud_command_security import (
     normalize_cloud_command_permissions, sensitive_cloud_command_decision,
@@ -55,6 +56,9 @@ def set_cloud_login_authorized(namespace, websocket, value):
             return False
         if authorized and not cloud_connection_is_current(namespace, websocket):
             return False
+        if authorized and credential_error(namespace.get('CLOUD_DEVICE_SECRET', ''), '云端控制密码'):
+            set_cloud_command_authorized(namespace, False)
+            return False
         set_cloud_command_authorized(namespace, authorized)
         if authorized:
             namespace["cloud_authenticated_secret"] = namespace.get("CLOUD_DEVICE_SECRET", "")
@@ -98,6 +102,7 @@ class CloudSerialCommandContext:
             or self.websocket is None
             or namespace.get("cloud_ws_conn") is not self.websocket
             or namespace.get("CLOUD_DEVICE_SECRET", "") != self.secret
+            or credential_error(self.secret, '云端控制密码')
             or namespace.get("CLOUD_WS_URL", "") != self.ws_url
         ):
             return "云端连接或授权已变化，已取消旧云端指令，请重新提交"

@@ -1,7 +1,8 @@
 import configparser
+import time
 
 from sms_core.config_runtime import CONFIG_SNAPSHOT_ATTR
-from sms_core.connected_log_runtime import start_delayed_connected_log_runtime
+from sms_core.connected_log_runtime import start_delayed_connected_log_runtime, connected_status_update
 from sms_core.serial_ports import choose_luat_modem_port
 from sms_core.serial_reconnect import is_serial_port_gone_error
 from sms_core.serial_reconnect_app_runtime import try_rebind_manual_port_runtime
@@ -10,6 +11,9 @@ from sms_core.serial_startup_runtime import (
     resolve_serial_target_port_runtime,
 )
 from sms_core.status_text import format_connected_status
+from sms_core.serial_sender import (
+    DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR, serial_initialization_pending, serial_sms_recovery_error,
+)
 
 
 def try_rebind_manual_port_namespace_runtime(
@@ -81,7 +85,43 @@ def open_and_initialize_serial_namespace_runtime(
     *,
     open_runtime=open_and_initialize_serial_runtime,
 ):
-    return open_runtime(
+    previous = namespace.get("_serial_initialization_session")
+    if previous is not None:
+        previous.close()
+
+    def initialization_finished(session):
+        def update_on_ui():
+            if (namespace.get("serial_obj") is not session.serial
+                    or namespace.get("serial_connection_generation", 0) != session.generation
+                    or namespace.get("serial_running", True) is False
+                    or any(event is not None and event.is_set() for event in (
+                        namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN")))):
+                return
+            status_var = namespace.get("status_var")
+            status = status_var.get() if status_var is not None else ""
+            update = connected_status_update(status, namespace["PORT"])
+            if update is None:
+                return
+            if session.quarantined:
+                namespace["set_status"]("🔴 串口初始化结果未确认，请重启设备后重新连接", "red")
+            elif session.index < len(session.commands):
+                namespace["set_status"]("🟡 串口初始化未完成，请重新连接后再操作", "orange")
+            elif session.has_command_errors:
+                namespace["set_status"]("🟡 串口已连接，部分初始化指令未成功，请检查设备状态", "orange")
+            else:
+                restore = namespace.get("restore_connected_status")
+                if callable(restore):
+                    restore(namespace["PORT"], serial_context=(session.serial, session.generation))
+                else:
+                    namespace["set_status"](*update)
+
+        run_on_ui = namespace.get("run_on_ui_thread")
+        if callable(run_on_ui):
+            run_on_ui(update_on_ui, namespace.get("ui_post"))
+        else:
+            update_on_ui()
+
+    serial_obj = open_runtime(
         target_port=target_port,
         baud=namespace["BAUD"],
         mode=namespace["MODE"],
@@ -93,7 +133,23 @@ def open_and_initialize_serial_namespace_runtime(
         set_cloud_imei_query_deadline=lambda value: namespace.__setitem__("cloud_imei_query_deadline", value),
         serial_error_ui=namespace["serial_error_ui"],
         set_status=namespace["set_status"],
+        response_coordinator=namespace.get(
+            "SERIAL_COMMAND_RESPONSE_COORDINATOR", DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR),
+        get_serial_obj=lambda: namespace.get("serial_obj"),
+        get_generation=lambda: namespace.get("serial_connection_generation", 0),
+        is_stopping=lambda: (namespace.get("serial_running", True) is False
+            or any(event is not None and event.is_set() for event in (
+                namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN")))),
+        monotonic=getattr(namespace.get("time"), "monotonic", time.monotonic),
+        on_initialized=initialization_finished,
     )
+    namespace["_serial_initialization_session"] = getattr(serial_obj, "_serial_initialization_session", None)
+    register = namespace.get("_register_serial_initialization_session")
+    if callable(register) and namespace["_serial_initialization_session"] is not None:
+        register(namespace["_serial_initialization_session"])
+    if serial_initialization_pending(serial_obj):
+        namespace["set_status"]("🟡 串口初始化中，控制指令等待初始化完成…", "orange")
+    return serial_obj
 
 
 def schedule_delayed_connected_log_namespace_runtime(
@@ -107,6 +163,18 @@ def schedule_delayed_connected_log_namespace_runtime(
     generation = int(namespace.get("serial_connection_generation", 0)) + 1
     namespace.__setitem__("serial_connection_generation", generation)
     connection = namespace.get("serial_obj")
+
+    def set_connected_status(text, color):
+        if serial_initialization_pending(connection):
+            namespace["set_status"]("🟡 串口初始化中，控制指令等待初始化完成…", "orange")
+        elif serial_sms_recovery_error(connection):
+            namespace["set_status"]("🔴 串口初始化结果未确认，请重启设备后重新连接", "red")
+        else:
+            restore = namespace.get("restore_connected_status")
+            if callable(restore):
+                restore(port, serial_context=(connection, generation))
+            else:
+                namespace["set_status"](text, color)
 
     def connection_is_current():
         if generation != namespace.get("serial_connection_generation"):
@@ -148,7 +216,7 @@ def schedule_delayed_connected_log_namespace_runtime(
         ui_post=namespace["ui_post"],
         root_after=namespace["root"].after,
         get_status=namespace["status_var"].get,
-        set_status=namespace["set_status"],
+        set_status=set_connected_status,
         app_start_mono=namespace["APP_START_MONO"],
         start_ui_delay=namespace["START_UI_DELAY"],
         format_connected_status=format_connected_status,

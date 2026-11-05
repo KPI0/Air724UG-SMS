@@ -17,6 +17,7 @@ from sms_core.cloud_message_namespace_runtime import (
     drain_cloud_serial_log_queue_namespace_runtime,
     handle_cloud_message_namespace_runtime,
     handle_cloud_call_recording_message_namespace_runtime,
+    prepare_cloud_call_event_payload_namespace_runtime,
     reset_cloud_serial_log_state_namespace_runtime,
     schedule_cloud_serial_log_drain_namespace_runtime,
     schedule_cloud_sms_event_drain_namespace_runtime,
@@ -109,7 +110,8 @@ def install_cloud_namespace_bindings(namespace):
         log_error = namespace.get("log_file_only")
         if log_error is not None:
             kwargs["log_error"] = log_error
-        return await send_cloud_payload_runtime(ws, payload, **kwargs)
+        wire_payload = prepare_cloud_call_event_payload_namespace_runtime(namespace, ws, payload)
+        return await send_cloud_payload_runtime(ws, wire_payload, **kwargs)
 
     def cloud_now_ts():
         return int(time.time())

@@ -3,6 +3,7 @@ import threading
 from contextlib import nullcontext
 
 from sms_core.config_runtime import reload_config_runtime
+from sms_core.credential_policy import validate_config_credentials
 from sms_core.call_command_context import call_state_lock
 from sms_core.cloud_command_context import set_cloud_command_authorized
 from sms_core.cloud_runtime import (
@@ -31,6 +32,7 @@ def cloud_control_settings_snapshot_namespace_runtime(namespace):
 
 
 def apply_cloud_control_settings_namespace_runtime(namespace, settings):
+    validate_config_credentials({'cloud_control': {'device_secret': settings.device_secret, 'url': settings.url}})
     event_state = namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE")
     with event_state.lock if event_state is not None else nullcontext(), call_state_lock(namespace):
         previous = cloud_control_settings_snapshot_namespace_runtime(namespace)

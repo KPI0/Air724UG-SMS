@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 
-from sms_core.cloud_firmware_ota import RelayError, UsbOtaTransport
+from sms_core.cloud_firmware_ota import RelayError, UsbOtaTransport, valid_commit_receipt
 from sms_core.firmware_package import (
     CAPACITY, CORE, MAX_PACKAGE_BYTES, PackageError, parse_upload_package, version_tuple,
 )
@@ -27,7 +27,8 @@ class UpdateCancelled(Exception):
 
 
 REASONS = {
-    "busy": "设备正在通话、收发短信、导出录音或更新，请结束后重试",
+    "busy": "设备暂时忙，请稍后重试",
+    "serial_busy": "串口正在执行 AT 指令或被其他更新任务占用，请稍后重试",
     "auth": "设备拒绝更新授权，请检查固件是否支持本地 USB 更新",
     "config_mismatch": "设备仍使用限制配置变更的旧固件，请先用原配置升级接收端，或使用 Luatools 烧录",
     "integrity": "设备校验升级包失败，请重新生成固件",
@@ -247,7 +248,9 @@ class LocalFirmwareUpdater:
         deadline = self.clock() + self.confirmation_timeout
         try:
             result = transport.wait_install_result(request)
-            if result.get("phase") == "failed":
+            if not valid_commit_receipt(result):
+                raise RelayError("commit_reply")
+            if result["ok"] is False:
                 raise DeviceRejected(REASONS.get(result.get("reason"), "设备报告安装失败，请检查固件"))
             if result.get("phase") == "rebooted":
                 return True
@@ -313,6 +316,8 @@ class LocalFirmwareUpdater:
                 request = dict(type="firmware_ota", action="commit", job_id=job_id, request_id=uuid.uuid4().hex)
                 try:
                     reply = transport.exchange(request)  # Never retry commit.
+                    if not valid_commit_receipt(reply):
+                        raise RelayError("commit_reply")
                     if reply.get("ok") is not True:
                         raise DeviceRejected(REASONS.get(reply.get("reason"), "设备拒绝安装固件"))
                 except DeviceRejected:

@@ -5,6 +5,8 @@ import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 
+from sms_core.cloud_security import cloud_connection_error_for_display
+
 
 @dataclass
 class CloudSerialLogDrainState:
@@ -64,7 +66,7 @@ def clear_cloud_serial_log_queue(log_queue, *, log_error=None):
                 break
             _task_done_safely(log_queue)
     except Exception as exc:
-        _safe_log(log_error, f"Clear cloud serial log queue failed: {exc!r}")
+        _safe_log(log_error, f"Clear cloud serial log queue failed: {cloud_connection_error_for_display(exc)}")
 
 
 def reset_cloud_serial_log_state(log_queue, state, *, log_error=None):
@@ -74,7 +76,7 @@ def reset_cloud_serial_log_state(log_queue, state, *, log_error=None):
             state.generation += 1
             state.drain_scheduled = False
     except Exception as exc:
-        _safe_log(log_error, f"Reset cloud serial log state failed: {exc!r}")
+        _safe_log(log_error, f"Reset cloud serial log state failed: {cloud_connection_error_for_display(exc)}")
 
 
 async def drain_cloud_serial_log_queue(
@@ -120,7 +122,7 @@ async def drain_cloud_serial_log_queue(
             finally:
                 _task_done_safely(log_queue)
     except Exception as exc:
-        _safe_log(log_error, f"Drain cloud serial log queue failed: {exc!r}")
+        _safe_log(log_error, f"Drain cloud serial log queue failed: {cloud_connection_error_for_display(exc)}")
         with state.lock:
             if generation == state.generation and is_current_connection(ws):
                 clear_cloud_serial_log_queue(log_queue, log_error=log_error)
@@ -154,7 +156,7 @@ async def drain_cloud_serial_log_queue(
                 )
                 create_task(coro)
             except Exception as exc:
-                _safe_log(log_error, f"Schedule next cloud serial log drain failed: {exc!r}")
+                _safe_log(log_error, f"Schedule next cloud serial log drain failed: {cloud_connection_error_for_display(exc)}")
                 if coro is not None:
                     _close_unawaited_coro(coro)
                 with state.lock:
@@ -191,7 +193,7 @@ def schedule_cloud_serial_log_drain(
         run_coroutine_threadsafe(coro, loop)
         return True
     except Exception as exc:
-        _safe_log(log_error, f"Schedule cloud serial log drain failed: {exc!r}")
+        _safe_log(log_error, f"Schedule cloud serial log drain failed: {cloud_connection_error_for_display(exc)}")
         if coro is not None:
             _close_unawaited_coro(coro)
         with state.lock:
@@ -255,5 +257,5 @@ def send_cloud_serial_log_runtime(
             schedule_drain(loop, ws, generation=generation)
         return "queued"
     except Exception as exc:
-        _safe_log(log_error, f"Send cloud serial log failed: {exc!r}")
+        _safe_log(log_error, f"Send cloud serial log failed: {cloud_connection_error_for_display(exc)}")
         return "error"

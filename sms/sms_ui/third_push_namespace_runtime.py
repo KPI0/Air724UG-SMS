@@ -1,4 +1,5 @@
 import threading
+from sms_core.credential_policy import validate_push_credentials
 
 from sms_core.third_push_config import (
     ThirdPushSettings,
@@ -53,6 +54,7 @@ def third_push_settings_snapshot_namespace_runtime(namespace):
 def apply_third_push_settings_namespace_runtime(namespace, settings):
     channels = list(settings.channels or [])
     parameters = dict(settings.settings or {})
+    validate_push_credentials(parameters)
     with _third_push_settings_lock(namespace):
         namespace.__setitem__("THIRD_PUSH_ENABLED", settings.enabled)
         namespace.__setitem__("THIRD_PUSH_SMS_ENABLED", settings.sms_enabled)

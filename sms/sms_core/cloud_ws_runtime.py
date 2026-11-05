@@ -8,10 +8,16 @@ from urllib.parse import urlsplit
 
 from sms_core.cloud_messages import is_cloud_auth_ack_type, parse_cloud_message
 from sms_core.cloud_protocol import auth_status_from_ack
+from sms_core.credential_policy import CredentialValidationError, credential_url_error
 from sms_core.cloud_runtime import (
     cloud_backoff_sleep_ticks,
     cloud_stopped_status,
     next_cloud_backoff,
+)
+from sms_core.cloud_security import (
+    cloud_auth_message_for_display,
+    cloud_connection_error_for_display,
+    cloud_connection_target_for_display,
 )
 
 
@@ -38,7 +44,7 @@ def cloud_thread_main_runtime(
         loop.run_until_complete(run_main(url, reconnect_interval))
         return "stopped"
     except Exception as exc:
-        log(f"云端控制线程异常：{exc}")
+        log(f"云端控制线程异常：{cloud_connection_error_for_display(exc)}")
         return "error"
     finally:
         with lock:
@@ -84,6 +90,9 @@ def build_cloud_ssl_context(
 
 
 def cloud_websocket_connect_kwargs(url, *, ssl_context_factory=build_cloud_ssl_context):
+    error = credential_url_error(url, 'WebSocket地址')
+    if error:
+        raise CredentialValidationError(error)
     kwargs = {
         "ping_interval": 30,
         "ping_timeout": 30,
@@ -167,17 +176,17 @@ async def wait_cloud_login_ack_runtime(
             set_authorized(status == "authorized")
             set_auth_status_from_ack(data)
         if status == "authorized":
-            log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
+            log(cloud_auth_message_for_display(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return True
 
         if status == "waiting":
             log(
-                str(data.get("message") or "设备正在等待网页端绑定"),
+                cloud_auth_message_for_display(data.get("message") or "设备正在等待网页端绑定"),
                 show_main=True,
             )
             return True
 
-        log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
+        log(cloud_auth_message_for_display(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
         # 明确的密码/设备授权拒绝不是网络故障。返回专用结果，调用方
         # 必须停止自动重连，避免错误密码形成无限重试和服务端限流。
         return "auth_failed"
@@ -274,14 +283,14 @@ async def cloud_ws_main_runtime(
                 break
 
             set_cloud_status("🌐 连接中", "#b26a00")
-            log(f"正在连接：{url}", show_main=True)
+            log(f"正在连接：{cloud_connection_target_for_display(url)}", show_main=True)
 
             async with connect(url, **cloud_websocket_connect_kwargs(url)) as ws:
                 if stop_event.is_set():
                     break
                 set_connection_state(ws, connected=True, authorized=False)
                 set_cloud_status("🌐 等待授权", "#b26a00")
-                log(f"已连接：{url}", show_main=True)
+                log(f"已连接：{cloud_connection_target_for_display(url)}", show_main=True)
                 await send_register(ws)
                 login_result = await wait_login_ack(ws)
                 if login_result == "auth_failed":
@@ -360,7 +369,7 @@ async def cloud_ws_main_runtime(
                 break
             set_connection_state(None, connected=False, authorized=False)
             reset_serial_log_state()
-            err = str(e).strip() or e.__class__.__name__
+            err = cloud_connection_error_for_display(e)
             set_cloud_status("🌐 重连中", "#b26a00")
             log(f"连接异常：{err}")
 

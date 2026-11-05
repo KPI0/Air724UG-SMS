@@ -1,4 +1,5 @@
 import unittest
+import ssl
 
 from sms_core.updates import (
     UpdateCheckPlan,
@@ -198,13 +199,13 @@ class UpdatesTests(unittest.TestCase):
 
     def test_classify_update_error_recognizes_ssl_handshake_failure(self):
         """Should classify TLS handshake errors."""
-        error = Exception("sslv3_alert_handshake_failure occurred")
+        error = ssl.SSLError("sslv3_alert_handshake_failure occurred")
         result = classify_update_error(error)
         self.assertIn("TLS握手失败", result)
 
     def test_classify_update_error_recognizes_timeout(self):
         """Should classify timeout errors."""
-        error = Exception("The read operation timed out")
+        error = TimeoutError("The read operation timed out")
         result = classify_update_error(error)
         self.assertIn("连接超时", result)
 

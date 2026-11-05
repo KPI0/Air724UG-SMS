@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from sms_core.config_schema import THIRD_PUSH_DEFAULTS
 from sms_core.third_push import THIRD_PUSH_CHANNEL_LABELS, THIRD_PUSH_SETTINGS_KEYS, parse_push_channels
+from sms_core.credential_policy import validate_push_credentials
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ def default_bool(key):
 
 
 def ensure_third_push_config_values(config):
+    validate_push_credentials(dict(config.items('third_push', raw=True)) if config.has_section('third_push') else {})
     changed = False
     if not config.has_section("third_push"):
         config["third_push"] = {}
@@ -34,6 +36,7 @@ def ensure_third_push_config_values(config):
 
 
 def read_third_push_settings(config):
+    validate_push_credentials(dict(config.items('third_push', raw=True)) if config.has_section('third_push') else {})
     ensure_third_push_config_values(config)
 
     try:
@@ -86,6 +89,7 @@ def update_third_push_settings(
 
 
 def write_third_push_settings(config, settings):
+    validate_push_credentials(settings.settings)
     ensure_third_push_config_values(config)
     config.set("third_push", "enabled", "1" if settings.enabled else "0")
     config.set("third_push", "sms_enabled", "1" if settings.sms_enabled else "0")

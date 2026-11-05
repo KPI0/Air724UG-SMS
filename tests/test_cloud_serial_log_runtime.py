@@ -170,7 +170,8 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         self.assertEqual(ws.sent, ['{"id": 1}'])
         self.assertFalse(state.drain_scheduled)
         self.assertEqual(created[0].cr_frame, None)
-        self.assertIn("scheduler down", logs[0])
+        self.assertEqual(logs, ["Schedule next cloud serial log drain failed: RuntimeError"])
+        self.assertNotIn("scheduler down", logs[0])
 
     def test_drain_cloud_serial_log_queue_preserves_current_state_when_connection_stale(self):
         log_queue = queue.Queue()
@@ -293,7 +294,8 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
         ))
         self.assertFalse(state.drain_scheduled)
         self.assertEqual(created[0].cr_frame, None)
-        self.assertIn("loop rejected", logs[0])
+        self.assertEqual(logs, ["Schedule cloud serial log drain failed: RuntimeError"])
+        self.assertNotIn("loop rejected", logs[0])
 
     def test_schedule_cloud_serial_log_drain_resets_flag_when_factory_fails(self):
         state = CloudSerialLogDrainState()
@@ -310,7 +312,8 @@ class CloudSerialLogRuntimeTests(unittest.TestCase):
             log_error=logs.append,
         ))
         self.assertFalse(state.drain_scheduled)
-        self.assertIn("factory failed", logs[0])
+        self.assertEqual(logs, ["Schedule cloud serial log drain failed: RuntimeError"])
+        self.assertNotIn("factory failed", logs[0])
 
 
 if __name__ == "__main__":

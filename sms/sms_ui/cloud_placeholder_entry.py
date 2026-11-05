@@ -74,7 +74,11 @@ class CloudPlaceholderEntry:
         return "" if self.visible_var.get() or self.placeholder_active else "*"
 
     def get(self):
-        value = self.variable.get().strip()
+        value = self.get_raw()
+        return value if getattr(self, 'random_secret', False) else value.strip()
+
+    def get_raw(self):
+        value = self.variable.get()
         if self.placeholder_active and value == self.placeholder:
             return ""
         return value
@@ -88,7 +92,7 @@ class CloudPlaceholderEntry:
             pass
 
     def set_placeholder(self):
-        if self.variable.get().strip():
+        if self.get():
             return
         self.placeholder_active = True
         self.variable.set(self.placeholder)
@@ -108,7 +112,7 @@ class CloudPlaceholderEntry:
             pass
 
     def restore_placeholder(self, _event=None):
-        if self.variable.get().strip():
+        if self.get():
             try:
                 self.entry.config(style="TEntry", show=self._entry_show())
             except Exception:

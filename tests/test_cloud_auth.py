@@ -39,10 +39,11 @@ class CloudAuthTests(unittest.TestCase):
             result = incoming_secret({field: "my-secret-123"})
             self.assertEqual(result, "my-secret-123")
 
-    def test_incoming_secret_strips_whitespace(self):
-        """Should strip whitespace from secret."""
+    def test_incoming_secret_preserves_whitespace_for_auth_rejection(self):
+        """Do not turn an invalid credential into a valid one by trimming."""
         result = incoming_secret({"secret": "  my-secret  "})
-        self.assertEqual(result, "my-secret")
+        self.assertEqual(result, "  my-secret  ")
+        self.assertFalse(secret_match_result({'secret': result}, 'my-secret')[0])
 
     def test_incoming_secret_returns_empty_for_missing(self):
         """Should return empty string when no secret field present."""

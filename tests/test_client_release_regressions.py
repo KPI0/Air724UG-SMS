@@ -64,7 +64,7 @@ class RecipientResultTests(unittest.TestCase):
                         pass
 
                 smtp = MemorySMTP()
-                with patch.object(sender.smtplib, 'SMTP_SSL', return_value=smtp):
+                with patch.object(sender, 'DeadlineSMTP_SSL', return_value=smtp):
                     ok, info = sender.send_email('test content', settings)
                 self.assertEqual(ok, refused_count == 0)
                 self.assertEqual(smtp.data_calls, int(refused_count < 2))
@@ -106,21 +106,22 @@ class RecipientResultTests(unittest.TestCase):
                 self.assertFalse(ok)
 
 
-class UnicodeCloudPasswordTests(unittest.TestCase):
-    def test_auth_supports_unicode_and_preserves_exact_comparison(self):
+class CloudPasswordPolicyTests(unittest.TestCase):
+    def test_auth_rejects_unicode_and_preserves_ascii_exact_comparison(self):
         for expected, incoming, matched in (
-            ('中文密码', ' 中文密码 ', True), ('café🔐', 'café🔐', True),
-            ('中文密码', '中文密碼', False), ('ascii', '中文', False),
-            ('中文', 'ascii', False), ('é', 'e\u0301', False),
+            ('synthetic中文密码', 'synthetic中文密码', False), ('syntheticcafé🔐', 'syntheticcafé🔐', False),
+            ('synthetic中文密码', 'synthetic中文密碼', False), ('ascii', 'synthetic中文', False),
+            ('synthetic中文', 'ascii', False), ('syntheticé', 'synthetice\u0301', False),
             ('ascii', '\ud800', False),
+            ('Ascii!123', 'Ascii!123', True), ('Ascii!123', 'ascii!123', False),
         ):
             with self.subTest(expected=expected, incoming=incoming):
                 ok, reason = secret_match_result({'secret': incoming}, expected)
                 self.assertEqual(ok, matched)
                 self.assertNotIn(expected, reason)
 
-    def test_register_unicode_password_rotation_uses_previous_hmac_proof(self):
-        for old, new in (('ascii', '中文'), ('中文', 'café🔐'), ('中文', '中文'), (' 中文 ', '中文'), ('', '中文')):
+    def test_register_ascii_password_rotation_uses_previous_hmac_proof(self):
+        for old, new in (('ascii', 'Ascii!123'), ('old-secret', 'new-secret'), ('same-secret', 'same-secret'), ('', 'Ascii!123')):
             with self.subTest(old=old, new=new):
                 ws = AsyncMock()
                 result = asyncio.run(send_cloud_register_runtime(

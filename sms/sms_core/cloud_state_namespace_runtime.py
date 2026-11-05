@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from sms_core.cloud_command_context import set_cloud_command_authorized
 
 from sms_core.cloud_imei_runtime import (
+    IMEI_QUERY_WINDOW_SECONDS,
     maybe_capture_cloud_device_imei_runtime,
     notify_cloud_identity_changed_runtime,
     request_cloud_device_imei_runtime,
@@ -14,6 +15,7 @@ from sms_core.cloud_message_runtime import cloud_status_payload_runtime
 from sms_core.cloud_connection_runtime import schedule_cloud_payload_runtime
 from sms_core.cloud_payloads import build_channel_status_payload
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain
+from sms_core import serial_sender
 
 
 def cloud_runtime_imei_namespace_runtime(namespace):
@@ -80,6 +82,70 @@ def request_cloud_device_imei_namespace_runtime(
     *,
     request_runtime=request_cloud_device_imei_runtime,
 ):
+    def confirmed_imei_query():
+        with serial_sender.DEFAULT_SERIAL_TRANSACTION_LOCK:
+            with namespace["serial_lock"]:
+                serial_obj = namespace.get("serial_obj")
+                generation = namespace.get("serial_connection_generation", 0)
+            attempted = False
+            query_deadline = None
+            responses = []
+            window_owner = object()
+            invalidated = False
+            unconfirmed_error = "IMEI查询结果未获确认，已暂停此串口发送，请重启设备后重新连接"
+
+            def get_original_serial():
+                nonlocal invalidated
+                invalidated = invalidated or bool(
+                    namespace.get("serial_obj") is not serial_obj
+                    or namespace.get("serial_connection_generation", 0) != generation
+                    or namespace.get("serial_running", True) is False
+                    or namespace.get("is_exiting")
+                    or any(event is not None and event.is_set() for event in (
+                        namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN"),
+                    ))
+                )
+                return None if invalidated else serial_obj
+
+            def before_write():
+                nonlocal attempted, query_deadline
+                if get_original_serial() is not serial_obj or serial_obj is None:
+                    return False
+                query_deadline = namespace.get("time", time).monotonic() + IMEI_QUERY_WINDOW_SECONDS
+                namespace["_cloud_imei_query_owner"] = window_owner
+                namespace["cloud_imei_query_deadline"] = query_deadline
+                attempted = True
+                return True
+
+            try:
+                result = serial_sender.write_serial_command_confirmed_locked(
+                    namespace["serial_lock"], get_original_serial, "AT+CGSN",
+                    response_coordinator=namespace.get(
+                        "SERIAL_COMMAND_RESPONSE_COORDINATOR",
+                        serial_sender.DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
+                    ),
+                    response_timeout=IMEI_QUERY_WINDOW_SECONDS,
+                    before_write=before_write, on_modem_response=responses.append,
+                    isolate_unconfirmed=True, unconfirmed_error=unconfirmed_error,
+                )
+            except Exception as exc:
+                result = serial_sender.SerialCommandResult(False, f"读取IMEI失败：{type(exc).__name__}")
+            finally:
+                with namespace["serial_lock"], serial_sender.DEFAULT_SERIAL_WRITE_LOCK:
+                    if (namespace.get("_cloud_imei_query_owner") is window_owner
+                            and namespace.get("cloud_imei_query_deadline") == query_deadline):
+                        namespace["cloud_imei_query_deadline"] = 0.0
+                    if namespace.get("_cloud_imei_query_owner") is window_owner:
+                        namespace.pop("_cloud_imei_query_owner", None)
+                    # Keep the transaction owned until an uncertain query can
+                    # no longer lend its delayed terminal to the next command.
+                    if attempted and not any(getattr(response, "line", "") for response in responses):
+                        serial_obj._sms_recovery_error = unconfirmed_error
+            recovery_error = serial_sender.serial_sms_recovery_error(serial_obj)
+            if not result.ok and recovery_error and recovery_error not in result.error:
+                return serial_sender.SerialCommandResult(False, f"{result.error}；{recovery_error}")
+            return result
+
     return request_runtime(
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: namespace["serial_obj"],
@@ -91,6 +157,7 @@ def request_cloud_device_imei_namespace_runtime(
         push_serial_debug=namespace["_push_serial_debug"],
         thread_factory=namespace.get("threading", threading).Thread,
         thread_registry=namespace["SERIAL_COMMAND_THREAD_REGISTRY"],
+        confirmed_imei_query=confirmed_imei_query,
     )
 
 

@@ -125,7 +125,62 @@ class ThirdPushDispatchTests(unittest.TestCase):
         )
 
         self.assertEqual(result.ok_channels, [])
-        self.assertEqual(result.fail_infos, ["Telegram: boom"])
+        self.assertEqual(result.fail_infos, ["Telegram: 推送发送异常（RuntimeError）"])
+
+    def test_dispatch_push_item_hides_sensitive_sender_exception_and_continues(self):
+        sent = []
+
+        def send(channel, message, settings):
+            sent.append((channel, message, settings))
+            if channel == "telegram":
+                raise RuntimeError("https://user:synthetic-password@example.invalid/botsynthetic-token")
+            return True, "HTTP 200"
+
+        settings = {"token": "synthetic-token"}
+        result = dispatch_push_item(
+            {"message": "normal body", "channels": ["telegram", "dingtalk"],
+             "settings": settings, "template": "{msg}", "show_result": True},
+            send,
+        )
+
+        self.assertEqual(result.fail_infos, ["Telegram: 推送发送异常（RuntimeError）"])
+        self.assertEqual(result.ok_channels, ["钉钉"])
+        self.assertEqual([item[0] for item in sent], ["telegram", "dingtalk"])
+        self.assertTrue(all(item[1:] == ("normal body", settings) for item in sent))
+        self.assertTrue(result.show_result)
+
+    def test_dispatch_push_item_does_not_format_unknown_exception(self):
+        class UnprintableError(Exception):
+            def __str__(self):
+                raise AssertionError("exception text must not be read")
+
+            def __repr__(self):
+                raise AssertionError("exception repr must not be read")
+
+        result = dispatch_push_item(
+            {"message": "normal body", "channels": ["telegram"]},
+            lambda *_args: (_ for _ in ()).throw(UnprintableError()),
+        )
+
+        self.assertEqual(result.fail_infos, ["Telegram: 推送发送异常（UnprintableError）"])
+
+    def test_dispatch_push_item_preserves_known_failure_and_validation_messages(self):
+        validation = third_push_sender.required(
+            {"pushover_api_token": "invalid token"}, "pushover_api_token", "PUSHOVER_API_TOKEN",
+        )[1]
+        known_failures = {
+            "pushover": validation,
+            "telegram": "HTTP 503 请求失败",
+            "email": "SMTP 认证或加密协商失败",
+        }
+        result = dispatch_push_item(
+            {"message": "normal body", "channels": list(known_failures)},
+            lambda channel, *_args: (False, known_failures[channel]),
+        )
+
+        self.assertEqual(result.fail_infos, [
+            f"Pushover: {validation}", "Telegram: HTTP 503 请求失败", "邮箱: SMTP 认证或加密协商失败",
+        ])
 
     def test_push_result_status_message_formats_result_cases(self):
         partial = PushDispatchResult(["钉钉"], ["企业微信: bad"])
@@ -350,10 +405,112 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(handled, ["bad", "good"])
         self.assertTrue(push_queue.empty())
         self.assertEqual(push_queue.unfinished_tasks, 0)
-        self.assertTrue(any("boom" in message for message, _tag in ui_messages))
+        self.assertTrue(any("RuntimeError" in message for message, _tag in ui_messages))
         self.assertEqual(results[0][0], [])
-        self.assertIn("boom", results[0][1][0])
+        self.assertEqual(results[0][1], ["三方推送任务异常：RuntimeError"])
         self.assertEqual(results[-1], (["Ding"], []))
+
+    def test_third_push_worker_hides_sensitive_dispatch_exception(self):
+        push_queue = queue.Queue()
+        push_queue.put({"message": "body", "show_result": True})
+        ui_messages, results = [], []
+
+        class AlreadyStopped:
+            @staticmethod
+            def is_set():
+                return True
+
+        third_push_worker_runtime(
+            stop_event=AlreadyStopped(), push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda message, _tag: ui_messages.append(message),
+            show_result=lambda ok, fail: results.append((ok, fail)),
+            dispatch_func=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("password=synthetic-password /botsynthetic-token")),
+            poll_timeout=0,
+        )
+
+        self.assertEqual(ui_messages, ["三方推送任务异常：RuntimeError"])
+        self.assertEqual(results, [([], ["三方推送任务异常：RuntimeError"])])
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+
+    def test_third_push_worker_does_not_format_unknown_dispatch_exception(self):
+        class UnprintableError(Exception):
+            def __str__(self):
+                raise AssertionError("exception text must not be read")
+
+            def __repr__(self):
+                raise AssertionError("exception repr must not be read")
+
+        push_queue = queue.Queue()
+        push_queue.put({"message": "body"})
+        ui_messages = []
+
+        class AlreadyStopped:
+            @staticmethod
+            def is_set():
+                return True
+
+        third_push_worker_runtime(
+            stop_event=AlreadyStopped(), push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda message, _tag: ui_messages.append(message), show_result=lambda *_args: None,
+            dispatch_func=lambda *_args, **_kwargs: (_ for _ in ()).throw(UnprintableError()),
+            poll_timeout=0,
+        )
+
+        self.assertEqual(ui_messages, ["三方推送任务异常：UnprintableError"])
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+
+    def test_third_push_worker_hides_sensitive_result_processing_exception(self):
+        push_queue = queue.Queue()
+        push_queue.put({"message": "body", "show_result": True})
+        ui_messages, results = [], []
+
+        class AlreadyStopped:
+            @staticmethod
+            def is_set():
+                return True
+
+        third_push_worker_runtime(
+            stop_event=AlreadyStopped(), push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda message, _tag: ui_messages.append(message),
+            show_result=lambda ok, fail: results.append((ok, fail)),
+            dispatch_func=lambda *_args, **_kwargs: PushDispatchResult(["Ding"], [], show_result=True),
+            result_status_message=lambda _result: (_ for _ in ()).throw(
+                ValueError("token=synthetic-token")),
+            poll_timeout=0,
+        )
+
+        self.assertEqual(ui_messages, ["三方推送结果处理异常：ValueError"])
+        self.assertEqual(results, [(["Ding"], [])])
+        self.assertEqual(push_queue.unfinished_tasks, 0)
+
+    def test_third_push_worker_hides_sensitive_result_callback_exception(self):
+        class BrokenResult:
+            @property
+            def show_result(self):
+                raise RuntimeError("password=synthetic-password")
+
+        class AlreadyStopped:
+            @staticmethod
+            def is_set():
+                return True
+
+        push_queue = queue.Queue()
+        push_queue.put({"message": "body"})
+        ui_messages = []
+        third_push_worker_runtime(
+            stop_event=AlreadyStopped(), push_queue=push_queue,
+            send_channel_func=lambda *_args: (True, "ok"),
+            system_ui=lambda message, _tag: ui_messages.append(message), show_result=lambda *_args: None,
+            dispatch_func=lambda *_args, **_kwargs: BrokenResult(),
+            result_status_message=lambda _result: "", poll_timeout=0,
+        )
+
+        self.assertEqual(ui_messages, ["三方推送结果回调异常：RuntimeError"])
+        self.assertEqual(push_queue.unfinished_tasks, 0)
 
     def test_third_push_worker_runtime_ignores_result_and_ui_callback_errors(self):
         push_queue = queue.Queue()
@@ -561,7 +718,7 @@ class ThirdPushDispatchTests(unittest.TestCase):
             "email_to_addresses": "one@example.com;two@example.com",
             "email_subject": "测试",
         }
-        with patch.object(third_push_sender.smtplib, "SMTP", FakeSMTP), patch.object(
+        with patch.object(third_push_sender, "DeadlineSMTP", FakeSMTP), patch.object(
             third_push_sender.ssl, "create_default_context", return_value="tls-context"
         ):
             ok, info = third_push_sender.send_email("邮件内容", settings)
@@ -573,7 +730,7 @@ class ThirdPushDispatchTests(unittest.TestCase):
         self.assertEqual(calls[-1], ("quit",))
 
     def test_send_email_rejects_invalid_smtp_host_before_connecting(self):
-        with patch.object(third_push_sender.smtplib, "SMTP_SSL") as smtp_ssl:
+        with patch.object(third_push_sender, "DeadlineSMTP_SSL") as smtp_ssl:
             ok, info = third_push_sender.send_email(
                 "message",
                 {

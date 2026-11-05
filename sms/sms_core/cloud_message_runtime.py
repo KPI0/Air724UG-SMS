@@ -25,11 +25,15 @@ from sms_core.cloud_messages import (
 )
 from sms_core.cloud_protocol import auth_status_from_ack
 from sms_core.cloud_security import (
+    cloud_auth_message_for_display,
     HIDDEN_SENSITIVE_COMMAND,
     HIDDEN_SMS_COMMAND,
     HIDDEN_SMS_META,
+    cloud_connection_error_for_display,
     safe_preview,
 )
+from sms_core.serial_debug import redact_sim_credentials_for_display
+from sms_core.credential_policy import credential_error, serial_credential_error
 
 
 CLOUD_SMS_PHONE_RE = re.compile(r"(?:\+[0-9]{7,15}|[0-9]{3,20})\Z")
@@ -39,7 +43,9 @@ DEVICE_SESSION_REVOKE_PROOF_CONTEXT = b"air724ug-sms:device-session-revoke:v1"
 
 
 def cloud_session_revoke_proof(secret, imei):
-    secret_bytes = str(secret or "").strip().encode("utf-8")
+    if credential_error(secret, '云端控制密码'):
+        return ''
+    secret_bytes = str(secret or "").encode("ascii")
     imei_bytes = str(imei or "").strip().encode("ascii", "ignore")
     if not secret_bytes or not imei_bytes:
         return ""
@@ -94,6 +100,12 @@ async def send_cloud_register_runtime(
     control_available=None,
     serial_connection_generation=None,
 ):
+    error = credential_error(secret, '云端控制密码', allow_empty=False) or credential_error(
+        previous_session_secret, '原云端控制密码',
+    )
+    if error:
+        log(f'上报设备身份失败：{error}')
+        return 'error'
     payload = build_payload(
         auto_upload,
         timestamp(),
@@ -104,6 +116,10 @@ async def send_cloud_register_runtime(
         serial_mode,
     )
     if isinstance(payload, dict):
+        error = credential_error(payload.get('secret', secret), '设备登录密码', allow_empty=False)
+        if error:
+            log(f'上报设备身份失败：{error}')
+            return 'error'
         if serial_connected is not None:
             payload["serial_connected"] = bool(serial_connected)
         if control_available is not None:
@@ -113,8 +129,8 @@ async def send_cloud_register_runtime(
                 payload["serial_connection_generation"] = max(0, int(serial_connection_generation))
             except (TypeError, ValueError):
                 payload["serial_connection_generation"] = 0
-        previous_secret = str(previous_session_secret or "").strip()
-        current_secret = str(secret or "").strip()
+        previous_secret = str(previous_session_secret or "")
+        current_secret = str(secret or "")
         if previous_secret and not hmac.compare_digest(
             previous_secret.encode("utf-8"), current_secret.encode("utf-8")
         ):
@@ -130,7 +146,7 @@ async def send_cloud_register_runtime(
             log(f"隐身模式：已注册路由IMEI（不公开设备列表，日志继续上传）：{runtime_imei()}", show_main=True)
         return "sent"
     except Exception as exc:
-        log(f"上报设备身份失败：{exc}")
+        log(f"上报设备身份失败：{cloud_connection_error_for_display(exc)}")
         return "error"
 
 
@@ -164,7 +180,7 @@ async def send_cloud_unregister_runtime(
         log(f"已通知云端设备离线：{runtime_imei()}")
         return "sent"
     except Exception as exc:
-        log(f"通知云端设备离线失败：{exc}")
+        log(f"通知云端设备离线失败：{cloud_connection_error_for_display(exc)}")
         return "error"
 
 
@@ -188,7 +204,7 @@ async def send_cloud_session_revoke_runtime(
         await ws.send(serialize_payload(payload))
         return "sent"
     except Exception as exc:
-        log(f"撤销云端设备会话失败：{exc}")
+        log(f"撤销云端设备会话失败：{cloud_connection_error_for_display(exc)}")
         return "error"
 
 
@@ -215,6 +231,9 @@ def send_cloud_serial_command_runtime(
     control_error = cloud_command_control_char_error(raw_command)
     if control_error:
         return False, control_error
+    credential_error = serial_credential_error(raw_command)
+    if credential_error:
+        return False, credential_error
 
     cmd = raw_command.strip()
     if not cmd:
@@ -226,12 +245,15 @@ def send_cloud_serial_command_runtime(
         sensitive_decision,
         allow_sensitive_commands,
     )
+    private_credentials = redact_sim_credentials_for_display(cmd) != cmd
     try:
         display_cmd = _cloud_command_display_text(
             cmd,
             command_meta,
-            reveal_sensitive=sensitive_allowed,
+            reveal_sensitive=sensitive_allowed and not private_credentials,
         )
+        if private_credentials:
+            display_cmd = redact_sim_credentials_for_display(cmd)
         if sensitive_reason and not sensitive_allowed:
             info = cloud_sensitive_command_block_message(sensitive_reason)
             try:
@@ -291,7 +313,7 @@ def send_cloud_serial_command_runtime(
             # leave a stale number that can capture a later incoming call.
             if dial_match and callable(set_current_dial_num):
                 set_current_dial_num("")
-            if sensitive_reason and not sensitive_allowed:
+            if private_credentials:
                 return False, "敏感指令执行失败（指令内容已隐藏，Modem 未确认成功）"
             return False, result.error
 
@@ -346,7 +368,7 @@ def send_cloud_serial_command_runtime(
         log(f"云端指令执行成功：{display_cmd}")
         return True, f"执行成功：{display_cmd}"
     except Exception as exc:
-        if sensitive_reason and not sensitive_allowed:
+        if private_credentials:
             return False, f"敏感指令执行失败（指令内容已隐藏）：{type(exc).__name__}"
         return False, f"执行失败：{exc}"
 
@@ -370,7 +392,7 @@ def _cloud_command_display_text(cmd, command_meta, *, reveal_sensitive=False):
 def cloud_incoming_preview(incoming):
     data = getattr(incoming, "data", None)
     if not isinstance(data, dict):
-        return safe_preview(getattr(incoming, "raw", ""))
+        return "云端消息格式无效（原文已隐藏）"
 
     masked = dict(data)
     sms_log = str(masked.get("sms_log") or "").strip().lower()
@@ -872,19 +894,19 @@ async def handle_cloud_message_runtime(
             set_authorized(auth_status == "authorized")
             set_auth_status_from_ack(data)
         if auth_status == "authorized":
-            log(str(data.get("message") or "服务端已确认设备密码"), show_main=True)
+            log(cloud_auth_message_for_display(data.get("message") or "服务端已确认设备密码"), show_main=True)
             return
 
         if auth_status == "waiting":
             set_cloud_status("🌐 等待授权", "#b26a00")
             log(
-                str(data.get("message") or "设备正在等待网页端绑定"),
+                cloud_auth_message_for_display(data.get("message") or "设备正在等待网页端绑定"),
                 show_main=True,
             )
             return "waiting"
 
         set_cloud_status("🌐 授权失败", "#cc0000")
-        log(str(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
+        log(cloud_auth_message_for_display(data.get("message") or "服务端未授权设备登录，请先在网页端添加正确 IMEI 和控制密码"), show_main=True)
         return "auth_failed"
 
     if (

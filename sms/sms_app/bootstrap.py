@@ -154,6 +154,7 @@ from sms_core.windows_runtime import (
     is_port_locked_by_other,
     release_mutex_handle,
     request_dpi_awareness,
+    show_message_box,
 )
 from sms_ui.serial_debug_namespace_bindings import install_serial_debug_namespace_bindings
 from sms_ui.app_instance_runtime import (
@@ -542,6 +543,15 @@ def _run_startup_guards():
         app_dir=APP_DIR,
         log_error=log_file_only,
     )
+    if not instance_number_mutex:
+        try:
+            show_message_box(
+                "启动失败",
+                "无法取得独立实例编号，程序将退出。请关闭多余实例或稍后重试。",
+                0x10,
+            )
+        finally:
+            raise SystemExit(1)
     registration = register_autostart_instance(
         app_dir=APP_DIR,
         state_path=AUTOSTART_STATE_FILE,

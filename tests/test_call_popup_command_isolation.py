@@ -41,13 +41,14 @@ class FakeSerial:
     def __init__(self):
         self.writes = []
         self.on_write = lambda: None
+        self.on_flush = lambda: None
 
     def write(self, payload):
         self.on_write()
         self.writes.append(payload)
 
     def flush(self):
-        pass
+        self.on_flush()
 
 
 class CallPopupCommandIsolationTests(unittest.TestCase):
@@ -70,6 +71,9 @@ class CallPopupCommandIsolationTests(unittest.TestCase):
             'ring_timeout_target': 123.0,
             'close_call_popup': lambda: close_call_popup_namespace_runtime(self.namespace),
         }
+        self.namespace['SERIAL_COMMAND_RESPONSE_COORDINATOR'] = serial_sender.AtCommandResponseCoordinator()
+        self.serial.on_flush = lambda: self.namespace['SERIAL_COMMAND_RESPONSE_COORDINATOR'].observe_line(
+            'OK', connection=self.serial)
 
     def tearDown(self):
         for thread in self.threads:

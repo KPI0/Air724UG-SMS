@@ -33,11 +33,11 @@ def ensure_tts_worker_runtime(
         set_thread(thread)
 
     try:
+        if stop_event.is_set():
+            return "stopped"
         thread = get_thread()
         if thread is not None and thread.is_alive():
             return "already_running"
-        if stop_event.is_set():
-            return "stopped"
         thread = start_daemon_thread(
             "tts_worker",
             worker_target,
@@ -82,7 +82,11 @@ def generate_alert_voice_runtime(
         text_snapshot = default_text
 
     try:
-        ensure_worker()
+        worker_status = ensure_worker()
+        if worker_status is False or worker_status == "error":
+            return "error"
+        if worker_status == "stopped":
+            return "stopped"
         options = {"force": force, "play_after": play_after}
         if preview:
             options["preview"] = True

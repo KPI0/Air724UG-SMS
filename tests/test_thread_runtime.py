@@ -140,7 +140,8 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(len(logs), 1)
-        self.assertIn("queue closed", logs[0])
+        self.assertEqual(logs[0], "UI task enqueue failed: RuntimeError")
+        self.assertNotIn("queue closed", logs[0])
 
     def test_post_ui_if_running_reports_enqueue_failure_and_runs_skip_callback(self):
         calls = []
@@ -237,7 +238,8 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(processed, 1)
         self.assertEqual(len(logs), 1)
-        self.assertIn("boom", logs[0])
+        self.assertEqual(logs[0], "UI task failed: RuntimeError")
+        self.assertNotIn("boom", logs[0])
         self.assertEqual(task_queue.unfinished_tasks, 0)
 
     def test_schedule_delayed_ui_runtime_schedules_remaining_startup_delay(self):
@@ -293,7 +295,7 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, "done")
         self.assertEqual(calls, ["callback"])
-        self.assertTrue(any("dead tk" in message for message in logs))
+        self.assertEqual(logs, ["Schedule delayed UI callback failed: RuntimeError"])
 
     def test_schedule_delayed_ui_runtime_logs_callback_failure_once(self):
         calls = []
@@ -316,7 +318,7 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(calls, ["callback"])
-        self.assertTrue(any("callback failed" in message for message in logs))
+        self.assertEqual(logs, ["Delayed UI callback failed: RuntimeError"])
 
     def test_schedule_delayed_ui_runtime_logs_scheduled_callback_failure(self):
         calls = []
@@ -340,7 +342,7 @@ class ThreadRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "after-id")
         calls[0][2]()
         self.assertEqual(calls[:2], [("after", 1000, calls[0][2]), "callback"])
-        self.assertTrue(any("scheduled callback failed" in message for message in logs))
+        self.assertEqual(logs, ["Delayed UI callback failed: RuntimeError"])
 
     def test_schedule_delayed_ui_runtime_logs_time_source_failure(self):
         calls = []
@@ -359,7 +361,7 @@ class ThreadRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, "done")
         self.assertEqual(calls, ["callback"])
-        self.assertTrue(any("clock failed" in message for message in logs))
+        self.assertEqual(logs, ["Compute delayed UI schedule failed: RuntimeError"])
 
     def test_ui_messagebox_runtime_dispatches_known_kinds_on_ui_thread(self):
         messagebox = MessageBoxStub()

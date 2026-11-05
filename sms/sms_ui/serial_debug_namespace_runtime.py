@@ -1,5 +1,6 @@
 import queue
 
+from sms_core.serial_debug import redact_sim_credentials_for_display
 from sms_core.call_send_namespace_runtime import send_local_serial_command_namespace_runtime
 from sms_core.call_command_context import set_local_dial_number, set_local_dial_popup
 from sms_core.sms_send_namespace_runtime import send_manual_sms_namespace_runtime
@@ -80,6 +81,7 @@ def open_serial_debug_window_namespace_runtime(
         push_serial_debug=namespace["_push_serial_debug"],
         port_ui=namespace["port_ui"],
         set_status=namespace["set_status"],
+        restore_connected_status=namespace.get("restore_connected_status"),
         format_connected_status=namespace["format_connected_status"],
         get_port=lambda: namespace["PORT"],
         center_window=namespace["center_window"],
@@ -107,7 +109,7 @@ def push_serial_debug_namespace_runtime(namespace, raw_line):
         return None
 
     try:
-        namespace["serial_debug_queue"].put_nowait(raw_line)
+        namespace["serial_debug_queue"].put_nowait(redact_sim_credentials_for_display(raw_line))
         return "queued"
     except queue.Full:
         namespace.__setitem__(

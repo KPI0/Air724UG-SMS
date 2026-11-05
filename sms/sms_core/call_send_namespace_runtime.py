@@ -1,7 +1,9 @@
 """Record only modem-confirmed voice calls sent from the local serial editor."""
 import re
+import inspect
 import time
 import uuid
+from contextlib import contextmanager
 
 from sms_core.cloud_payloads import build_outgoing_call_event_payload
 from sms_core.call_command_context import (
@@ -14,7 +16,9 @@ from sms_core.serial_sender import (
     CALL_TERMINAL_RESPONSE_RE,
     DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
+    SerialCommandResult,
     send_command_async,
+    serial_sms_recovery_error,
     start_registered_serial_worker,
     write_serial_command_confirmed_locked,
 )
@@ -22,6 +26,133 @@ from sms_core.serial_sender import (
 
 VOICE_DIAL_RE = re.compile(r"[ \t]*ATD(\+?[0-9]+);?[ \t]*(?:\r\n|\r|\n)?\Z", re.IGNORECASE)
 VOICE_CONTROL_RE = re.compile(r"[ \t]*AT[AH];?[ \t]*(?:\r\n|\r|\n)?\Z", re.IGNORECASE)
+
+
+def build_auto_call_hangup_callback(
+    namespace, *,
+    start_worker=start_registered_serial_worker,
+    response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
+):
+    """Keep queued rejection and confirmed history bound to their original call."""
+    active_session_id = ""
+    session_token = object()
+    queued_job = None
+    retired_token = None
+    completion_callback = None
+
+    def observe_decision(decision):
+        nonlocal active_session_id, session_token, queued_job, retired_token, completion_callback
+        session_id = str(getattr(decision.state, "call_session_id", "") or "")
+        with call_state_lock(namespace):
+            if session_id != active_session_id:
+                retired_token = (
+                    session_token if not session_id and getattr(decision, "blocked_call_ended", False)
+                    and decision.call_session_id == active_session_id else None
+                )
+                active_session_id = session_id
+                session_token = object()
+                queued_job = None
+                completion_callback = None
+            elif not session_id and (decision.state.ring_timeout_target or decision.state.current_dial_num):
+                retired_token = None
+
+    def send_hangup(*, call_session_id="", on_result=None):
+        nonlocal queued_job, completion_callback
+        serial = namespace.get("serial_obj")
+        generation = namespace.get("serial_connection_generation", 0)
+        with call_state_lock(namespace):
+            token = session_token
+            if not call_session_id or call_session_id != active_session_id:
+                return SerialCommandResult(False, "原来电已结束或已变化")
+            if queued_job is not None:
+                return None
+            job = object()
+            queued_job = job
+            context = capture_call_command_context(namespace, "ATH")
+            if completion_callback is None:
+                completion_callback = on_result
+            notify = completion_callback
+
+        def connection_current():
+            return (
+                namespace.get("serial_obj") is serial
+                and namespace.get("serial_connection_generation", 0) == generation
+                and namespace.get("serial_running", True) is not False
+                and not any(event is not None and event.is_set() for event in (
+                    namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN")))
+            )
+
+        def is_current():
+            return (session_token is token and active_session_id == call_session_id and queued_job is job
+                    and context.is_current() and connection_current())
+
+        def get_serial():
+            with call_state_lock(namespace):
+                return serial if is_current() else None
+
+        @contextmanager
+        def write_guard():
+            with call_state_lock(namespace):
+                yield is_current()
+
+        def worker():
+            try:
+                result = write_serial_command_confirmed_locked(
+                    namespace["serial_lock"], get_serial, "ATH",
+                    response_coordinator=namespace.get(
+                        "SERIAL_COMMAND_RESPONSE_COORDINATOR", DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR),
+                    response_timeout=response_timeout, write_guard=write_guard, isolate_unconfirmed=True,
+                )
+            except Exception:
+                result = SerialCommandResult(False, "自动拒接指令未完成")
+
+            def can_deliver():
+                return is_current() or (result.ok and retired_token is token and connection_current())
+
+            def deliver():
+                with call_state_lock(namespace):
+                    if can_deliver() and notify is not None:
+                        notify(result)
+
+            with call_state_lock(namespace):
+                if not can_deliver():
+                    return
+            post = namespace.get("run_on_ui_thread")
+            if callable(post):
+                post(deliver, namespace.get("ui_post"))
+            else:
+                deliver()
+
+        try:
+            start_worker(
+                "serial_auto_call_rejection", worker, log_error=namespace.get("log_file_only"),
+                thread_registry=namespace.get(
+                    "SERIAL_COMMAND_THREAD_REGISTRY", DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY),
+            )
+        except Exception:
+            with call_state_lock(namespace):
+                if queued_job is job:
+                    queued_job = None
+                if (session_token is not token or active_session_id != call_session_id
+                        or not context.is_current() or not connection_current()):
+                    return None
+            return SerialCommandResult(False, "自动拒接任务未能启动")
+        return None
+
+    send_hangup.observe_decision = observe_decision
+    return send_hangup
+
+
+def _safe_local_voice_debug(push_debug):
+    if push_debug is None:
+        return None
+
+    def write(message):
+        if isinstance(message, str) and message.startswith(">>> 发送失败:"):
+            message = ">>> 发送失败: 通话指令未完成，请检查串口状态"
+        push_debug(message)
+
+    return write
 
 
 def _send_local_call_control(namespace, command, append_crlf, start_worker, response_timeout,
@@ -48,11 +179,31 @@ def _send_local_call_control(namespace, command, append_crlf, start_worker, resp
         if request is not None and request.serial_context is not None:
             serial, generation = request.serial_context
 
+    def connection_current():
+        try:
+            return (namespace.get("serial_obj") is serial
+                    and namespace.get("serial_connection_generation", 0) == generation
+                    and namespace.get("serial_running", True) is not False
+                    and not namespace.get("is_exiting", False)
+                    and serial is not None and serial.is_open
+                    and not any(event is not None and event.is_set() for event in (
+                        namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN"))))
+        except Exception:
+            return False
+
     def deliver(ok, result_context):
         if on_result is None:
             return
+        status_token = namespace.get("_status_ui_token")
         def complete():
-            on_result(ok, result_context.is_current())
+            current = result_context.is_current()
+            try:
+                inspect.signature(on_result).bind(
+                    ok, current, serial_context=(serial, generation), status_token=status_token,
+                )
+            except (TypeError, ValueError):
+                return on_result(ok, current)
+            return on_result(ok, current, serial_context=(serial, generation), status_token=status_token)
         post = namespace.get("run_on_ui_thread")
         if callable(post):
             post(complete, namespace.get("ui_post"))
@@ -98,19 +249,26 @@ def _send_local_call_control(namespace, command, append_crlf, start_worker, resp
                 response_coordinator=namespace.get(
                     "SERIAL_COMMAND_RESPONSE_COORDINATOR", DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR),
                 append_crlf=append_crlf, response_timeout=response_timeout,
-                push_debug=namespace["_push_serial_debug"],
+                push_debug=_safe_local_voice_debug(namespace["_push_serial_debug"]),
                 write_guard=context.write_guard, before_write=context.before_write,
+                isolate_unconfirmed=True,
             )
             with call_state_lock(namespace):
                 result_context = context
-                if result.ok and context.is_current() and context.command.upper().rstrip(";") == "ATH":
+                if (result.ok and context.is_current() and connection_current()
+                        and context.command.upper().rstrip(";") == "ATH"):
                     if request is not None and namespace.get("_dial_state_generation") is request:
                         request.finished = True
                     namespace["current_dial_num"] = ""
                     invalidate_call_commands(namespace)
                     result_context = capture_call_command_context(namespace, command)
             if not result.ok:
-                namespace["port_ui"]("通话指令未完成，通话或串口可能已变化，请检查当前状态", "normal")
+                message = (
+                    "通话指令结果未获确认，已暂停此串口发送，请重启设备后重新连接"
+                    if serial_sms_recovery_error(serial)
+                    else "通话指令未完成，通话或串口可能已变化，请检查当前状态"
+                )
+                namespace["port_ui"](message, "normal")
             deliver(result.ok, result_context)
         except Exception:
             namespace["port_ui"]("通话指令执行异常，请检查串口状态", "normal")
@@ -229,9 +387,11 @@ def send_local_serial_command_namespace_runtime(
                     "SERIAL_COMMAND_RESPONSE_COORDINATOR", DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
                 ),
                 append_crlf=append_crlf, response_timeout=response_timeout,
-                push_debug=namespace["_push_serial_debug"], on_modem_response=replies.append,
+                push_debug=_safe_local_voice_debug(namespace["_push_serial_debug"]),
+                on_modem_response=replies.append,
                 write_guard=call_context.write_guard,
                 before_write=call_context.before_write,
+                isolate_unconfirmed=True,
             )
             call_context.finish(result.ok)
             if not result.ok:
@@ -249,7 +409,9 @@ def send_local_serial_command_namespace_runtime(
         ))
         if not confirmed:
             message = (
-                "串口连接或设备身份已变化，已取消旧拨号"
+                "拨号结果未获确认，已暂停此串口发送，请重启设备后重新连接；未生成呼出记录"
+                if serial_sms_recovery_error(serial)
+                else "串口连接或设备身份已变化，已取消旧拨号"
                 if context_changed else "拨号未获 Modem 确认，未生成呼出记录"
             )
             if not result.ok:

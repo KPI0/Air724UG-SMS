@@ -123,7 +123,7 @@ class CloudRuntimeTests(unittest.TestCase):
                 self.assertIn("端口和路径格式正确", result.warning_message)
 
     def test_validate_cloud_start_requires_secret(self):
-        result = validate_cloud_start(True, "ws://127.0.0.1:8765", " ")
+        result = validate_cloud_start(True, "ws://127.0.0.1:8765", "")
 
         self.assertFalse(result.ok)
         self.assertEqual(result.url, "ws://127.0.0.1:8765/ws/device")
@@ -185,7 +185,7 @@ class CloudRuntimeTests(unittest.TestCase):
             "enabled": "1",
             "url": "ws://127.0.0.1:8765",
             "device_imei": "old",
-            "device_secret": " secret ",
+            "device_secret": "secret",
             "reconnect_interval": "0",
             "auto_upload": "1",
         }
@@ -204,7 +204,7 @@ class CloudRuntimeTests(unittest.TestCase):
             enabled=False,
             url="wss://example.com",
             reconnect_interval="bad",
-            device_secret=" next ",
+            device_secret="next",
             auto_upload=False,
         )
         self.assertEqual(updated.url, "wss://example.com/ws/device")

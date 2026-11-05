@@ -64,6 +64,73 @@ class FakeWs:
 
 
 class CloudMessageRuntimeTests(unittest.TestCase):
+    def test_login_unregister_and_revoke_errors_hide_transport_echo(self):
+        class FailingWebSocket:
+            async def send(self, _payload):
+                raise RuntimeError("synthetic-login-private-value")
+
+        ws, logs = FailingWebSocket(), []
+        dependencies = {
+            "build_payload": lambda *_args: {"secret": "synthetic-login-private-value"},
+            "timestamp": lambda: 1, "identity_payload": lambda: {"imei": "000000000000001"},
+            "secret": "synthetic-login-private-value", "serial_port": "SYNTHETIC",
+            "serial_baud": 115200, "serial_mode": "Manual",
+            "runtime_imei": lambda: "000000000000001",
+            "log": lambda message, **_kwargs: logs.append(message),
+        }
+        registered = run(send_cloud_register_runtime(ws, auto_upload=False, **dependencies))
+        unregistered = run(send_cloud_unregister_runtime(ws, reason="hidden", **dependencies))
+        revoked = run(send_cloud_session_revoke_runtime(
+            ws, build_payload=dependencies["build_payload"], timestamp=dependencies["timestamp"],
+            identity_payload=dependencies["identity_payload"], log=dependencies["log"],
+        ))
+
+        self.assertEqual((registered, unregistered, revoked), ("error", "error", "error"))
+        self.assertEqual(len(logs), 3)
+        self.assertTrue(all("RuntimeError" in message for message in logs))
+        self.assertFalse(any("synthetic-login-private-value" in message for message in logs))
+
+    def test_allowed_sim_credentials_are_private_in_success_logs_debug_and_reply(self):
+        commands = (
+            'AT+CPIN="11223344"', 'AT+CPIN2="11223344"',
+            'AT+CPIN="11223344","55667788"', 'AT+CLCK="SC",1,"11223344"',
+            'AT+CPWD="SC","11223344","55667788"',
+            'ATD**04*11223344*55667788*55667788#', 'ATD**05*11223344*55667788*55667788#',
+        )
+        for command in commands:
+            with self.subTest(command_kind=command.split('=')[0].split('*')[0]):
+                writes, logs, debug = [], [], []
+                ok, info = send_cloud_serial_command_runtime(
+                    command, serial_lock=DummyLock(), get_serial=lambda: object(),
+                    write_command_result=lambda _serial, raw: writes.append(raw) or SimpleResult(True),
+                    push_serial_debug=debug.append, log=lambda message, **_kwargs: logs.append(message),
+                    allow_sensitive_commands={'pin': True, 'puk': True},
+                )
+                self.assertTrue(ok)
+                self.assertEqual(writes, [command])
+                self.assertTrue(logs)
+                self.assertTrue(debug)
+                for output in (*logs, *debug, info):
+                    self.assertNotIn('11223344', output)
+                    self.assertNotIn('55667788', output)
+
+    def test_allowed_sim_credential_failure_and_exception_hide_untrusted_error(self):
+        command = 'AT+CPIN="11223344"'
+        for raises in (False, True):
+            with self.subTest(raises=raises):
+                def write_result(_serial, raw):
+                    if raises:
+                        raise OSError('synthetic error includes ' + raw)
+                    return SimpleResult(False, 'synthetic error includes ' + raw)
+                ok, info = send_cloud_serial_command_runtime(
+                    command, serial_lock=DummyLock(), get_serial=lambda: object(),
+                    write_command_result=write_result, push_serial_debug=lambda _message: None,
+                    log=lambda *_args, **_kwargs: None, allow_sensitive_commands={'pin': True},
+                )
+                self.assertFalse(ok)
+                self.assertNotIn('11223344', info)
+                self.assertIn('隐藏', info)
+
     def test_device_call_state_marks_matching_incoming_popup(self):
         calls = []
 
@@ -545,6 +612,71 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         self.assertFalse(any("device-secret" in item for item in receive_logs))
         self.assertTrue(any("已隐藏" in item for item in receive_logs))
 
+    def test_invalid_cloud_message_hides_entire_raw_before_protocol_rejection(self):
+        messages = (
+            '{"password":"synthetic-first synthetic-secret-tail",',
+            '{"token":"synthetic-first\\"synthetic-secret-tail",',
+            '{"cmd":"AT+CPIN=\\"11223344\\"",',
+            '{"cmd":"ATD**05*11223344*55667788*55667788#",',
+            json.dumps('AT+CPIN="11223344"'),
+            json.dumps([{"password": "synthetic-secret-tail"}]),
+            "null",
+        )
+        for message in messages:
+            for authorized in (False, True):
+                with self.subTest(top_level=message[:10], authorized=authorized):
+                    state, calls, replies, replay_checks = run(self._handle(
+                        message, authorized=authorized,
+                    ))
+                    self.assertEqual(state["authorized"], authorized)
+                    self.assertEqual(replay_checks, [])
+                    self.assertFalse(any(item[0] == "send" for item in calls))
+                    self.assertEqual(len(replies), 1)
+                    self.assertEqual(replies[0]["type"], "error")
+                    self.assertIs(replies[0]["ok"], False)
+                    receive_logs = [item[1][0] for item in calls if item[0] == "log"]
+                    self.assertEqual(receive_logs, ["收到：云端消息格式无效（原文已隐藏）"])
+                    for output in (*receive_logs, json.dumps(replies)):
+                        self.assertNotIn("synthetic-secret-tail", output)
+                        self.assertNotIn("11223344", output)
+                        self.assertNotIn("55667788", output)
+
+    def test_invalid_cloud_message_does_not_block_next_authorized_at(self):
+        async def scenario():
+            replies, logs, writes, replay_checks = [], [], [], []
+
+            async def reply(payload):
+                replies.append(payload)
+
+            async def check_replay(data, mark_seen=True):
+                replay_checks.append(mark_seen)
+                return True
+
+            async def send(command, command_data=None):
+                writes.append(command)
+                return True, "synthetic AT accepted"
+
+            dependencies = dict(
+                is_authorized=lambda: True, set_authorized=lambda value: self.fail("Unexpected authorization change"),
+                reply=reply, log=lambda message, **kwargs: logs.append(message),
+                set_auth_status_from_ack=lambda value: None, set_cloud_status=lambda *args: None,
+                check_replay_window=check_replay, auth_matches=lambda data: True,
+                time_text=lambda: "now", timestamp=lambda: 123, status_payload=lambda: {},
+                send_serial_command=send, show_window=lambda: None, hide_window=lambda: None,
+            )
+            await handle_cloud_message_runtime('{"password":"synthetic-secret-tail",', **dependencies)
+            self.assertEqual(writes, [])
+            self.assertEqual(replay_checks, [])
+            await handle_cloud_message_runtime(json.dumps({"cmd": "ATI", "secret": "synthetic-secret-tail"}), **dependencies)
+            self.assertEqual(writes, ["ATI"])
+            self.assertEqual(replay_checks, [False, True])
+            self.assertEqual([item["type"] for item in replies], ["error", "command_task_status", "send_at_result"])
+            self.assertIs(replies[-1]["ok"], True)
+            self.assertTrue(any("ATI" in value for value in logs))
+            self.assertFalse(any("synthetic-secret-tail" in value for value in logs))
+
+        run(scenario())
+
     def test_handle_cloud_message_hides_sms_summary_metadata_in_receive_log(self):
         phone = "+8613123123123"
         message = "验证码 1234"
@@ -939,7 +1071,7 @@ class CloudMessageRuntimeTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, "error")
-        self.assertIn("send failed", calls[0])
+        self.assertIn("上报设备身份失败：RuntimeError", calls[0])
 
     def test_send_cloud_unregister_runtime_sends_payload(self):
         calls = []

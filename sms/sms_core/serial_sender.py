@@ -4,7 +4,8 @@ import re
 import threading
 import time
 
-from sms_core.serial_debug import build_serial_command_payload
+from sms_core.serial_debug import build_serial_command_payload, redact_sim_credentials_for_display
+from sms_core.credential_policy import CredentialValidationError, serial_credential_error
 from sms_core.call_command_context import VOICE_DIAL_RE
 from sms_core.phone_numbers import normalize_sms_destination
 from sms_core.sms_pdu import encode_text_sms_pdus
@@ -61,16 +62,27 @@ DEFAULT_SERIAL_WRITE_LOCK = threading.RLock()
 _OTA_RESERVATIONS = {}
 
 
-def reserve_serial_for_ota(serial_obj, owner, *, seconds=150):
+def reserve_serial_for_ota(serial_obj, owner, *, seconds=150, wait_timeout=0, before_reserve=None):
     with DEFAULT_SERIAL_WRITE_LOCK:
+        if serial_initialization_pending(serial_obj) or serial_sms_recovery_error(serial_obj):
+            return False
         previous = _OTA_RESERVATIONS.get(id(serial_obj))
-        if previous and previous[1] is owner and previous[2] > time.monotonic():
+        if previous and previous[2] > time.monotonic():
+            if previous[1] is not owner:
+                return False
             _OTA_RESERVATIONS[id(serial_obj)] = (serial_obj, owner, time.monotonic() + seconds)
             return _is_serial_open(serial_obj)
-    if not DEFAULT_SERIAL_TRANSACTION_LOCK.acquire(blocking=False):
+    acquired = (DEFAULT_SERIAL_TRANSACTION_LOCK.acquire(timeout=wait_timeout)
+                if wait_timeout > 0 else DEFAULT_SERIAL_TRANSACTION_LOCK.acquire(blocking=False))
+    if not acquired:
         return False
     try:
+        # Context checks can take serial_lock; keep their original lock order.
+        if before_reserve is not None:
+            before_reserve()
         with DEFAULT_SERIAL_WRITE_LOCK:
+            if serial_initialization_pending(serial_obj) or serial_sms_recovery_error(serial_obj):
+                return False
             now = time.monotonic()
             for key, (_, _, expiry) in list(_OTA_RESERVATIONS.items()):
                 if expiry <= now:
@@ -456,9 +468,15 @@ def _response_has_final_ok(upper_body):
 def _sms_send_error(message, push_debug=None, port_ui=None):
     error = str(message or "短信发送失败")
     if push_debug:
-        push_debug(f">>> 发送失败: {error}")
+        try:
+            push_debug(f">>> 发送失败: {error}")
+        except Exception:
+            pass
     if port_ui:
-        port_ui(f"❌ 发送短信失败：{error}", "normal")
+        try:
+            port_ui(f"❌ 发送短信失败：{error}", "normal")
+        except Exception:
+            pass
     return False
 
 
@@ -557,12 +575,26 @@ def _write_sms_pdu_after_prompt(waiter, writer):
 def _write_serial_obj_bytes(
     serial_obj, payload, debug_message=None, push_debug=None, *,
     write_guard=None, before_write=None, after_write=None, sms_waiter=None, flush_output=True,
+    initialization_owner=None,
 ):
+    command_text = payload.decode("utf-8", "replace")
+    private_credentials = redact_sim_credentials_for_display(command_text) != command_text
     # Validate after every sender lock has been acquired, and keep the caller's
     # context locked through the write so a queued action cannot change calls.
     with DEFAULT_SERIAL_WRITE_LOCK, (write_guard() if write_guard else nullcontext(True)) as allowed:
         if not allowed:
             return SerialCommandResult(False, "指令所属状态已变化，已取消发送")
+        initialization = getattr(serial_obj, "_serial_initialization_session", None)
+        if serial_initialization_pending(serial_obj) and initialization_owner is not initialization:
+            error = "串口初始化尚未完成，指令未提交，请稍后再试"
+            if push_debug:
+                push_debug(f">>> 发送失败: {error}")
+            return SerialCommandResult(False, error)
+        credential_error = serial_credential_error(command_text)
+        if credential_error:
+            if push_debug:
+                push_debug(f'>>> 发送失败: {credential_error}')
+            return SerialCommandResult(False, credential_error)
         recovery_error = serial_sms_recovery_error(serial_obj)
         if recovery_error:
             if push_debug:
@@ -599,19 +631,30 @@ def _write_serial_obj_bytes(
             if flush_output:
                 serial_obj.flush()
         except Exception as exc:
-            error = str(exc) or exc.__class__.__name__
+            error = (f"SIM 凭据指令执行失败（内容已隐藏）：{type(exc).__name__}"
+                     if private_credentials else str(exc) or exc.__class__.__name__)
             if push_debug:
                 push_debug(f">>> 发送失败: {error}")
             return SerialCommandResult(False, error)
 
     if debug_message and push_debug:
-        push_debug(debug_message)
+        push_debug(redact_sim_credentials_for_display(debug_message))
     return SerialCommandResult(True)
+
+
+def serial_initialization_pending(serial_obj):
+    session = getattr(serial_obj, "_serial_initialization_session", None)
+    return getattr(session, "pending", False) is True
 
 
 def serial_sms_recovery_error(serial_obj):
     error = getattr(serial_obj, "_sms_recovery_error", "")
-    return error if isinstance(error, str) else ""
+    if isinstance(error, str) and error:
+        return error
+    session = getattr(serial_obj, "_serial_initialization_session", None)
+    if getattr(session, "quarantined", False) is True:
+        return "串口初始化结果未获确认，已暂停此串口发送，请重启设备后重新连接"
+    return ""
 
 
 def _isolate_sms_serial(serial_obj):
@@ -673,7 +716,7 @@ def _send_sms_segment(
             if result.ok:
                 result = _wait_sms_segment_response(waiter, segment_timeout)
         except Exception as exc:
-            result = SerialCommandResult(False, str(exc) or exc.__class__.__name__)
+            result = SerialCommandResult(False, f"短信事务执行异常：{type(exc).__name__}")
         if result.ok:
             return result
 
@@ -711,7 +754,10 @@ def _send_sms_segment(
 
 def write_serial_command_result(serial_obj, command, append_crlf=True, push_debug=None, *, write_guard=None):
     with DEFAULT_SERIAL_TRANSACTION_LOCK:
-        command_bytes, display_suffix = build_serial_command_payload(command, append_crlf)
+        try:
+            command_bytes, display_suffix = build_serial_command_payload(command, append_crlf)
+        except CredentialValidationError as exc:
+            return SerialCommandResult(False, str(exc))
         return _write_serial_obj_bytes(
             serial_obj,
             command_bytes,
@@ -733,9 +779,13 @@ def write_serial_command(serial_obj, command, append_crlf=True, push_debug=None)
 def write_serial_command_sequence(serial_obj, commands, push_debug=None, delay_sec=0.3, sleep_func=time.sleep):
     with DEFAULT_SERIAL_TRANSACTION_LOCK:
         for index, command in enumerate(commands):
+            try:
+                payload, _ = build_serial_command_payload(command)
+            except CredentialValidationError:
+                return False
             result = _write_serial_obj_bytes(
                 serial_obj,
-                (command + "\r\n").encode("utf-8"),
+                payload,
                 f">>> 发送: {command}\\r\\n",
                 push_debug,
             )
@@ -816,11 +866,7 @@ def write_text_sms_pdu(
                     sleep_func(1.5)
         return True
     except Exception as exc:
-        if push_debug:
-            push_debug(f">>> 发送失败: {exc}")
-        if port_ui:
-            port_ui(f"❌ 发送短信失败：{exc}", "normal")
-        return False
+        return _sms_send_error(f"短信发送异常：{type(exc).__name__}", push_debug, port_ui)
 
 
 def _serial_available_locked(serial_lock, get_serial, push_debug=None, port_ui=None):
@@ -850,6 +896,7 @@ def _write_bytes_locked(
     call_write_guard=None,
     sms_waiter=None,
     flush_output=True,
+    initialization_owner=None,
 ):
     with serial_lock:
         serial_obj = get_serial()
@@ -881,6 +928,7 @@ def _write_bytes_locked(
             after_write=after_write,
             sms_waiter=sms_waiter,
             flush_output=flush_output,
+            initialization_owner=initialization_owner,
         )
 
 
@@ -902,10 +950,14 @@ def write_serial_command_sequence_locked(
             return False
 
         for index, command in enumerate(commands):
+            try:
+                payload, _ = build_serial_command_payload(command)
+            except CredentialValidationError:
+                return False
             result = _write_bytes_locked(
                 serial_lock,
                 get_serial,
-                (command + "\r\n").encode("utf-8"),
+                payload,
                 f">>> 发送: {command}\\r\\n",
                 push_debug,
                 expected_serial=transaction_serial,
@@ -930,9 +982,15 @@ def _write_confirmed_command_locked(
     on_modem_response=None,
     write_guard=None,
     before_write=None,
+    isolate_unconfirmed=False,
+    unconfirmed_error=None,
 ):
     if response_coordinator is None:
         return SerialCommandResult(False, "未配置 AT 指令响应确认器")
+    try:
+        payload, display_suffix = build_serial_command_payload(command, append_crlf)
+    except CredentialValidationError as exc:
+        return SerialCommandResult(False, str(exc))
     try:
         waiter = response_coordinator.begin(
             command=command,
@@ -941,25 +999,60 @@ def _write_confirmed_command_locked(
     except Exception as exc:
         return SerialCommandResult(False, str(exc) or exc.__class__.__name__)
 
+    attempted = False
+
+    def finish_response(response):
+        if isolate_unconfirmed and attempted and not str(getattr(response, "line", "") or ""):
+            recovery_error = unconfirmed_error or "通话指令结果未获确认，已暂停此串口发送，请重启设备后重新连接"
+            # The original transaction lock is still held. Keep reads alive,
+            # and prevent a late terminal from reaching another command.
+            with serial_lock, DEFAULT_SERIAL_WRITE_LOCK:
+                transaction_serial._sms_recovery_error = recovery_error
+            result = SerialCommandResult(False, (str(response.error or "") + "；" + recovery_error).lstrip("；"))
+        else:
+            result = SerialCommandResult(bool(response.ok), str(response.error or ""))
+        if on_modem_response is not None:
+            on_modem_response(response)
+        return result
+
     try:
         def mark_write_started():
+            nonlocal attempted
             marker = getattr(waiter, "mark_write_started", None)
             if callable(marker) and marker() is False:
                 return False
-            return before_write() if before_write is not None else True
+            if before_write is not None and before_write() is False:
+                return False
+            attempted = True
+            return True
 
-        payload, display_suffix = build_serial_command_payload(command, append_crlf)
-        result = _write_bytes_locked(
-            serial_lock,
-            get_serial,
-            payload,
-            f">>> 发送: {command}{display_suffix}" if push_debug else None,
-            push_debug,
-            expected_serial=transaction_serial,
-            before_write=mark_write_started,
-            call_write_guard=write_guard,
-        )
+        try:
+            result = _write_bytes_locked(
+                serial_lock,
+                get_serial,
+                payload,
+                f">>> 发送: {command}{display_suffix}" if push_debug else None,
+                push_debug,
+                expected_serial=transaction_serial,
+                before_write=mark_write_started,
+                call_write_guard=write_guard,
+            )
+        except Exception as exc:
+            result = SerialCommandResult(False, f"AT 指令执行异常：{type(exc).__name__}")
         if not result.ok:
+            if attempted:
+                try:
+                    response = waiter.wait(0)
+                except Exception:
+                    response = AtCommandResponse(False, result.error)
+                if str(getattr(response, "line", "") or ""):
+                    return finish_response(response)
+            if isolate_unconfirmed and attempted:
+                try:
+                    waiter.cancel(result.error)
+                except Exception:
+                    pass
+                return finish_response(AtCommandResponse(False, result.error))
             try:
                 waiter.cancel(result.error)
             except Exception:
@@ -968,10 +1061,8 @@ def _write_confirmed_command_locked(
         try:
             response = waiter.wait(response_timeout)
         except Exception as exc:
-            response = AtCommandResponse(False, str(exc) or exc.__class__.__name__)
-        if on_modem_response is not None:
-            on_modem_response(response)
-        return SerialCommandResult(bool(response.ok), str(response.error or ""))
+            response = AtCommandResponse(False, f"AT 回执等待异常：{type(exc).__name__}")
+        return finish_response(response)
     finally:
         response_coordinator.finish(waiter)
 
@@ -988,6 +1079,8 @@ def write_serial_command_confirmed_locked(
     on_modem_response=None,
     write_guard=None,
     before_write=None,
+    isolate_unconfirmed=False,
+    unconfirmed_error=None,
 ):
     """Confirm one command while preserving the serial editor's exact bytes."""
     with DEFAULT_SERIAL_TRANSACTION_LOCK:
@@ -1000,6 +1093,8 @@ def write_serial_command_confirmed_locked(
             response_coordinator, response_timeout, push_debug,
             append_crlf=append_crlf, on_modem_response=on_modem_response,
             write_guard=write_guard, before_write=before_write,
+            isolate_unconfirmed=isolate_unconfirmed,
+            unconfirmed_error=unconfirmed_error,
         )
 
 
@@ -1159,11 +1254,7 @@ def write_text_sms_pdu_locked(
                     sleep_func(1.5)
         return True
     except Exception as exc:
-        if push_debug:
-            push_debug(f">>> 发送失败: {exc}")
-        if port_ui:
-            port_ui(f"❌ 发送短信失败：{exc}", "normal")
-        return False
+        return _sms_send_error(f"短信发送异常：{type(exc).__name__}", push_debug, port_ui)
 
 
 def _run_with_serial(serial_lock, get_serial, worker):
@@ -1172,8 +1263,17 @@ def _run_with_serial(serial_lock, get_serial, worker):
     worker(serial_obj)
 
 
-def _run_serial_command_with_result(serial_lock, get_serial, command, append_crlf, push_debug, on_result, write_guard=None):
-    if write_guard is not None:
+def _run_serial_command_with_result(serial_lock, get_serial, command, append_crlf, push_debug, on_result,
+                                    write_guard=None, response_coordinator=None,
+                                    response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT):
+    if response_coordinator is not None:
+        result = write_serial_command_confirmed_locked(
+            serial_lock, get_serial, command, append_crlf=append_crlf,
+            push_debug=push_debug, write_guard=write_guard,
+            response_coordinator=response_coordinator, response_timeout=response_timeout,
+            isolate_unconfirmed=True,
+        )
+    elif write_guard is not None:
         # Match the transaction -> connection -> write order used by SMS and
         # confirmed commands. Do not release the connection before writing.
         with DEFAULT_SERIAL_TRANSACTION_LOCK, serial_lock:
@@ -1264,6 +1364,8 @@ def send_command_with_result_async(
     thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
     *,
     write_guard=None,
+    response_coordinator=None,
+    response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
 ):
     return start_registered_serial_worker(
         "serial_send_command_with_result",
@@ -1275,6 +1377,8 @@ def send_command_with_result_async(
             push_debug,
             on_result,
             write_guard,
+            response_coordinator,
+            response_timeout,
         ),
         log_error=log_error,
         thread_registry=thread_registry,

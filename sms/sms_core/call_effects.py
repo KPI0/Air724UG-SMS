@@ -15,6 +15,18 @@ def enqueue_call_push(enqueue_push, message, variables):
         return enqueue_push(message, event_type="call")
 
 
+def _publish_call_event(decision, caller, enqueue_push, send_cloud_call_event):
+    enqueue_call_push(enqueue_push, decision.push_message,
+                      {"caller": caller, "from": caller, "phone": caller})
+    try:
+        event_kwargs = {"blocked": bool(decision.blocked_number), "block_reason": decision.block_reason}
+        if getattr(decision, "call_session_id", ""):
+            event_kwargs["call_session_id"] = decision.call_session_id
+        send_cloud_call_event(caller, decision.push_message, **event_kwargs)
+    except Exception:
+        pass
+
+
 def _send_call_state(send_cloud_call_state, phone, phase, reason, direction, call_session_id=""):
     """Send a transient call state while keeping legacy callback compatibility."""
     kwargs = {"direction": direction}
@@ -53,12 +65,16 @@ def apply_ring_timeout_expired(
     close_call_popup,
     finish_incoming_call=lambda: None,
     show_missed_call_popup=lambda _missed_call: None,
+    restore_connected_status=None,
 ):
     port_ui("📞 呼叫已取消或未接听", "normal")
-    set_status(format_connected_status(current_port), "green")
+    if restore_connected_status is None:
+        set_status(format_connected_status(current_port), "green")
     missed_call = finish_incoming_call()
     close_call_popup()
     _show_missed_call(missed_call, port_ui, show_missed_call_popup)
+    if restore_connected_status is not None:
+        restore_connected_status(current_port)
 
 
 def apply_call_answer_result(
@@ -119,7 +135,29 @@ def apply_call_decision(
     send_cloud_call_event=lambda *_args, **_kwargs: None,
     send_cloud_call_state=lambda *_args, **_kwargs: None,
     finish_dial_call=lambda _message="": None,
+    restore_connected_status=None,
 ):
+    observe_decision = getattr(send_hangup, "observe_decision", None)
+    if callable(observe_decision):
+        observe_decision(decision)
+        if decision.stop_processing:
+            def report_rejection(result):
+                if not decision.blocked_number:
+                    return
+                if not result.ok:
+                    port_ui("🚫 自动拒接未完成，请检查当前来电和串口状态", "warning")
+                    return
+                if decision.push_message:
+                    _publish_call_event(decision, decision.blocked_number, enqueue_push, send_cloud_call_event)
+                port_ui(
+                    f"🚫 防骚扰拦截：拒接 {decision.blocked_number} ({decision.block_reason})", "warning",
+                )
+
+            result = send_hangup(call_session_id=decision.call_session_id, on_result=report_rejection)
+            if result is not None:
+                report_rejection(result)
+            return CallEffectResult(stop_processing=True)
+
     incoming_started = True
     incoming_replaced = False
     replaced_missed_call = None
@@ -135,25 +173,7 @@ def apply_call_decision(
 
     if decision.push_message and (not decision.incoming_number or incoming_started):
         caller = decision.incoming_number or decision.blocked_number or decision.show_popup_number
-        enqueue_call_push(
-            enqueue_push,
-            decision.push_message,
-            {
-                "caller": caller,
-                "from": caller,
-                "phone": caller,
-            },
-        )
-        try:
-            event_kwargs = {
-                "blocked": bool(decision.blocked_number),
-                "block_reason": decision.block_reason,
-            }
-            if getattr(decision, "call_session_id", ""):
-                event_kwargs["call_session_id"] = decision.call_session_id
-            send_cloud_call_event(caller, decision.push_message, **event_kwargs)
-        except Exception:
-            pass
+        _publish_call_event(decision, caller, enqueue_push, send_cloud_call_event)
 
     if decision.blocked_number:
         port_ui(
@@ -190,17 +210,31 @@ def apply_call_decision(
         end_message = getattr(decision, "end_message", "") or "📞 语音通话已结束"
         if decision.hangup_notify:
             port_ui(end_message, "normal")
-        set_status(format_connected_status(current_port), "green")
+        if restore_connected_status is None:
+            set_status(format_connected_status(current_port), "green")
         if getattr(decision, "outgoing_call_ended", False):
             finish_dial_call(end_message)
         else:
             missed_call = finish_incoming_call()
             close_call_popup()
             _show_missed_call(missed_call, port_ui, show_missed_call_popup)
+        if restore_connected_status is not None:
+            restore_connected_status(current_port)
 
     if decision.connected_number:
         port_ui(f"📞 对方已接听：{decision.connected_number}", "normal")
         set_status(f"📞 通话中：{decision.connected_number}", "blue")
+
+    outgoing_phase = getattr(decision, "outgoing_call_phase", "")
+    outgoing_number = getattr(decision, "outgoing_call_number", "")
+    if not outgoing_phase and decision.connected_number:
+        outgoing_phase, outgoing_number = "connected", decision.connected_number
+    if outgoing_phase and outgoing_number:
+        try:
+            _send_call_state(send_cloud_call_state, outgoing_number, outgoing_phase, "", "outgoing",
+                             getattr(decision, "call_session_id", ""))
+        except Exception:
+            pass
 
     if decision.incoming_connected_number:
         port_ui(f"📞 对方已接听：{decision.incoming_connected_number}", "normal")

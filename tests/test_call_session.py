@@ -1,10 +1,51 @@
 import unittest
 from datetime import datetime
 
-from sms_core.call_session import IncomingCallSessionTracker
+from sms_core.call_session import IncomingCallSessionSnapshot, IncomingCallSessionTracker
 
 
 class IncomingCallSessionTrackerTests(unittest.TestCase):
+    def test_confirmed_handling_is_separate_from_attempt_and_preserves_missed_semantics(self):
+        tracker = IncomingCallSessionTracker()
+        self.assertFalse(IncomingCallSessionSnapshot("caller", None, True, object()).confirmed_handled)
+        self.assertFalse(tracker.confirm_handled(None))
+        tracker.start("10086")
+        token = tracker.snapshot().session_token
+        self.assertTrue(tracker.mark_handled())
+        self.assertFalse(tracker.snapshot().confirmed_handled)
+        self.assertTrue(tracker.confirm_handled(token))
+        self.assertTrue(tracker.snapshot().confirmed_handled)
+        self.assertTrue(tracker.snapshot().handled)
+        self.assertIsNone(tracker.finish())
+        self.assertFalse(tracker.snapshot().confirmed_handled)
+
+    def test_confirmation_requires_token_identity_and_does_not_cross_call_replacement(self):
+        class EqualToken:
+            def __eq__(self, _other):
+                return True
+
+        tracker = IncomingCallSessionTracker()
+        tracker.start("10086")
+        first = tracker.snapshot().session_token
+        self.assertFalse(tracker.confirm_handled(EqualToken()))
+        self.assertFalse(tracker.snapshot().confirmed_handled)
+        self.assertTrue(tracker.confirm_handled(first))
+        tracker.start("10010")
+        self.assertFalse(tracker.snapshot().confirmed_handled)
+        self.assertFalse(tracker.confirm_handled(first))
+        second = tracker.snapshot().session_token
+        tracker.confirm_handled(second)
+        tracker.reset()
+        self.assertFalse(tracker.snapshot().confirmed_handled)
+        self.assertFalse(tracker.confirm_handled(second))
+
+    def test_confirmation_before_ui_marking_prevents_spurious_missed_call(self):
+        tracker = IncomingCallSessionTracker()
+        tracker.start("10086")
+        self.assertFalse(tracker.snapshot().handled)
+        tracker.confirm_handled(tracker.snapshot().session_token)
+        self.assertIsNone(tracker.finish())
+
     def test_session_identity_is_independent_of_wall_clock(self):
         timestamp = datetime(2026, 1, 1)
         tracker = IncomingCallSessionTracker(now_func=lambda: timestamp)

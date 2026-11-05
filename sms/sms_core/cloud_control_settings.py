@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from sms_core.cloud_protocol import normalize_cloud_ws_url
+from sms_core.credential_policy import CredentialValidationError, credential_url_error, validate_credential
 
 
 @dataclass(frozen=True)
@@ -63,20 +64,21 @@ def normalize_reconnect_interval(value, default=5):
 
 
 def read_cloud_control_settings(config):
+    device_secret = config.get("cloud_control", "device_secret", fallback="", raw=True)
+    validate_credential(device_secret, '云端控制密码')
+    raw_url = config.get("cloud_control", "url", fallback="", raw=True)
+    error = credential_url_error(raw_url, 'WebSocket地址')
+    if error:
+        raise CredentialValidationError(error)
     try:
         enabled = config.getboolean("cloud_control", "enabled", fallback=False)
     except Exception:
         enabled = False
 
     try:
-        url = normalize_cloud_ws_url(config.get("cloud_control", "url", fallback=""))
+        url = normalize_cloud_ws_url(raw_url)
     except Exception:
         url = ""
-
-    try:
-        device_secret = config.get("cloud_control", "device_secret", fallback="").strip()
-    except Exception:
-        device_secret = ""
 
     try:
         reconnect_interval = normalize_reconnect_interval(
@@ -108,6 +110,12 @@ def update_cloud_control_settings(
     device_secret=None,
     auto_upload=None,
 ):
+    secret = current.device_secret if device_secret is None else str(device_secret)
+    validate_credential(secret, '云端控制密码')
+    next_url = current.url if url is None else url
+    error = credential_url_error(next_url, 'WebSocket地址')
+    if error:
+        raise CredentialValidationError(error)
     return CloudControlSettings(
         enabled=current.enabled if enabled is None else bool(enabled),
         url=current.url if url is None else normalize_cloud_ws_url(url),
@@ -116,12 +124,16 @@ def update_cloud_control_settings(
             if reconnect_interval is None
             else normalize_reconnect_interval(reconnect_interval)
         ),
-        device_secret=current.device_secret if device_secret is None else str(device_secret).strip(),
+        device_secret=secret,
         auto_upload=current.auto_upload if auto_upload is None else bool(auto_upload),
     )
 
 
 def write_cloud_control_settings(config, settings):
+    validate_credential(settings.device_secret, '云端控制密码')
+    error = credential_url_error(settings.url, 'WebSocket地址')
+    if error:
+        raise CredentialValidationError(error)
     if "cloud_control" not in config:
         config["cloud_control"] = {}
     config["cloud_control"]["enabled"] = "1" if settings.enabled else "0"

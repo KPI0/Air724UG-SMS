@@ -54,7 +54,7 @@ class CloudControlAppRuntimeTests(unittest.TestCase):
             enabled=True,
             url="wss://example.test",
             reconnect_interval="9",
-            device_secret=" secret ",
+            device_secret="secret",
             auto_upload=True,
         )
 

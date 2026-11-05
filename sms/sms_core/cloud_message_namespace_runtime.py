@@ -2,6 +2,7 @@ import asyncio
 from sms_core.cloud_firmware_ota import handle_firmware_ota
 import inspect
 import threading
+import time
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 
@@ -19,7 +20,9 @@ from sms_core.cloud_message_runtime import (
     send_cloud_serial_command_runtime,
     send_cloud_sms_event_runtime,
 )
-from sms_core.cloud_connection_runtime import schedule_cloud_payload_runtime
+from sms_core.cloud_connection_runtime import (
+    _safe_log, schedule_cloud_payload_runtime, serialize_cloud_payload,
+)
 from sms_core.cloud_serial_log_runtime import (
     drain_cloud_serial_log_queue,
     reset_cloud_serial_log_state,
@@ -61,6 +64,43 @@ def _call_with_optional_log_error(func, *args, log_error=None, **kwargs):
         if supports_log_error:
             kwargs["log_error"] = log_error
     return func(*args, **kwargs)
+
+
+def prepare_cloud_call_event_payload_namespace_runtime(namespace, ws, payload):
+    """Retain call history while notifying only a currently ringing lifetime."""
+    if (not isinstance(payload, dict) or payload.get("type") != "call_event"
+            or str(payload.get("phase") or "").strip().lower() != "incoming"):
+        return payload
+    wire_payload = dict(payload)
+    wire_payload["history_only"] = True
+    session_id = str(payload.get("call_session_id") or "").strip()
+    if not session_id or payload.get("blocked") is True:
+        return wire_payload
+    try:
+        with call_state_lock(namespace):
+            if (not cloud_connection_is_current(namespace, ws)
+                    or not namespace.get("cloud_connected")
+                    or not namespace.get("cloud_device_authorized")):
+                return wire_payload
+            snapshot = getattr(namespace.get("INCOMING_CALL_SESSION"), "snapshot", None)
+            if not callable(snapshot):
+                return wire_payload
+            current = snapshot()
+            token = getattr(current, "session_token", None)
+            pair = namespace.get("call_popup_local_session")
+            ring_timeout = namespace.get("ring_timeout_target", 0.0)
+            if (token is not None and isinstance(pair, tuple) and len(pair) == 2
+                    and pair[0] is token and pair[1] == session_id
+                    and getattr(current, "confirmed_handled", None) is False
+                    and not namespace.get("current_dial_num")
+                    and type(ring_timeout) in (int, float)
+                    and 0.0 < ring_timeout < float("inf")
+                    and ring_timeout > namespace.get("time", time).monotonic()):
+                wire_payload["history_only"] = False
+    except Exception as exc:
+        _safe_log(namespace.get("log_file_only"),
+                  "云端来电状态无法确认，本次仅上传历史记录：" + type(exc).__name__)
+    return wire_payload
 
 
 def reset_cloud_serial_log_state_namespace_runtime(namespace):
@@ -134,6 +174,12 @@ def schedule_cloud_sms_event_drain_namespace_runtime(namespace, loop=None, ws=No
 
 
 async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws, *, generation=None):
+    def serialize_payload(payload):
+        # Structured call events carry the live lifecycle; serial logs remain history.
+        if isinstance(payload, dict) and payload.get("type") == "log":
+            payload = {**payload, "history_only": True}
+        return serialize_cloud_payload(payload)
+
     return await _call_with_optional_log_error(
         drain_cloud_serial_log_queue,
         ws,
@@ -143,6 +189,7 @@ async def drain_cloud_serial_log_queue_namespace_runtime(namespace, ws, *, gener
         is_current_connection=lambda current_ws: current_ws is namespace["cloud_ws_conn"],
         is_connected=lambda: namespace["cloud_connected"],
         is_authorized=lambda: namespace["cloud_device_authorized"],
+        serialize_payload=serialize_payload,
         log_error=namespace.get("log_file_only"),
         generation=generation,
     )
@@ -207,12 +254,23 @@ def schedule_cloud_call_recording_upload_namespace_runtime(namespace):
     uploader = namespace.get("CALL_RECORDING_UPLOADER")
     if uploader is None:
         return False
+    with call_state_lock(namespace):
+        authorization_epoch = namespace.setdefault("_cloud_authorization_epoch", object())
+
+    def is_current(ws):
+        with call_state_lock(namespace):
+            return bool(
+                cloud_connection_is_current(namespace, ws)
+                and namespace.get("cloud_connected")
+                and namespace.get("_cloud_authorization_epoch") is authorization_epoch
+            )
+
     return uploader.schedule(
         namespace.get("cloud_ws_loop"),
         namespace.get("cloud_ws_conn"),
         send_payload=namespace["_cloud_send_payload"],
         identity_payload=namespace["_cloud_identity_payload"],
-        is_current=lambda ws: ws is namespace.get("cloud_ws_conn") and namespace.get("cloud_connected"),
+        is_current=is_current,
         is_authorized=lambda: bool(namespace.get("cloud_device_authorized")),
     )
 
@@ -357,8 +415,25 @@ def send_cloud_call_state_namespace_runtime(
     *,
     direction="incoming",
     call_session_id="",
+    call_state_snapshot=None,
     send_runtime=send_cloud_call_state_runtime,
 ):
+    guarded_outgoing = direction == "outgoing" and phase in {"dialing", "alerting", "connected"}
+
+    def current_outgoing():
+        return (call_state_snapshot is None
+                or call_state_snapshot.is_outgoing_state_current())
+
+    if guarded_outgoing and not current_outgoing():
+        return "stale_call"
+
+    async def send_state(ws, payload):
+        if guarded_outgoing:
+            with call_state_lock(namespace):
+                if not current_outgoing():
+                    return "stale_call"
+        return await namespace["_cloud_send_payload"](ws, payload)
+
     kwargs = {
         "direction": direction,
         "authorized": namespace["cloud_device_authorized"],
@@ -367,7 +442,7 @@ def send_cloud_call_state_namespace_runtime(
         "is_connected": lambda: namespace["cloud_connected"],
         "runtime_imei": namespace["_cloud_runtime_imei"],
         "build_payload": namespace["_cloud_build_call_state_payload"],
-        "send_payload": namespace["_cloud_send_payload"],
+        "send_payload": send_state if guarded_outgoing else namespace["_cloud_send_payload"],
         "timestamp": namespace["_cloud_now_ts"],
         "identity_payload": namespace["_cloud_identity_payload"],
         "run_coroutine_threadsafe": namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
@@ -441,7 +516,7 @@ def send_cloud_serial_command_namespace_runtime(
     )
 
     def execute_confirmed_command(_serial_obj, next_command):
-        return write_serial_command_sequence_confirmed_locked(
+        result = write_serial_command_sequence_confirmed_locked(
             namespace["serial_lock"],
             get_command_serial,
             (next_command,),
@@ -450,6 +525,16 @@ def send_cloud_serial_command_namespace_runtime(
             write_guard=command_write_guard,
             before_write=call_context.before_write if call_context is not None else None,
         )
+        if (getattr(result, "ok", None) is True and call_context is not None and call_context.written
+                and str(next_command or "").strip().upper() in {"ATA", "ATA;", "ATH", "ATH;"}):
+            with namespace["serial_lock"], call_state_lock(namespace):
+                if (namespace.get("serial_obj") is command_context.serial
+                        and namespace.get("serial_connection_generation", 0) == command_context.generation
+                        and call_context.is_current()):
+                    confirm = getattr(namespace.get("INCOMING_CALL_SESSION"), "confirm_handled", None)
+                    if callable(confirm):
+                        confirm(call_context.incoming_token)
+        return result
 
     mark_connected = namespace.get("mark_call_connected")
     if call_context is not None and callable(mark_connected):

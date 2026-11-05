@@ -223,6 +223,23 @@ class ConfigSyncNamespaceRuntimeTests(unittest.TestCase):
         self.assertEqual(failure_logs, ["Reload shared UI config failed (ValueError)"])
         self.assertNotIn("invalid config", failure_logs[0])
 
+    def test_sync_retains_new_voice_text_when_generation_does_not_start(self):
+        namespace = self.make_namespace()
+        namespace["generate_alert_voice"] = lambda **_options: "error"
+
+        changed = reload_shared_ui_config_namespace_runtime(
+            namespace, load_snapshot=lambda _path: self.disk_snapshot(),
+        )
+
+        self.assertIn("语音内容", changed)
+        self.assertEqual(namespace["VOICE_TEXT"], "new voice")
+        self.assertEqual(namespace["config"].get("ui", "voice_text"), "new voice")
+        failure_logs = [
+            call[1] for call in namespace["calls"]
+            if isinstance(call, tuple) and call[0] == "log"
+        ]
+        self.assertEqual(failure_logs, ["Synced voice text retained; alert generation did not start"])
+
     def test_reload_rejects_invalid_font_color_and_retains_valid_runtime_color(self):
         namespace = self.make_namespace()
         snapshot = self.disk_snapshot()

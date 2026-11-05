@@ -107,7 +107,7 @@ def start_shutdown_task_runtime(
     try:
         progress = progress_factory(root)
     except Exception as exc:
-        _safe_log(log_error, f"Create shutdown progress failed: {exc!r}")
+        _safe_log(log_error, f"Create shutdown progress failed: {type(exc).__name__}")
         messagebox.showerror(action + "未开始", f"无法显示{action}进度，请稍后重试。", parent=root)
         return "start_failed"
     set_exiting(True)
@@ -139,7 +139,7 @@ def start_shutdown_task_runtime(
             result = run_task(lambda message: ui_post_runtime(task_queue, progress.update, (message,)))
         except Exception as exc:
             result = "worker_wait_failed"
-            _safe_log(log_error, f"Background shutdown failed: {exc!r}")
+            _safe_log(log_error, f"Background shutdown failed: {type(exc).__name__}")
         ui_post_runtime(task_queue, finish, (result,))
 
     initial_pump = None
@@ -152,7 +152,7 @@ def start_shutdown_task_runtime(
             root.after_cancel(initial_pump)
         progress.close()
         set_exiting(False)
-        _safe_log(log_error, f"Start background shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Start background shutdown failed: {type(exc).__name__}")
         messagebox.showerror(action + "未开始", f"无法启动{action}任务，请稍后重试。", parent=root)
         return "start_failed"
     return "started"

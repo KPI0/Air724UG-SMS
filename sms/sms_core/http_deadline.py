@@ -2,6 +2,7 @@
 import http.client
 import io
 import math
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -9,16 +10,17 @@ import urllib.request
 
 
 class _Deadline:
-    def __init__(self, timeout):
+    def __init__(self, timeout, response_label="HTTP 响应"):
         seconds = float(timeout)
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("请求超时必须为正数")
         self.end = time.monotonic() + seconds
+        self.response_label = response_label
 
     def remaining(self):
         remaining = self.end - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("请求超时：HTTP 响应超过总等待时间")
+            raise TimeoutError(f"请求超时：{self.response_label}超过总等待时间")
         return remaining
 
 
@@ -44,6 +46,34 @@ class _DeadlineReader(io.RawIOBase):
             super().close()
 
 
+def create_connection_with_deadline(address, deadline, source_address=None):
+    """Preserve address fallback while each connect shares the remaining time."""
+    deadline.remaining()
+    host, port = address
+    addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    deadline.remaining()
+    last_error = None
+    for family, kind, protocol, _canonical, target in addresses:
+        sock = None
+        try:
+            remaining = deadline.remaining()
+            sock = socket.socket(family, kind, protocol)
+            sock.settimeout(remaining)
+            if source_address:
+                sock.bind(source_address)
+            sock.settimeout(deadline.remaining())
+            sock.connect(target)
+            sock.settimeout(deadline.remaining())
+            return sock
+        except OSError as exc:
+            last_error = exc
+            if sock is not None:
+                sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo returned no stream addresses")
+
+
 class _ResponseSocket:
     def __init__(self, sock, deadline):
         self.sock = sock
@@ -60,6 +90,9 @@ class _DeadlineConnection:
         self.deadline = deadline
         kwargs["timeout"] = deadline.remaining()
         super().__init__(host, **kwargs)
+        self._create_connection = lambda address, timeout=None, source_address=None: create_connection_with_deadline(
+            address, deadline, source_address,
+        )
         self.response_class = lambda sock, **options: http.client.HTTPResponse(
             _ResponseSocket(sock, deadline), **options
         )

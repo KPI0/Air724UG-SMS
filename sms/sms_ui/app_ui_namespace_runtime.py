@@ -1,8 +1,12 @@
+from contextlib import nullcontext
+from sms_core.call_command_context import call_state_lock
 from sms_core.config_schema import (
     DEFAULT_SMS_FONT_SIZE,
     DEFAULT_UI_CONFIG,
     normalize_sms_font_size,
 )
+from sms_core.connected_log_runtime import can_restore_connected_status
+from sms_core.status_text import format_connected_status
 from sms_ui.device_reset_runtime import send_reset_command_runtime
 from sms_ui.main_status_runtime import (
     apply_sms_font_style_runtime,
@@ -15,6 +19,9 @@ from sms_ui.thread_runtime import ui_messagebox_runtime
 from sms_ui.tray_runtime import create_tray_icon_runtime, stop_tray_icon_runtime
 from sms_ui.ui_log_runtime import clear_text_widget_runtime
 from sms_ui.window_utils import fit_window_position
+
+
+_CURRENT_STATUS_TOKEN = object()
 
 
 def _safe_log(namespace, message):
@@ -141,13 +148,24 @@ def set_signal_namespace_runtime(namespace, rsrp_val):
 
 
 def set_cloud_status_namespace_runtime(namespace, text, color="#666666"):
+    status_token = object()
+    namespace["_cloud_status_ui_token"] = status_token
+
+    def run_current_status_on_ui(callback, post):
+        def apply_status():
+            if namespace.get("_cloud_status_ui_token") is status_token:
+                return callback()
+            return None
+
+        return namespace["run_on_ui_thread"](apply_status, post)
+
     return update_label_status_runtime(
         text,
         color,
         tk_alive=namespace["tk_alive"],
         text_var=namespace["cloud_var"],
         label=namespace["cloud_label"],
-        run_on_ui_thread=namespace["run_on_ui_thread"],
+        run_on_ui_thread=run_current_status_on_ui,
         ui_post=namespace["ui_post"],
         log_error=namespace.get("log_file_only"),
     )
@@ -163,9 +181,16 @@ def set_cloud_auth_status_from_ack_namespace_runtime(namespace, data):
 
 
 def set_status_namespace_runtime(namespace, text, color="black", *, call_state_snapshot=None):
+    with call_state_lock(namespace) if call_state_snapshot is not None else nullcontext():
+        if call_state_snapshot is not None and not call_state_snapshot.is_current():
+            return False
+        status_token = object()
+        namespace["_status_ui_token"] = status_token
+
     def run_status_on_ui(callback, post):
         def apply_status():
-            if call_state_snapshot is None or call_state_snapshot.is_current():
+            if (namespace.get("_status_ui_token") is status_token
+                    and (call_state_snapshot is None or call_state_snapshot.is_current())):
                 return callback()
             return None
         return namespace["run_on_ui_thread"](apply_status, post)
@@ -180,6 +205,29 @@ def set_status_namespace_runtime(namespace, text, color="black", *, call_state_s
         ui_post=namespace["ui_post"],
         log_error=namespace.get("log_file_only"),
     )
+
+
+def restore_connected_status_namespace_runtime(
+    namespace, port="", *, call_state_snapshot=None, serial_context=None,
+    status_token=_CURRENT_STATUS_TOKEN,
+):
+    if serial_context is None:
+        serial_context = (
+            getattr(call_state_snapshot, "serial", namespace.get("serial_obj")),
+            getattr(call_state_snapshot, "serial_generation", namespace.get("serial_connection_generation", 0)),
+        )
+    serial, generation = serial_context
+    port = port or namespace.get("PORT", "")
+    if status_token is _CURRENT_STATUS_TOKEN:
+        status_token = namespace.get("_status_ui_token")
+
+    def restore_on_ui():
+        if (namespace.get("_status_ui_token") is status_token
+                and can_restore_connected_status(namespace, serial, generation)):
+            return namespace["set_status"](format_connected_status(port), "green")
+        return False
+
+    return namespace["run_on_ui_thread"](restore_on_ui, namespace["ui_post"])
 
 
 def apply_sms_font_style_namespace_runtime(namespace):

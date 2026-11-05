@@ -1,5 +1,10 @@
 ﻿import asyncio
+import socket
+import ssl
 import unittest
+from functools import partial
+
+from sms_ui.cloud_control_namespace_runtime import cloud_log_namespace_runtime
 
 from sms_core.cloud_ws_runtime import (
     base_cloud_backoff,
@@ -90,6 +95,124 @@ async def _async_false():
 
 
 class CloudWsRuntimeTests(unittest.TestCase):
+    def test_connection_logs_hide_url_credentials_and_path_without_changing_transport(self):
+        url = (
+            "wss://synthetic-user:synthetic-password@example.invalid:8443/"
+            "private-token-path?token=synthetic-token#synthetic-fragment"
+        )
+        file_logs, ui_logs, connected_urls = [], [], []
+        ns = {
+            "_cloud_repeat_filter": lambda _state, message: message,
+            "_cloud_file_notice": {},
+            "_cloud_main_notice": {},
+            "log_file_only": file_logs.append,
+            "ui_only": lambda message, _kind: ui_logs.append(message),
+        }
+        stop = FakeStopEvent()
+
+        def connect(target, **_kwargs):
+            connected_urls.append(target)
+            return FakeConnectContext(FakeWebSocket())
+
+        async def ack(_ws):
+            stop.set()
+            return True
+
+        asyncio.run(cloud_ws_main_runtime(
+            url, 5, stop_event=stop, runtime_imei=lambda: "000000000000001",
+            request_cloud_device_imei=lambda: None, set_cloud_status=lambda *_args: None,
+            log=partial(cloud_log_namespace_runtime, ns), connect=connect,
+            set_connection_state=lambda *_args, **_kwargs: None,
+            reset_serial_log_state=lambda: None, send_register=lambda _ws: _async_none(),
+            wait_login_ack=ack, handle_message=lambda *_args: _async_none(),
+            cloud_control_enabled=True, monotonic=lambda: 0,
+        ))
+
+        self.assertEqual(connected_urls, [url])
+        for messages in (file_logs, ui_logs):
+            self.assertTrue(any("wss://example.invalid:8443" in message for message in messages))
+            for private in ("synthetic-user", "synthetic-password", "private-token-path",
+                            "synthetic-token", "synthetic-fragment"):
+                self.assertFalse(any(private in message for message in messages), private)
+
+    def test_connection_error_classification_never_logs_untrusted_details(self):
+        private = "synthetic-private-transport-value"
+        errors = (
+            (RuntimeError(private), "RuntimeError"),
+            (TimeoutError(private), "连接超时"),
+            (socket.gaierror(private), "DNS 解析失败"),
+            (ssl.SSLCertVerificationError(private), "TLS 服务器证书验证失败"),
+            (ssl.SSLError(private), "TLS 握手失败"),
+        )
+        for error, category in errors:
+            with self.subTest(category=category):
+                stop, logs = FakeStopEvent(), []
+
+                def connect(_url, **_kwargs):
+                    raise error
+
+                async def sleep(_delay):
+                    stop.set()
+
+                asyncio.run(cloud_ws_main_runtime(
+                    "ws://example.invalid/private-token-path", 5, stop_event=stop,
+                    runtime_imei=lambda: "000000000000001", request_cloud_device_imei=lambda: None,
+                    set_cloud_status=lambda *_args: None, log=lambda message, **_kwargs: logs.append(message),
+                    connect=connect, set_connection_state=lambda *_args, **_kwargs: None,
+                    reset_serial_log_state=lambda: None, send_register=lambda _ws: _async_none(),
+                    wait_login_ack=lambda _ws: _async_true(), handle_message=lambda *_args: _async_none(),
+                    cloud_control_enabled=True, monotonic=lambda: 0, sleep=sleep,
+                ))
+
+                self.assertIn("连接异常：" + category, logs)
+                self.assertFalse(any(private in message for message in logs))
+                self.assertFalse(any("private-token-path" in message for message in logs))
+
+    def test_invalid_connection_url_is_hidden_without_secondary_log_error(self):
+        for url in ("wss://[broken/private-token-path?token=synthetic-token",
+                    "wss://example.invalid:70000/private-token-path?token=synthetic-token"):
+            with self.subTest(url=url):
+                stop, logs = FakeStopEvent(), []
+
+                def connect(_url, **_kwargs):
+                    raise ValueError("invalid synthetic-token")
+
+                async def sleep(_delay):
+                    stop.set()
+
+                asyncio.run(cloud_ws_main_runtime(
+                    url, 5, stop_event=stop, runtime_imei=lambda: "000000000000001",
+                    request_cloud_device_imei=lambda: None, set_cloud_status=lambda *_args: None,
+                    log=lambda message, **_kwargs: logs.append(message), connect=connect,
+                    set_connection_state=lambda *_args, **_kwargs: None,
+                    reset_serial_log_state=lambda: None, send_register=lambda _ws: _async_none(),
+                    wait_login_ack=lambda _ws: _async_true(), handle_message=lambda *_args: _async_none(),
+                    cloud_control_enabled=True, monotonic=lambda: 0, sleep=sleep,
+                ))
+
+                self.assertIn("正在连接：WebSocket 地址（已隐藏）", logs)
+                self.assertIn("连接已停止", logs)
+                self.assertFalse(any("private-token-path" in message or "synthetic-token" in message
+                                     for message in logs))
+
+    def test_thread_failure_logs_only_exception_category(self):
+        class FailingLoop(FakeLoop):
+            def run_until_complete(self, _value):
+                raise RuntimeError("synthetic-thread-private-value")
+
+        loop, logs = FailingLoop(), []
+        result = cloud_thread_main_runtime(
+            "ws://example.invalid", 5, lock=FakeLock(), set_loop=lambda _value: None,
+            get_thread=lambda: None, set_thread=lambda _value: None,
+            run_main=lambda *_args: None, log=logs.append,
+            new_event_loop=lambda: loop, set_event_loop=lambda _loop: None,
+            current_thread=lambda: None,
+        )
+
+        self.assertEqual(result, "error")
+        self.assertTrue(loop.closed)
+        self.assertEqual(logs, ["云端控制线程异常：RuntimeError"])
+
     def test_build_cloud_ssl_context_skips_plain_websocket(self):
         calls = []
 
@@ -393,7 +516,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
         ))
 
         self.assertIn(("sleep", 0.1), calls)
-        self.assertTrue(any(item[0] == "log" and "down" in item[1][0] for item in calls))
+        self.assertTrue(any(item[0] == "log" and "连接异常：RuntimeError" in item[1][0] for item in calls))
         self.assertGreaterEqual(calls.count(("reset",)), 2)
 
     def test_cloud_ws_main_auth_failure_waits_for_web_password_retry(self):
@@ -553,7 +676,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
         self.assertEqual(len(sockets), 2)
         self.assertIn(("sleep", 0.1), calls)
         self.assertTrue(any(
-            item[0] == "log" and "hold transport dropped" in item[1][0]
+            item[0] == "log" and "连接异常：ConnectionError" in item[1][0]
             for item in calls
         ))
 
@@ -789,7 +912,7 @@ class CloudWsRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "error")
-        self.assertTrue(any(item[0] == "log" and "loop failed" in item[1] for item in calls))
+        self.assertTrue(any(item[0] == "log" and "云端控制线程异常：RuntimeError" in item[1] for item in calls))
         self.assertTrue(loop.closed)
         self.assertNotIn(("thread", None), calls)
 

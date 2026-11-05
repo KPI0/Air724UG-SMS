@@ -51,19 +51,34 @@ class FileLogQueue(queue.Queue):
             raise
 
 
-def drain_available_log_lines(log_queue, first_item):
-    path, line = first_item
-    batches = {path: [line]}
+def drain_available_log_lines(log_queue, first_item, on_error=None):
+    batches = {}
+    item = first_item
+    report = on_error if on_error is not None else _default_diagnostic
     while True:
         try:
-            next_item = log_queue.get_nowait()
+            path, line = item
+            if not isinstance(line, str):
+                raise TypeError("Log line must be text")
+            batches.setdefault(path, []).append(line)
+        except Exception as exc:
+            try:
+                report(f"file_log_worker skipped a bad log item: {type(exc).__name__}")
+            except Exception:
+                pass
+        try:
+            item = log_queue.get_nowait()
         except queue.Empty:
+            break
+        except Exception as exc:
+            try:
+                report(f"file_log_worker queue read failed: {type(exc).__name__}")
+            except Exception:
+                pass
             break
         # Mark the item complete before unpacking it so malformed entries do
         # not leave Queue.unfinished_tasks permanently elevated.
         task_done_safely(log_queue)
-        next_path, next_line = next_item
-        batches.setdefault(next_path, []).append(next_line)
     return batches
 
 
@@ -82,7 +97,7 @@ def write_log_batches(batches, encoding="utf-8", open_file=open, on_error=None):
                 try:
                     on_error(
                         f"file_log_worker failed to write {len(lines)} line(s) "
-                        f"to {path!r}: {exc!r}"
+                        f"({type(exc).__name__})"
                     )
                 except Exception:
                     pass
@@ -97,17 +112,15 @@ def _default_diagnostic(message):
         pass
 
 
-def _write_batches_with_error_reporting(write_batches, batches, on_error):
-    # The default write_batches (write_log_batches) accepts on_error so per-path
-    # write failures are reported. Injected test doubles often take only the
-    # batches arg, so forward on_error only when the callable can accept it.
+def _call_with_error_reporting(operation, *args, on_error):
+    # Keep injected legacy helpers that have no error callback compatible.
     try:
-        supports_on_error = "on_error" in inspect.signature(write_batches).parameters
+        supports_on_error = "on_error" in inspect.signature(operation).parameters
     except (TypeError, ValueError):
         supports_on_error = False
     if supports_on_error:
-        return write_batches(batches, on_error=on_error)
-    return write_batches(batches)
+        return operation(*args, on_error=on_error)
+    return operation(*args)
 
 
 def run_file_log_worker(
@@ -130,7 +143,7 @@ def run_file_log_worker(
             # Unexpected queue failure: report it, avoid a hot spin, keep alive.
             if on_error is not None:
                 try:
-                    on_error(f"file_log_worker queue read failed: {exc!r}")
+                    on_error(f"file_log_worker queue read failed: {type(exc).__name__}")
                 except Exception:
                     pass
             try:
@@ -141,15 +154,15 @@ def run_file_log_worker(
 
         try:
             try:
-                batches = drain_batches(log_queue, first_item)
-                _write_batches_with_error_reporting(write_batches, batches, on_error)
+                batches = _call_with_error_reporting(drain_batches, log_queue, first_item, on_error=on_error)
+                _call_with_error_reporting(write_batches, batches, on_error=on_error)
             except Exception as exc:
                 # A malformed queue item (e.g. not a (path, line) tuple) must
                 # not kill the only thread that flushes logs to disk. Report
                 # and skip.
                 if on_error is not None:
                     try:
-                        on_error(f"file_log_worker skipped a bad log item: {exc!r}")
+                        on_error(f"file_log_worker skipped a bad log item: {type(exc).__name__}")
                     except Exception:
                         pass
         finally:
@@ -206,7 +219,7 @@ def wait_for_file_log_worker(thread, timeout=None, *, log_error=None):
     except Exception as exc:
         if log_error is not None:
             try:
-                log_error(f"Wait for file_log_worker failed: {exc!r}")
+                log_error(f"Wait for file_log_worker failed: {type(exc).__name__}")
             except Exception:
                 pass
         return False

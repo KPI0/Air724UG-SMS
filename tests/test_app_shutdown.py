@@ -30,7 +30,8 @@ class AppShutdownTests(unittest.TestCase):
 
         self.assertEqual(safe_set_events(FakeEvent(fail=True), log_error=logs.append), 0)
 
-        self.assertTrue(any("set failed" in message for message in logs))
+        self.assertIn("Set shutdown event failed: RuntimeError", logs)
+        self.assertFalse(any("set failed" in message for message in logs))
 
     def test_drain_log_queue_groups_lines_by_path(self):
         log_queue = queue.Queue()
@@ -64,7 +65,8 @@ class AppShutdownTests(unittest.TestCase):
         log_queue.put(("Z:\\missing\\sms.log", "line\n"))
 
         self.assertEqual(flush_log_queue(log_queue, log_error=logs.append), 0)
-        self.assertTrue(any("sms.log" in message for message in logs))
+        self.assertTrue(any("failed to write 1 line(s) (FileNotFoundError)" in message for message in logs))
+        self.assertFalse(any("sms.log" in message for message in logs))
 
     def test_cleanup_and_exit_runtime_skips_when_already_exiting(self):
         calls = []
@@ -316,7 +318,8 @@ class AppShutdownTests(unittest.TestCase):
 
         self.assertEqual(result, "worker_wait_failed")
         self.assertTrue(
-            any("snapshot failed" in item[1] for item in calls if item[0] == "log")
+            any("Snapshot shutdown worker threads failed: RuntimeError" == item[1]
+                for item in calls if item[0] == "log")
         )
         self.assertEqual(file_event.set_count, 0)
         self.assertFalse(
@@ -378,7 +381,8 @@ class AppShutdownTests(unittest.TestCase):
 
         self.assertEqual(result, "worker_wait_failed")
         self.assertFalse(any(item[0] in ("wait_file", "flush", "destroy") for item in calls))
-        self.assertTrue(any("join failed" in item[1] for item in calls if item[0] == "log"))
+        self.assertIn(("log", "Wait for producer worker threads raised: RuntimeError"), calls)
+        self.assertFalse(any("join failed" in item[1] for item in calls if item[0] == "log"))
 
     def test_cleanup_does_not_flush_or_destroy_when_file_logger_is_still_running(self):
         calls = []
@@ -434,7 +438,8 @@ class AppShutdownTests(unittest.TestCase):
         self.assertEqual(result, "file_log_wait_failed")
         self.assertNotIn(("flush", "queue"), calls)
         self.assertNotIn(("destroy",), calls)
-        self.assertTrue(any("join failed" in item[1] for item in calls if item[0] == "log"))
+        self.assertIn(("log", "Wait for file log worker raised: RuntimeError"), calls)
+        self.assertFalse(any("join failed" in item[1] for item in calls if item[0] == "log"))
 
     def test_cleanup_and_exit_runtime_logs_and_continues_after_cleanup_errors(self):
         logs = []
@@ -459,11 +464,12 @@ class AppShutdownTests(unittest.TestCase):
         self.assertEqual(result, "exited")
         self.assertIn(("exiting", True), calls)
         self.assertIn(("serial", False), calls)
-        self.assertTrue(any("set failed" in message for message in logs))
+        self.assertIn("Set shutdown event failed: RuntimeError", logs)
+        self.assertFalse(any("set failed" in message for message in logs))
         self.assertTrue(any("cloud" in message for message in logs))
         self.assertTrue(any("serial" in message for message in logs))
         self.assertTrue(any("tray" in message for message in logs))
-        self.assertTrue(any("destroy" in message for message in logs))
+        self.assertIn("Destroy root during shutdown failed: RuntimeError", logs)
 
 
 if __name__ == "__main__":

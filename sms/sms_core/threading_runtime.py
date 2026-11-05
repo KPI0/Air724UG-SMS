@@ -74,8 +74,11 @@ class SingleFlightTaskState:
 
 
 def format_thread_exception(name, exc):
-    title = f"后台线程异常退出 [{name}]: {exc or exc.__class__.__name__}"
-    return title + "\n" + traceback.format_exc()
+    title = f"后台线程异常退出 [{name}]: {type(exc).__name__}"
+    frames = traceback.extract_tb(exc.__traceback__)
+    stack = ''.join(f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n'
+                    for frame in frames)
+    return title + "\nTraceback (most recent call last):\n" + stack
 
 
 def start_daemon_thread(

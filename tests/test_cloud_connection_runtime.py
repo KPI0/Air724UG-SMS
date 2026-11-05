@@ -3,6 +3,7 @@ import unittest
 
 from sms_core.cloud_connection_runtime import (
     reply_cloud_payload_runtime,
+    schedule_cloud_payload_runtime,
     schedule_cloud_unregister_runtime,
     send_cloud_payload_runtime,
     serialize_cloud_payload,
@@ -37,6 +38,77 @@ class FakeWebSocket:
 
 
 class CloudConnectionRuntimeTests(unittest.TestCase):
+    def test_payload_and_reply_errors_hide_transport_echo(self):
+        class FailingWebSocket:
+            async def send(self, _payload):
+                raise RuntimeError("synthetic-payload-private-value")
+
+        ws, logs = FailingWebSocket(), []
+        sent = asyncio.run(send_cloud_payload_runtime(
+            ws, {"secret": "synthetic-payload-private-value"}, log_error=logs.append,
+        ))
+        replied = asyncio.run(reply_cloud_payload_runtime(
+            ws, {"type": "pong"}, identity_payload=lambda: {"imei": "000000000000001"},
+            log=logs.append,
+        ))
+
+        self.assertEqual((sent, replied), ("error", "error"))
+        self.assertEqual(len(logs), 2)
+        self.assertTrue(all("RuntimeError" in message for message in logs))
+        self.assertFalse(any("synthetic-payload-private-value" in message for message in logs))
+
+    def test_teardown_and_scheduling_errors_hide_transport_echo_and_still_cleanup(self):
+        calls, logs, created = [], [], []
+
+        class FailingWebSocket:
+            async def close(self):
+                calls.append("close")
+                raise RuntimeError("synthetic-close-private-value")
+
+        async def unregister(_ws, _reason):
+            calls.append("unregister")
+            raise RuntimeError("synthetic-unregister-private-value")
+
+        async def revoke(_ws, _reason):
+            calls.append("revoke")
+            raise RuntimeError("synthetic-revoke-private-value")
+
+        ws = FailingWebSocket()
+        result = asyncio.run(unregister_then_close_cloud_connection_runtime(
+            ws, reason="disconnect", auto_upload=True, send_unregister=unregister,
+            send_session_revoke=revoke, log_error=logs.append,
+        ))
+        self.assertEqual(result, (False, False))
+        self.assertEqual(calls, ["unregister", "revoke", "close"])
+
+        async def send(_ws, _payload):
+            return None
+
+        def tracked_send(*args):
+            coro = send(*args)
+            created.append(coro)
+            return coro
+
+        def rejected_schedule(_coro, _loop):
+            raise RuntimeError("synthetic-schedule-private-value")
+
+        dependencies = {
+            "get_loop": lambda: FakeLoop(), "get_ws": lambda: ws,
+            "is_connected": lambda: True, "run_coroutine_threadsafe": rejected_schedule,
+            "log_error": logs.append,
+        }
+        self.assertFalse(schedule_cloud_payload_runtime(
+            {"ok": True}, send_payload=tracked_send, **dependencies,
+        ))
+        self.assertFalse(schedule_cloud_unregister_runtime(
+            reason="disconnect", send_unregister=tracked_send, **dependencies,
+        ))
+        self.assertEqual(len(created), 2)
+        self.assertTrue(all(coro.cr_frame is None for coro in created))
+        self.assertEqual(len(logs), 5)
+        self.assertTrue(all("RuntimeError" in message for message in logs))
+        self.assertFalse(any("private-value" in message for message in logs))
+
     def test_serialize_cloud_payload_keeps_unicode(self):
         self.assertEqual(serialize_cloud_payload({"text": "中文"}), '{"text": "中文"}')
 
@@ -55,7 +127,7 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
         result = asyncio.run(send_cloud_payload_runtime(ws, {"ok": True}, log_error=logs.append))
 
         self.assertEqual(result, "error")
-        self.assertTrue(any("send failed" in message for message in logs))
+        self.assertIn("Send cloud payload failed: RuntimeError", logs)
 
     def test_schedule_cloud_unregister_runtime_schedules_when_connected(self):
         calls = []
@@ -140,7 +212,7 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(created[0].cr_frame, None)
-        self.assertTrue(any("loop rejected" in message for message in logs))
+        self.assertIn("Schedule cloud unregister failed: RuntimeError", logs)
 
     def test_unregister_then_close_cloud_connection_runtime_unregisters_when_enabled(self):
         ws = FakeWebSocket()
@@ -199,7 +271,7 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, (False, True))
         self.assertTrue(ws.closed)
-        self.assertTrue(any("unregister failed" in message for message in logs))
+        self.assertIn("Send cloud unregister failed: RuntimeError", logs)
 
     def test_unregister_then_close_cloud_connection_runtime_logs_close_errors(self):
         ws = FakeWebSocket(close_error=True)
@@ -217,7 +289,7 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, (True, False))
-        self.assertTrue(any("close failed" in message for message in logs))
+        self.assertIn("Close cloud websocket failed: RuntimeError", logs)
 
     def test_reply_cloud_payload_runtime_attaches_identity_to_dict_payload(self):
         ws = FakeWebSocket()
@@ -246,7 +318,7 @@ class CloudConnectionRuntimeTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, "error")
-        self.assertTrue(any("send failed" in item for item in calls))
+        self.assertIn("回复云端失败：RuntimeError", calls)
 
 
 if __name__ == "__main__":

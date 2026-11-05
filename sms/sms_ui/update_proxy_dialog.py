@@ -59,12 +59,15 @@ def open_update_proxy_dialog(
             btn_test.config(state="disabled", text="测试中…")
         except Exception:
             pass
-        on_test(
-            api_var.get(),
-            proxy_var.get(),
-            lambda text: _show_test_result(win, btn_test, text),
-            lambda text: _show_test_error(win, btn_test, text),
-        )
+        try:
+            on_test(
+                api_var.get(),
+                proxy_var.get(),
+                lambda text: _show_test_result(win, btn_test, text),
+                lambda text: _show_test_error(win, btn_test, text),
+            )
+        except Exception:
+            _show_test_error(win, btn_test, "无法启动代理连接测试，请稍后重试。")
 
     def reset_default():
         api_var.set(DEFAULT_API_PROXY_BASE)

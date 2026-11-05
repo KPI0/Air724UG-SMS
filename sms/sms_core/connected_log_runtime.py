@@ -2,10 +2,40 @@ import threading
 import time
 
 from sms_core.status_text import format_connected_status as default_format_connected_status
+from sms_core.serial_sender import serial_initialization_pending, serial_sms_recovery_error
 from sms_core.threading_runtime import start_daemon_thread
 
 
 PROTECTED_STATUS_WORDS = ("响铃", "通话", "呼叫")
+
+
+def can_restore_connected_status(namespace, serial, generation):
+    """Restore idle UI only for the originating, ready serial connection."""
+    try:
+        if (serial is None or namespace.get("serial_obj") is not serial
+                or namespace.get("serial_connection_generation", 0) != generation
+                or namespace.get("serial_running", True) is False
+                or namespace.get("is_exiting", False)
+                or not serial.is_open
+                or serial_initialization_pending(serial)
+                or serial_sms_recovery_error(serial)):
+            return False
+        for name in ("serial_stop_event", "TK_SHUTDOWN"):
+            event = namespace.get(name)
+            if event is not None and event.is_set():
+                return False
+        initialization = namespace.get("_serial_initialization_session")
+        if (getattr(initialization, "serial", None) is serial
+                and getattr(initialization, "has_command_errors", False)):
+            return False
+        if namespace.get("current_dial_num") or namespace.get("_call_command_pending_incoming"):
+            return False
+        snapshot = getattr(namespace.get("INCOMING_CALL_SESSION"), "snapshot", None)
+        if callable(snapshot) and getattr(snapshot(), "session_token", None) is not None:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _connected_task_is_current(connection_is_current, is_stopping):

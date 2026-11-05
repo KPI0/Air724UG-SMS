@@ -9,8 +9,7 @@ from sms_core.third_push import (
 
 
 def _exception_text(prefix, exc):
-    detail = str(exc).strip() or exc.__class__.__name__
-    return f"{prefix}：{detail}"
+    return f"{prefix}：{type(exc).__name__}"
 
 
 def _safe_system_ui(system_ui, message):

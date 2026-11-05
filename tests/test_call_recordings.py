@@ -507,7 +507,8 @@ class CloudCallRecordingUploaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(metadata["upload_status"], "pending")
         self.assertEqual(metadata["upload_error"], "unexpected_upload_error")
-        self.assertTrue(any("transport exploded" in item for item in errors))
+        self.assertTrue(any("RuntimeError" in item for item in errors))
+        self.assertFalse(any("transport exploded" in item for item in errors))
 
     async def test_uploaded_state_exception_returns_recording_to_pending(self):
         errors = []
@@ -553,7 +554,8 @@ class CloudCallRecordingUploaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(metadata["upload_status"], "pending")
         self.assertEqual(metadata["upload_error"], "upload_state_persist_error")
-        self.assertTrue(any("sidecar is temporarily unavailable" in item for item in errors))
+        self.assertTrue(any("OSError" in item for item in errors))
+        self.assertFalse(any("sidecar is temporarily unavailable" in item for item in errors))
 
 
 if __name__ == "__main__":

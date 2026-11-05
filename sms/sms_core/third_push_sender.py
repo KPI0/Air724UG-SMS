@@ -11,9 +11,11 @@ import urllib.parse
 import urllib.request
 
 from sms_core.http_deadline import urlopen_with_deadline
+from sms_core.smtp_deadline import DeadlineSMTP, DeadlineSMTP_SSL
 from email.message import EmailMessage
 
 from sms_core.third_push_format import apply_vars, template_vars
+from sms_core.credential_policy import PUSH_CREDENTIAL_FIELDS, PUSH_URL_FIELDS, credential_error, credential_url_error
 
 
 ALLOWED_PUSH_SCHEMES = ("http", "https")
@@ -41,6 +43,9 @@ def redact_sensitive_text(text):
 
 
 def http_request(url, method="POST", headers=None, data=None, timeout=15, user_agent="Air724UG-SMS"):
+    error = credential_url_error(url, '推送地址')
+    if error:
+        return False, None, error
     headers = dict(headers or {})
     headers.setdefault("User-Agent", user_agent)
     if isinstance(data, str):
@@ -151,7 +156,13 @@ def api_ok(channel: str, http_ok: bool, code, body: str, *, expected_uids=None):
 
 
 def required(settings, key, label):
-    value = str(settings.get(key, "")).strip()
+    raw = str(settings.get(key, ""))
+    error = credential_error(raw, label) if key in PUSH_CREDENTIAL_FIELDS else ''
+    if key in PUSH_URL_FIELDS:
+        error = credential_url_error(raw, label, PUSH_URL_FIELDS[key])
+    if error:
+        return None, error
+    value = raw if key in PUSH_CREDENTIAL_FIELDS else raw.strip()
     if not value:
         return None, f"未配置 {label}"
     return value, None
@@ -283,7 +294,7 @@ def send_bark(message: str, settings: dict, user_agent="Air724UG-SMS", port: str
     key, err = required(settings, "bark_key", "BARK_KEY")
     if err:
         return False, err
-    url = api.rstrip("/") + "/" + key.strip("/")
+    url = api.rstrip("/") + "/" + urllib.parse.quote(key, safe="")
     data = urllib.parse.urlencode({"body": message})
     http_ok, code, body = http_request(
         url,
@@ -299,7 +310,10 @@ def send_dingtalk(message: str, settings: dict, user_agent="Air724UG-SMS", port:
     url, err = required(settings, "dingtalk_webhook", "DINGTALK_WEBHOOK")
     if err:
         return False, err
-    secret = str(settings.get("dingtalk_secret", "")).strip()
+    secret = str(settings.get("dingtalk_secret", ""))
+    error = credential_error(secret, 'DINGTALK_SECRET')
+    if error:
+        return False, error
     keyword = str(settings.get("dingtalk_keyword", "")).strip()
     if keyword and not secret and keyword not in message:
         message = f"{keyword}\n{message}"
@@ -517,9 +531,9 @@ def send_email(message: str, settings: dict, user_agent="Air724UG-SMS", port: st
         client = None
         try:
             if encryption == "ssl":
-                client = smtplib.SMTP_SSL(host, smtp_port, timeout=15, context=context)
+                client = DeadlineSMTP_SSL(host, smtp_port, timeout=15, context=context)
             else:
-                client = smtplib.SMTP(host, smtp_port, timeout=15)
+                client = DeadlineSMTP(host, smtp_port, timeout=15)
                 client.ehlo()
                 client.starttls(context=context)
                 client.ehlo()
@@ -546,7 +560,9 @@ def send_email(message: str, settings: dict, user_agent="Air724UG-SMS", port: st
             return False, "SMTP 认证或加密协商失败"
         if isinstance(exc, smtplib.SMTPResponseException):
             return False, "SMTP 服务器拒绝发送邮件"
-        if isinstance(exc, (TimeoutError, smtplib.SMTPConnectError, OSError)):
+        if isinstance(exc, TimeoutError):
+            return False, "SMTP 请求超时，无法确认是否送达"
+        if isinstance(exc, (smtplib.SMTPConnectError, OSError)):
             return False, "SMTP 连接失败"
         return False, "SMTP 邮件发送失败"
 

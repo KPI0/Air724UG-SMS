@@ -1,7 +1,9 @@
 import threading
 
 from sms_core.threading_runtime import start_registered_daemon_thread
-from sms_core.updates import check_latest_release, normalize_config_bases
+from sms_core.updates import (
+    check_latest_release, classify_update_error, normalize_config_bases, update_download_url_for_display,
+)
 from sms_ui.thread_runtime import post_ui_if_running_runtime
 
 
@@ -40,9 +42,12 @@ def handle_update_check_plan(
             # If the browser fails to open, swallowing the error leaves the
             # user waiting with nothing. Surface the URL so they can copy it
             # and download manually, plus the reason it could not auto-open.
+            display_url = update_download_url_for_display(plan.download_url)
+            instruction = ("请手动复制以下链接下载：" if display_url == plan.download_url
+                           else "地址中的凭据已隐藏，请检查更新代理设置后重试：")
             show_warning(
                 "无法打开下载链接",
-                f"自动打开浏览器失败：{exc}\n\n请手动复制以下链接下载：\n{plan.download_url}",
+                f"自动打开浏览器失败：{classify_update_error(exc)}\n\n{instruction}\n{display_url}",
             )
     return "update"
 
@@ -101,7 +106,8 @@ def check_update_and_prompt_runtime(
                 open_url=open_url,
             )
         except Exception as exc:
-            callback = lambda exc=exc: show_error("检测更新失败", str(exc))
+            message = classify_update_error(exc)
+            callback = lambda message=message: show_error("检测更新失败", message)
         try:
             callback_handed_off = post_completion(callback)
         finally:

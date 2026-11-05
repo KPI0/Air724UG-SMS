@@ -12,6 +12,7 @@ from sms_core.cloud_control_settings import (
     write_cloud_control_settings,
 )
 from sms_core.cloud_protocol import cloud_ws_url_has_host, normalize_cloud_ws_url
+from sms_core.credential_policy import credential_error, credential_url_error
 from sms_core.threading_runtime import start_daemon_thread
 
 
@@ -300,6 +301,12 @@ def validate_cloud_start(websockets_available, url, device_secret):
             warning_message="当前 Python 环境缺少 websockets 库，无法启动云端控制。",
         )
 
+    error = credential_error(device_secret, '云端控制密码') or credential_url_error(url, 'WebSocket地址')
+    if error:
+        return CloudStartValidation(
+            ok=False, status_text='🌐 密码格式错误', status_color='#cc0000',
+            warning_title='云端控制', warning_message=error,
+        )
     normalized_url = normalize_cloud_ws_url(url)
     if not normalized_url:
         return CloudStartValidation(

@@ -2,14 +2,28 @@ from dataclasses import dataclass
 import json
 import re
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 import urllib.error
 import urllib.request
 
 from sms_core.http_deadline import urlopen_with_deadline
+from sms_core.cloud_security import cloud_connection_error_for_display
+from sms_core.credential_policy import URL_CREDENTIAL_NAMES
 
 
 MAX_RELEASE_JSON_BYTES = 1024 * 1024
+UPDATE_VALIDATION_MESSAGES = frozenset((
+    "更新服务返回的版本号缺失或无效，请检查更新代理设置",
+    "更新服务返回的附件列表无效", "更新服务返回的附件信息无效",
+    "更新服务返回的附件大小无效",
+    "更新服务返回的下载链接无效，仅支持完整的 HTTP/HTTPS 地址",
+    "更新服务响应过大，已停止读取",
+))
+
+
+class UpdateRequestError(RuntimeError):
+    def __init__(self, reason):
+        super().__init__("获取最新版本信息失败：" + classify_update_error(reason))
 
 
 def _validate_release(release):
@@ -119,7 +133,7 @@ def fetch_latest_release(owner: str, repo: str, api_proxy_base: str, get_json=No
         except Exception as exc:
             last_err = exc
 
-    raise RuntimeError(f"获取最新版本信息失败：{last_err}")
+    raise UpdateRequestError(last_err) from None
 
 
 def plan_update_check(
@@ -217,15 +231,65 @@ def http_probe(url: str, timeout=8, retries=2):
 
 
 def classify_update_error(exc: Exception) -> str:
-    text = str(exc)
-    lower_text = text.lower()
-    if "sslv3_alert_handshake_failure" in text or "sslv3 alert handshake failure" in lower_text:
+    if type(exc) is UpdateRequestError:
+        return exc.args[0]
+    if isinstance(exc, urllib.error.HTTPError):
+        code = exc.code if type(exc.code) is int else None
+        return f"HTTP {code} 请求失败" if code is not None else "HTTP 请求失败"
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        exc = exc.reason
+    if (type(exc) is ValueError and len(exc.args) == 1 and isinstance(exc.args[0], str)
+            and exc.args[0] in UPDATE_VALIDATION_MESSAGES):
+        return exc.args[0]
+    category = cloud_connection_error_for_display(exc)
+    if category == "TLS 握手失败":
         return "TLS握手失败（代理节点/线路不兼容或被干扰）"
-    if isinstance(exc, TimeoutError) or "timed out" in lower_text or "请求超时" in text:
+    if category == "连接超时":
         return "连接超时（线路慢/被阻断）"
-    if "name or service not known" in lower_text or "getaddrinfo failed" in lower_text:
-        return "DNS 解析失败"
-    return text
+    if category in ("DNS 解析失败", "TLS 服务器证书验证失败"):
+        return category
+    return f"更新请求失败（{type(exc).__name__}），请检查网络及代理设置"
+
+
+def update_proxy_target_for_display(value):
+    hidden = "更新代理地址（已隐藏）"
+    if not isinstance(value, str):
+        return hidden
+    try:
+        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+            return hidden
+        parsed = urlsplit(value)
+        host, port = parsed.hostname, parsed.port
+        if parsed.scheme not in ("http", "https") or not host or "\\" in host:
+            return hidden
+        host = f"[{host}]" if ":" in host else host
+        return f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
+    except (TypeError, ValueError):
+        return hidden
+
+
+def update_download_url_for_display(value):
+    """Keep ordinary copyable links; hide confirmed URL credential components."""
+    if not isinstance(value, str):
+        return "下载地址（已隐藏）"
+    try:
+        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+            return "下载地址（已隐藏）"
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return "下载地址（已隐藏）"
+        authority = parsed.netloc
+        if "@" in authority:
+            authority = "***@" + authority.rsplit("@", 1)[1]
+        fields = []
+        for field in parsed.query.split("&") if parsed.query else []:
+            key = field.partition("=")[0]
+            if unquote_plus(key).lower() in URL_CREDENTIAL_NAMES | {'pwd', 'passwd', 'sign', 'authorization'}:
+                field = key + "=***"
+            fields.append(field)
+        return urlunsplit((parsed.scheme, authority, parsed.path, "&".join(fields), ""))
+    except (TypeError, ValueError):
+        return "下载地址（已隐藏）"
 
 
 def test_update_proxy_connectivity(
@@ -294,7 +358,13 @@ def test_update_proxy_connectivity(
 
 def format_proxy_test_result(result: dict):
     checks = result.get("checks") or []
-    lines = [("✅ " if ok else "❌ ") + f"{name}：{info}" for name, ok, info in checks]
+    lines = []
+    for name, ok, info in checks:
+        if isinstance(name, str) and name.startswith("下载代理 http"):
+            name = "下载代理 " + update_proxy_target_for_display(name[len("下载代理 "):])
+        elif isinstance(name, str) and name.startswith(("http://", "https://")):
+            name = update_proxy_target_for_display(name)
+        lines.append(("✅ " if ok else "❌ ") + f"{name}：{info}")
 
     ok_bases = result.get("ok_bases") or []
     download_ok = bool(result.get("download_ok"))

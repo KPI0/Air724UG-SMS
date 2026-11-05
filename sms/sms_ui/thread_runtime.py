@@ -48,10 +48,10 @@ def ui_post_runtime(task_queue, callback, args=(), kwargs=None, *, on_full=None,
             try:
                 on_full()
             except Exception as exc:
-                _safe_log(log_error, f"UI task queue full handler failed: {exc!r}")
+                _safe_log(log_error, f"UI task queue full handler failed: {type(exc).__name__}")
         return False
     except Exception as exc:
-        _safe_log(log_error, f"UI task enqueue failed: {exc!r}")
+        _safe_log(log_error, f"UI task enqueue failed: {type(exc).__name__}")
         return False
 
 
@@ -88,7 +88,7 @@ def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200,
             callback, args, kwargs = task
             callback(*args, **kwargs)
         except Exception as exc:
-            _safe_log(log_error, f"UI task failed: {exc!r}")
+            _safe_log(log_error, f"UI task failed: {type(exc).__name__}")
         finally:
             task_done_safely(task_queue)
         processed += 1
@@ -97,7 +97,7 @@ def ui_pump_runtime(task_queue, root, tk_alive, schedule_self, *, max_batch=200,
         try:
             root.after(interval_ms, schedule_self)
         except Exception as exc:
-            _safe_log(log_error, f"UI pump reschedule failed: {exc!r}")
+            _safe_log(log_error, f"UI pump reschedule failed: {type(exc).__name__}")
     return processed
 
 
@@ -116,7 +116,7 @@ def schedule_delayed_ui_runtime(
         try:
             return callback()
         except Exception as exc:
-            _safe_log(log_error, f"Delayed UI callback failed: {exc!r}")
+            _safe_log(log_error, f"Delayed UI callback failed: {type(exc).__name__}")
             return None
 
     def schedule_in_main():
@@ -124,14 +124,14 @@ def schedule_delayed_ui_runtime(
             elapsed = monotonic() - app_start_mono
             delay_ms = int(max(0.0, start_ui_delay - elapsed) * 1000)
         except Exception as exc:
-            _safe_log(log_error, f"Compute delayed UI schedule failed: {exc!r}")
+            _safe_log(log_error, f"Compute delayed UI schedule failed: {type(exc).__name__}")
             delay_ms = 0
 
         if delay_ms > 0:
             try:
                 return root_after(delay_ms, run_callback_once)
             except Exception as exc:
-                _safe_log(log_error, f"Schedule delayed UI callback failed: {exc!r}")
+                _safe_log(log_error, f"Schedule delayed UI callback failed: {type(exc).__name__}")
 
         return run_callback_once()
 

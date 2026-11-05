@@ -113,6 +113,41 @@ class FakeSmsCoordinator:
 
 
 class SerialSenderResultTests(unittest.TestCase):
+    def test_sim_credential_write_keeps_raw_bytes_and_hides_debug(self):
+        for command in ('AT+CPIN="11223344"', 'AT+CPIN="11223344","55667788"',
+                        'ATD**04*11223344*55667788*55667788#', 'ATD**05*11223344*55667788*55667788#',
+                        'AT+CPIN?\r\nAT+CPIN="11223344"',
+                        'AT+CSQ\r\nATD**05*11223344*55667788*55667788#'):
+            with self.subTest(command_kind=command.split('=')[0].split('*')[0]):
+                serial_obj, debug = FakeSerial(), []
+                result = write_serial_command_result(serial_obj, command, push_debug=debug.append)
+                self.assertTrue(result.ok)
+                self.assertEqual(serial_obj.writes, [(command + '\r\n').encode('ascii')])
+                self.assertEqual(serial_obj.flush_count, 1)
+                self.assertTrue(debug)
+                self.assertNotIn('11223344', str(debug))
+                self.assertNotIn('55667788', str(debug))
+
+    def test_sim_credential_write_and_flush_errors_hide_payload_before_debug(self):
+        command = 'AT+CPIN="11223344"'
+        for fail_flush in (False, True):
+            with self.subTest(fail_flush=fail_flush):
+                class SensitiveErrorSerial(FakeSerial):
+                    def write(self, payload):
+                        self.writes.append(payload)
+                        if not fail_flush:
+                            raise OSError('synthetic write error ' + payload.decode('ascii'))
+                    def flush(self):
+                        raise OSError('synthetic flush error ' + command)
+                serial_obj, debug = SensitiveErrorSerial(), []
+                result = write_serial_command_result(serial_obj, command, push_debug=debug.append)
+                self.assertFalse(result.ok)
+                self.assertEqual(serial_obj.writes, [(command + '\r\n').encode('ascii')])
+                self.assertTrue(debug)
+                self.assertNotIn('11223344', result.error)
+                self.assertNotIn('11223344', str(debug))
+                self.assertIn('OSError', result.error)
+
     def test_write_serial_command_result_reports_success(self):
         serial_obj = FakeSerial()
 
@@ -636,6 +671,62 @@ class SerialSenderResultTests(unittest.TestCase):
             ],
         )
 
+    def test_number_sequence_preserves_trusted_terminal_before_flush_failure(self):
+        commands = ('AT+CPBS="ON"', 'AT+CPBW=1,"10086",129', "AT+CNUM")
+        for terminal in ("OK", "ERROR"):
+            with self.subTest(terminal=terminal):
+                coordinator = AtCommandResponseCoordinator()
+
+                def on_write(_payload):
+                    reply = terminal if len(serial_obj.writes) == 1 else "OK"
+                    coordinator.observe_line("[I]-[ril.proatc] " + reply, connection=serial_obj)
+
+                serial_obj = CallbackSerial(on_write)
+
+                def flush():
+                    if len(serial_obj.writes) == 1:
+                        self.assertTrue(coordinator._active.wait(0).line)
+                        raise OSError("synthetic flush failure after number sequence terminal")
+
+                serial_obj.flush = flush
+                result = write_serial_command_sequence_confirmed_locked(
+                    threading.RLock(), lambda: serial_obj, commands,
+                    response_coordinator=coordinator, response_timeout=0.1,
+                )
+                self.assertEqual(result.ok, terminal == "OK")
+                self.assertEqual(serial_obj.writes,
+                    [(command + "\r\n").encode() for command in (commands if terminal == "OK" else commands[:1])])
+                if terminal == "ERROR":
+                    self.assertEqual(result.error, "ERROR")
+                self.assertFalse(serial_sender.serial_sms_recovery_error(serial_obj))
+                self.assertIsNone(coordinator._active)
+
+    def test_number_sequence_trusted_terminal_after_flush_failure_keeps_original_serial(self):
+        coordinator = AtCommandResponseCoordinator()
+        replacement = FakeSerial()
+        current = []
+
+        def on_write(_payload):
+            coordinator.observe_line("[I]-[ril.proatc] OK", connection=serial_obj)
+
+        serial_obj = CallbackSerial(on_write)
+        current.append(serial_obj)
+
+        def flush():
+            self.assertTrue(coordinator._active.wait(0).line)
+            current[0] = replacement
+            raise OSError("synthetic flush failure after confirmed command and connection change")
+
+        serial_obj.flush = flush
+        result = write_serial_command_sequence_confirmed_locked(
+            threading.RLock(), lambda: current[0], ('AT+CPBS="ON"', "AT+CNUM"),
+            response_coordinator=coordinator, response_timeout=0.1,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(serial_obj.writes, [b'AT+CPBS="ON"\r\n'])
+        self.assertEqual(replacement.writes, [])
+        self.assertIsNone(coordinator._active)
+
     def test_confirmed_command_sequence_stops_after_first_error(self):
         coordinator = AtCommandResponseCoordinator()
 
@@ -889,7 +980,7 @@ class SerialSenderResultTests(unittest.TestCase):
             threading.Lock(),
             lambda: FakeSerial(),
             "ATA",
-            on_result=lambda _result: (_ for _ in ()).throw(RuntimeError("callback failed")),
+            on_result=lambda _result: (_ for _ in ()).throw(RuntimeError("password=synthetic-callback-secret")),
             log_error=logs.append,
             thread_registry=registry,
         )
@@ -897,7 +988,8 @@ class SerialSenderResultTests(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(registry.snapshot(), ())
-        self.assertTrue(any("callback failed" in message for message in logs))
+        self.assertTrue(any("RuntimeError" in message for message in logs))
+        self.assertFalse(any("synthetic-callback-secret" in message for message in logs))
 
     def test_serial_command_thread_unregisters_when_thread_start_fails(self):
         registry = WorkerThreadRegistry()

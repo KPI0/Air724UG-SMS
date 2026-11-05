@@ -10,6 +10,35 @@ from sms_ui.serial_debug_namespace_runtime import (
 
 
 class SerialDebugNamespaceRuntimeTests(unittest.TestCase):
+    def test_debug_credential_echoes_are_private_without_changing_protocol_lines(self):
+        namespace = self.base_namespace()
+        namespace['serial_debug_queue'] = queue.Queue()
+        lines = ('AT+CPIN="11223344"', '[I]-[ril.sendat] AT+CPIN="11223344"',
+                 '[串口] [I]-[ril.proatc] AT+CPIN="11223344"',
+                 '>>> 发送: AT+CPIN="11223344"\\r\\n',
+                 'AT + CPIN = 11223344', '+CPIN=11223344',
+                 'ATD**05*11223344*55667788*55667788#',
+                 'AT+CPIN?\r\nAT+CPIN="11223344"',
+                 '>>> 发送: AT+CSQ\r\nATD**05*11223344*55667788*55667788#')
+        for line in lines:
+            self.assertEqual(push_serial_debug_namespace_runtime(namespace, line), 'queued')
+            output = namespace['serial_debug_queue'].get_nowait()
+            self.assertNotIn('11223344', output)
+            self.assertNotIn('55667788', output)
+            self.assertIn('隐藏', output)
+
+    def test_debug_preserves_pin_queries_states_and_sms_callback_content(self):
+        namespace = self.base_namespace()
+        namespace['serial_debug_queue'] = queue.Queue()
+        lines = ('AT+CPIN?', 'AT+CPIN=?', '+CPIN: READY',
+                 '[I]-[ril.proatc] +CPIN: SIM PIN', '>>> 发送: AT+CSQ\\r\\n',
+                 '[I]-[handler_sms.smsCallback] 10086 synthetic text AT+CPIN="11223344"',
+                 '[I]-[handler_sms.smsCallback] 10086 synthetic SMS\nAT+CPIN="11223344"',
+                 'AT+CPIN = ?', 'AT+CSQ\r\nAT+CPIN?')
+        for line in lines:
+            self.assertEqual(push_serial_debug_namespace_runtime(namespace, line), 'queued')
+            self.assertEqual(namespace['serial_debug_queue'].get_nowait(), line)
+
     def base_namespace(self):
         return {
             "root": "root",

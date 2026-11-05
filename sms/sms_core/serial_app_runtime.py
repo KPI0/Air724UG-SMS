@@ -1,5 +1,7 @@
 from contextlib import nullcontext
+import threading
 from sms_core.call_command_context import call_with_state_snapshot, observe_call_command_line
+from sms_core.call_send_namespace_runtime import build_auto_call_hangup_callback
 
 from sms_core.serial_runtime import (
     SerialRuntimeCallbacks,
@@ -69,6 +71,11 @@ def build_serial_runtime_callbacks(callbacks):
             "consume_call_recording_line",
             lambda _line: False,
         ),
+        abort_call_recording_transfer=callbacks.get(
+            "abort_call_recording_transfer",
+            lambda _reason="": None,
+        ),
+        restore_connected_status=callbacks.get("restore_connected_status"),
     )
 
 
@@ -190,6 +197,7 @@ def build_serial_app_wiring(
             lambda line: DEFAULT_SMS_PDU_SEND_COORDINATOR.observe_line(line),
         ),
         "set_status": callbacks["set_status"],
+        "restore_connected_status": callbacks.get("restore_connected_status"),
         "close_call_popup": callbacks["close_call_popup"],
         "send_call_hangup": callbacks["send_call_hangup"],
         "show_call_popup": callbacks["show_call_popup"],
@@ -290,6 +298,18 @@ def run_serial_reader_namespace_runtime(
         "SERIAL_COMMAND_RESPONSE_COORDINATOR",
         DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     )
+    send_auto_hangup = build_auto_call_hangup_callback(namespace)
+    owner_thread = threading.get_ident()
+    sessions = []
+
+    def register_session(session):
+        sessions[:] = [owned for owned in sessions if owned.pending or owned.lock_held]
+        if session.owner_thread == owner_thread and session not in sessions:
+            sessions.append(session)
+
+    def current_session():
+        session = namespace.get("_serial_initialization_session")
+        return session if session in sessions else None
 
     def observe_sms_send_line(line, *, call_state_snapshot=None):
         connection = namespace.get("serial_obj")
@@ -297,18 +317,46 @@ def run_serial_reader_namespace_runtime(
             line,
             connection=connection,
         )
-        if sms_consumed:
-            return
-        return call_with_state_snapshot(
-            command_response_coordinator.observe_line, line, connection=connection,
-            call_state_snapshot=call_state_snapshot, check_current=False,
-        )
+        try:
+            if not sms_consumed:
+                return call_with_state_snapshot(
+                    command_response_coordinator.observe_line, line, connection=connection,
+                    call_state_snapshot=call_state_snapshot, check_current=False,
+                )
+        finally:
+            session = current_session()
+            if session is not None:
+                session.observe_after_line()
+
+    def read_initialized_serial():
+        session = current_session()
+        if session is not None:
+            session.read_boundary()
+        return namespace["read_serial_line_safely"]()
 
     def cancel_serial_transactions(error="串口连接已断开"):
+        session = current_session()
+        if session is not None:
+            session.close()
         sms_send_coordinator.cancel_active(error)
         return command_response_coordinator.cancel_active(error)
 
-    return run_reader(
+    def run_reader_with_cleanup(**kwargs):
+        namespace["_register_serial_initialization_session"] = register_session
+        previous = namespace.get("_serial_initialization_session")
+        if previous is not None:
+            register_session(previous)
+        try:
+            return run_reader(**kwargs)
+        finally:
+            try:
+                for session in reversed(sessions):
+                    session.close()
+            finally:
+                if namespace.get("_register_serial_initialization_session") is register_session:
+                    namespace.pop("_register_serial_initialization_session", None)
+
+    return run_reader_with_cleanup(
         parse_callback_head=parse_callback_head,
         values={
             "keywords": lambda: namespace["KEYWORDS"],
@@ -345,8 +393,9 @@ def run_serial_reader_namespace_runtime(
             "observe_sms_send_line": observe_sms_send_line,
             "cancel_sms_send": cancel_serial_transactions,
             "set_status": namespace["set_status"],
+            "restore_connected_status": namespace.get("restore_connected_status"),
             "close_call_popup": namespace["close_call_popup"],
-            "send_call_hangup": namespace["send_call_hangup_command"],
+            "send_call_hangup": send_auto_hangup,
             "show_call_popup": namespace["show_call_popup"],
             "consume_remote_incoming_end": namespace.get("consume_remote_incoming_end", lambda _session_id: False),
             "call_state_guard": namespace.get("serial_call_state_guard", nullcontext),
@@ -407,7 +456,7 @@ def run_serial_reader_namespace_runtime(
         io_callbacks={
             "resolve_target_port": namespace["resolve_serial_target_port"],
             "open_and_initialize_serial": namespace["open_and_initialize_serial"],
-            "read_serial_line": namespace["read_serial_line_safely"],
+            "read_serial_line": read_initialized_serial,
             "safe_close_serial": namespace["safe_close_serial"],
         },
         reconnect_callbacks={

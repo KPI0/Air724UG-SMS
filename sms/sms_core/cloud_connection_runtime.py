@@ -1,5 +1,7 @@
 import json
 
+from sms_core.cloud_security import cloud_connection_error_for_display
+
 
 def serialize_cloud_payload(payload):
     return json.dumps(payload, ensure_ascii=False)
@@ -31,7 +33,7 @@ async def send_cloud_payload_runtime(
         await ws.send(serialize_payload(payload))
         return "sent"
     except Exception as exc:
-        _safe_log(log_error, f"Send cloud payload failed: {exc!r}")
+        _safe_log(log_error, f"Send cloud payload failed: {cloud_connection_error_for_display(exc)}")
         return "error"
 
 
@@ -60,7 +62,7 @@ def schedule_cloud_payload_runtime(
         run_coroutine_threadsafe(coro, loop)
         return True
     except Exception as exc:
-        _safe_log(log_error, f"Schedule cloud payload failed: {exc!r}")
+        _safe_log(log_error, f"Schedule cloud payload failed: {cloud_connection_error_for_display(exc)}")
         if coro is not None:
             try:
                 _close_unawaited_coro(coro)
@@ -88,7 +90,7 @@ def schedule_cloud_unregister_runtime(
             run_coroutine_threadsafe(coro, loop)
             return True
     except Exception as exc:
-        _safe_log(log_error, f"Schedule cloud unregister failed: {exc!r}")
+        _safe_log(log_error, f"Schedule cloud unregister failed: {cloud_connection_error_for_display(exc)}")
         if coro is not None:
             _close_unawaited_coro(coro)
     return False
@@ -110,19 +112,19 @@ async def unregister_then_close_cloud_connection_runtime(
             await send_unregister(ws, reason)
             unregistered = True
     except Exception as exc:
-        _safe_log(log_error, f"Send cloud unregister failed: {exc!r}")
+        _safe_log(log_error, f"Send cloud unregister failed: {cloud_connection_error_for_display(exc)}")
 
     if send_session_revoke is not None:
         try:
             await send_session_revoke(ws, reason)
         except Exception as exc:
-            _safe_log(log_error, f"Revoke cloud device session failed: {exc!r}")
+            _safe_log(log_error, f"Revoke cloud device session failed: {cloud_connection_error_for_display(exc)}")
 
     try:
         await ws.close()
         closed = True
     except Exception as exc:
-        _safe_log(log_error, f"Close cloud websocket failed: {exc!r}")
+        _safe_log(log_error, f"Close cloud websocket failed: {cloud_connection_error_for_display(exc)}")
 
     return unregistered, closed
 
@@ -141,5 +143,5 @@ async def reply_cloud_payload_runtime(
         await ws.send(serialize_payload(payload))
         return "sent"
     except Exception as exc:
-        log(f"回复云端失败：{exc}")
+        log(f"回复云端失败：{cloud_connection_error_for_display(exc)}")
         return "error"

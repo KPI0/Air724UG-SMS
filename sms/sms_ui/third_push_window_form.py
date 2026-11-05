@@ -1,5 +1,6 @@
 import json
 import tkinter as tk
+from sms_core.credential_policy import PUSH_CREDENTIAL_FIELDS, PUSH_URL_FIELDS
 from tkinter import messagebox, ttk
 
 from sms_core.third_push import (
@@ -344,7 +345,8 @@ class ThirdPushFormController:
             "call_enabled": bool(state.get("call_enabled")),
             "channels": tuple(channel for channel, _label in THIRD_PUSH_CHANNELS if channel in selected),
             "settings": {
-                key: str((state.get("settings") or {}).get(key, "")).strip()
+                key: (str((state.get("settings") or {}).get(key, "")) if key in PUSH_CREDENTIAL_FIELDS or key in PUSH_URL_FIELDS
+                      else str((state.get("settings") or {}).get(key, "")).strip())
                 for key in THIRD_PUSH_SETTINGS_KEYS
             },
         }
@@ -359,7 +361,7 @@ class ThirdPushFormController:
                 if self.channel_vars[channel].get()
             ),
             "settings": {
-                key: str(var.get()).strip()
+                key: str(var.get()) if key in PUSH_CREDENTIAL_FIELDS or key in PUSH_URL_FIELDS else str(var.get()).strip()
                 for key, var in self.entry_vars.items()
             },
         }
@@ -395,7 +397,8 @@ class ThirdPushFormController:
             messagebox.showerror("错误", "启用三方推送时，请至少选择一个通知通道。", parent=self.win)
             return None
 
-        settings = {key: var.get().strip() for key, var in self.entry_vars.items()}
+        settings = {key: var.get() if key in PUSH_CREDENTIAL_FIELDS or key in PUSH_URL_FIELDS else var.get().strip()
+                    for key, var in self.entry_vars.items()}
         if validate and "custom_post" in selected:
             json_error = validate_custom_post_body(settings)
             if json_error:

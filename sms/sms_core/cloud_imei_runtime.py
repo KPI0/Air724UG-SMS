@@ -116,31 +116,32 @@ def request_cloud_device_imei_worker(
     monotonic=time.monotonic,
     push_serial_debug=None,
     cloud_log,
+    confirmed_imei_query=None,
 ):
     try:
-        # Wait for preceding AT/PDU transactions before starting the reply
-        # window. Choose the connection only after that wait, since a serial
-        # reconnect may have replaced it while this request was queued.
-        with transaction_lock, write_lock:
-            with serial_lock:
-                serial_obj = get_serial()
-                query_deadline = monotonic() + IMEI_QUERY_WINDOW_SECONDS
-                set_query_deadline(query_deadline)
-
-            def cancel_query_window():
+        if confirmed_imei_query is not None:
+            result = confirmed_imei_query()
+        else:
+            # Legacy callers retain the raw-write API. The maintained
+            # namespace supplies a confirmed query that owns its terminal.
+            with transaction_lock, write_lock:
                 with serial_lock:
-                    if get_query_deadline is None or get_query_deadline() == query_deadline:
-                        set_query_deadline(0.0)
+                    serial_obj = get_serial()
+                    query_deadline = monotonic() + IMEI_QUERY_WINDOW_SECONDS
+                    set_query_deadline(query_deadline)
 
-            try:
-                # Do not hold serial_lock while writing/flushing: the read
-                # thread must be able to consume an immediate reply.
-                result = write_command_result(serial_obj, IMEI_READ_COMMAND)
-            except Exception:
-                cancel_query_window()
-                raise
-            if not result.ok:
-                cancel_query_window()
+                def cancel_query_window():
+                    with serial_lock:
+                        if get_query_deadline is None or get_query_deadline() == query_deadline:
+                            set_query_deadline(0.0)
+
+                try:
+                    result = write_command_result(serial_obj, IMEI_READ_COMMAND)
+                except Exception:
+                    cancel_query_window()
+                    raise
+                if not result.ok:
+                    cancel_query_window()
         if not result.ok:
             cloud_log(f"读取IMEI失败：{result.error}")
             return False
@@ -174,6 +175,7 @@ def request_cloud_device_imei_runtime(
     thread_factory=threading.Thread,
     thread_registry=DEFAULT_SERIAL_COMMAND_THREAD_REGISTRY,
     start_worker=start_registered_serial_worker,
+    confirmed_imei_query=None,
 ):
     def task():
         request_cloud_device_imei_worker(
@@ -187,6 +189,7 @@ def request_cloud_device_imei_runtime(
             monotonic=monotonic,
             push_serial_debug=push_serial_debug,
             cloud_log=cloud_log,
+            confirmed_imei_query=confirmed_imei_query,
         )
 
     try:

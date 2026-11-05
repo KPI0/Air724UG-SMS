@@ -119,6 +119,87 @@ class SmsSubmissionBoundaryTests(unittest.TestCase):
                     modem.observe("OK")
                     self.assertFalse(serial_sender.write_serial_command_result(modem, "ATI").ok)
 
+    def test_trusted_cmgf_terminal_before_flush_failure_preserves_all_entries(self):
+        for path in ("direct", "locked", "async", "manual"):
+            for terminal in ("OK", "ERROR"):
+                with self.subTest(path=path, terminal=terminal):
+                    ns, modem, at, sms = self.fixture()
+                    modem.command_reply = terminal
+                    faults = []
+
+                    def flush():
+                        if modem.writes[-1] == b"AT+CMGF=0\r\n" and not faults:
+                            self.assertTrue(at._active.wait(0).line)
+                            faults.append(True)
+                            raise OSError("synthetic flush failure after trusted CMGF terminal")
+
+                    modem.flush = flush
+                    outcomes = []
+                    worker = self.start_send(path, ns, modem, sms, outcomes,
+                                             command_response_coordinator=at)
+                    worker.join(2)
+                    self.assertFalse(worker.is_alive())
+                    expected = [True] if terminal == "OK" else ([] if path in ("async", "manual") else [False])
+                    self.assertEqual(outcomes, expected)
+                    self.assertEqual(faults, [True])
+                    self.assertEqual(any(payload.startswith(b"AT+CMGS=") for payload in modem.writes), terminal == "OK")
+                    self.assertFalse(serial_sender.serial_sms_recovery_error(modem))
+                    self.assertIsNone(at._active)
+                    self.assertIsNone(sms._active)
+                    self.assertNotIn(b"\x1b", modem.writes)
+
+    def test_confirmed_cmgf_flush_failure_cannot_restore_revoked_cloud_send(self):
+        from sms_core.cloud_command_context import set_cloud_command_authorized
+        from sms_core.cloud_message_namespace_runtime import send_cloud_serial_command_namespace_runtime
+
+        for reauthorize in (False, True):
+            with self.subTest(reauthorize=reauthorize):
+                ns, modem, at, sms = self.fixture()
+
+                def flush():
+                    self.assertTrue(at._active.wait(0).line)
+                    set_cloud_command_authorized(ns, False)
+                    if reauthorize:
+                        set_cloud_command_authorized(ns, True)
+                    raise OSError("synthetic flush failure after confirmed CMGF and authorization change")
+
+                modem.flush = flush
+                result = send_cloud_serial_command_namespace_runtime(
+                    ns, "CLOUD:SEND_SMS", {"sms_phone": "10086", "sms_message": "synthetic-only"},
+                )
+                self.assertFalse(result[0])
+                self.assertEqual(modem.writes, [b"AT+CMGF=0\r\n"])
+                self.assertFalse(serial_sender.serial_sms_recovery_error(modem))
+                self.assertIsNone(at._active)
+                self.assertIsNone(sms._active)
+
+    def test_confirmed_cmgf_flush_failure_cannot_move_manual_send_to_new_connection(self):
+        for change in ("generation", "connection"):
+            with self.subTest(change=change):
+                ns, modem, at, sms = self.fixture()
+
+                def flush():
+                    self.assertTrue(at._active.wait(0).line)
+                    if change == "generation":
+                        ns["serial_connection_generation"] += 1
+                    else:
+                        ns["serial_obj"] = recovery.StatefulModem()
+                    raise OSError("synthetic flush failure after confirmed CMGF and connection change")
+
+                modem.flush = flush
+                outcomes = []
+                worker = self.start_send("manual", ns, modem, sms, outcomes,
+                                         command_response_coordinator=at)
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(outcomes, [])
+                self.assertEqual(modem.writes, [b"AT+CMGF=0\r\n"])
+                if change == "connection":
+                    self.assertEqual(ns["serial_obj"].writes, [])
+                self.assertFalse(serial_sender.serial_sms_recovery_error(modem))
+                self.assertIsNone(at._active)
+                self.assertIsNone(sms._active)
+
     def test_unknown_pdu_write_submission_does_not_send_escape(self):
         for path in ("direct", "locked"):
             ns, modem, at, sms = self.fixture()

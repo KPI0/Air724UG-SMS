@@ -15,6 +15,7 @@ class IncomingCallSessionSnapshot:
     started_at: object = None
     handled: bool = False
     session_token: object = None
+    confirmed_handled: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class IncomingCallSessionTracker:
         self._started_at = None
         self._handled = False
         self._session_token = None
+        self._confirmed_handled = False
 
     def start(self, caller_num):
         caller = str(caller_num or "").strip()
@@ -56,6 +58,7 @@ class IncomingCallSessionTracker:
             self._caller_num = caller
             self._started_at = self._now_func()
             self._handled = False
+            self._confirmed_handled = False
             # Wall-clock timestamps can repeat across consecutive calls.
             self._session_token = object()
             return IncomingCallStartResult(
@@ -71,6 +74,14 @@ class IncomingCallSessionTracker:
             self._handled = True
             return True
 
+    def confirm_handled(self, expected_token):
+        with self._lock:
+            if expected_token is None or self._session_token is not expected_token:
+                return False
+            self._handled = True
+            self._confirmed_handled = True
+            return True
+
     def finish(self):
         with self._lock:
             missed_call = None
@@ -83,6 +94,7 @@ class IncomingCallSessionTracker:
             self._started_at = None
             self._handled = False
             self._session_token = None
+            self._confirmed_handled = False
             return missed_call
 
     def reset(self):
@@ -91,6 +103,7 @@ class IncomingCallSessionTracker:
             self._started_at = None
             self._handled = False
             self._session_token = None
+            self._confirmed_handled = False
 
     def snapshot(self):
         with self._lock:
@@ -99,4 +112,5 @@ class IncomingCallSessionTracker:
                 started_at=self._started_at,
                 handled=self._handled,
                 session_token=self._session_token,
+                confirmed_handled=self._confirmed_handled,
             )

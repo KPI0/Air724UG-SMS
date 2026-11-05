@@ -2,7 +2,7 @@ import inspect
 import queue
 import time
 
-from sms_core.file_log_runtime import wait_for_file_log_worker
+from sms_core.file_log_runtime import drain_available_log_lines, wait_for_file_log_worker, write_log_batches
 from sms_core.threading_runtime import (
     queues_are_drained,
     task_done_safely,
@@ -43,41 +43,27 @@ def safe_set_events(*events, log_error=None):
             event.set()
             count += 1
         except Exception as exc:
-            _safe_log(log_error, f"Set shutdown event failed: {exc!r}")
+            _safe_log(log_error, f"Set shutdown event failed: {type(exc).__name__}")
     return count
 
 
 def drain_log_queue(log_queue, *, log_error=None):
-    batches = {}
-    while True:
-        try:
-            item = log_queue.get_nowait()
-        except queue.Empty:
-            break
-        except Exception as exc:
-            _safe_log(log_error, f"Drain shutdown log queue failed: {exc!r}")
-            break
+    try:
+        first_item = log_queue.get_nowait()
+    except queue.Empty:
+        return {}
+    except Exception as exc:
+        _safe_log(log_error, f"Drain shutdown log queue failed: {type(exc).__name__}")
+        return {}
+    try:
+        return drain_available_log_lines(log_queue, first_item, on_error=lambda message: _safe_log(log_error, message))
+    finally:
         task_done_safely(log_queue)
-        try:
-            path, line = item
-        except Exception as exc:
-            _safe_log(log_error, f"Drain shutdown log queue skipped bad item: {exc!r}")
-            continue
-        batches.setdefault(path, []).append(line)
-    return batches
 
 
 def flush_log_queue(log_queue, encoding="utf-8", *, log_error=None):
     batches = drain_log_queue(log_queue, log_error=log_error)
-    written = 0
-    for path, lines in batches.items():
-        try:
-            with open(path, "a", encoding=encoding) as file:
-                file.writelines(lines)
-            written += len(lines)
-        except Exception as exc:
-            _safe_log(log_error, f"Flush shutdown log queue failed for {path!r}: {exc!r}")
-    return written
+    return write_log_batches(batches, encoding=encoding, on_error=lambda message: _safe_log(log_error, message))
 
 
 def _threads_added_after_snapshot(previous_threads, current_threads):
@@ -150,7 +136,7 @@ def cleanup_and_exit_runtime(
             try:
                 report_progress(message)
             except Exception as exc:
-                _safe_log(log_error, f"Report shutdown progress failed: {exc!r}")
+                _safe_log(log_error, f"Report shutdown progress failed: {type(exc).__name__}")
 
     progress("正在停止接收并保存已收到的短信…")
     _call_with_optional_log_error(safe_set_events, *tuple(shutdown_events or ()), log_error=log_error)
@@ -170,28 +156,28 @@ def cleanup_and_exit_runtime(
             progress("正在确认云端事件并关闭连接…")
             before_stop_cloud()
     except Exception as exc:
-        _safe_log(log_error, f"Finish received SMS before cloud shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Finish received SMS before cloud shutdown failed: {type(exc).__name__}")
         return "worker_wait_failed"
 
     try:
         stop_cloud_control(update_status=False)
     except Exception as exc:
-        _safe_log(log_error, f"Stop cloud control during shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Stop cloud control during shutdown failed: {type(exc).__name__}")
 
     try:
         safe_close_serial()
     except Exception as exc:
-        _safe_log(log_error, f"Close serial during shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Close serial during shutdown failed: {type(exc).__name__}")
 
     try:
         stop_tray_icon(wait_after=0.25)
     except Exception as exc:
-        _safe_log(log_error, f"Stop tray icon during shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Stop tray icon during shutdown failed: {type(exc).__name__}")
 
     try:
         threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
     except Exception as exc:
-        _safe_log(log_error, f"Snapshot shutdown worker threads failed: {exc!r}")
+        _safe_log(log_error, f"Snapshot shutdown worker threads failed: {type(exc).__name__}")
         return "worker_wait_failed"
     try:
         progress("正在等待后台任务结束…")
@@ -201,7 +187,7 @@ def cleanup_and_exit_runtime(
             log_error=log_error,
         )
     except Exception as exc:
-        _safe_log(log_error, f"Wait for producer worker threads raised: {exc!r}")
+        _safe_log(log_error, f"Wait for producer worker threads raised: {type(exc).__name__}")
         return "worker_wait_failed"
     if workers_stopped is False:
         _safe_log(
@@ -214,7 +200,7 @@ def cleanup_and_exit_runtime(
         try:
             final_threads_to_wait = worker_threads()
         except Exception as exc:
-            _safe_log(log_error, f"Snapshot final shutdown worker threads failed: {exc!r}")
+            _safe_log(log_error, f"Snapshot final shutdown worker threads failed: {type(exc).__name__}")
             return "worker_wait_failed"
         late_threads = _threads_added_after_snapshot(
             threads_to_wait,
@@ -228,7 +214,7 @@ def cleanup_and_exit_runtime(
                     log_error=log_error,
                 )
             except Exception as exc:
-                _safe_log(log_error, f"Wait for late producer worker threads raised: {exc!r}")
+                _safe_log(log_error, f"Wait for late producer worker threads raised: {type(exc).__name__}")
                 return "worker_wait_failed"
             if late_workers_stopped is False:
                 _safe_log(
@@ -256,7 +242,7 @@ def cleanup_and_exit_runtime(
                 deferred_worker_threads() if callable(deferred_worker_threads) else deferred_worker_threads
             )
         except Exception as exc:
-            _safe_log(log_error, f"Snapshot deferred shutdown worker threads failed: {exc!r}")
+            _safe_log(log_error, f"Snapshot deferred shutdown worker threads failed: {type(exc).__name__}")
             return "worker_wait_failed"
         try:
             deferred_workers_stopped = _call_with_optional_log_error(
@@ -265,7 +251,7 @@ def cleanup_and_exit_runtime(
                 log_error=log_error,
             )
         except Exception as exc:
-            _safe_log(log_error, f"Wait for deferred worker threads raised: {exc!r}")
+            _safe_log(log_error, f"Wait for deferred worker threads raised: {type(exc).__name__}")
             return "worker_wait_failed"
         if deferred_workers_stopped is False:
             _safe_log(log_error, "Deferred worker threads are still running; final cleanup was aborted")
@@ -284,7 +270,7 @@ def cleanup_and_exit_runtime(
             log_error=log_error,
         )
     except Exception as exc:
-        _safe_log(log_error, f"Wait for file log worker raised: {exc!r}")
+        _safe_log(log_error, f"Wait for file log worker raised: {type(exc).__name__}")
         return "file_log_wait_failed"
     if file_log_stopped is False:
         _safe_log(
@@ -297,5 +283,5 @@ def cleanup_and_exit_runtime(
     try:
         destroy_root()
     except Exception as exc:
-        _safe_log(log_error, f"Destroy root during shutdown failed: {exc!r}")
+        _safe_log(log_error, f"Destroy root during shutdown failed: {type(exc).__name__}")
     return "exited"

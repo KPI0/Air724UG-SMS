@@ -50,6 +50,17 @@ def app_callbacks(calls):
 
 
 class SerialAppRuntimeTests(unittest.TestCase):
+    def test_build_serial_runtime_callbacks_preserves_recording_abort_and_legacy_default(self):
+        calls = []
+        dependencies = app_callbacks(calls)
+        dependencies["abort_call_recording_transfer"] = lambda reason: calls.append(("recording_abort", reason))
+        callbacks = build_serial_runtime_callbacks(dependencies)
+        callbacks.abort_call_recording_transfer("serial_stop")
+        self.assertEqual(calls, [("recording_abort", "serial_stop")])
+        del dependencies["abort_call_recording_transfer"]
+        build_serial_runtime_callbacks(dependencies).abort_call_recording_transfer("serial_stop")
+        self.assertEqual(calls, [("recording_abort", "serial_stop")])
+
     def test_build_serial_runtime_config_reads_settings(self):
         config = build_serial_runtime_config(app_settings())
 

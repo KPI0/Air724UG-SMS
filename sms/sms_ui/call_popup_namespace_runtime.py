@@ -1,7 +1,9 @@
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from sms_core.status_text import format_connected_status
+from sms_core.connected_log_runtime import can_restore_connected_status
+from sms_core.serial_sender import DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR
 from sms_core.call_command_context import (
     SerialCallStateSnapshot, call_state_lock, invalidate_call_commands, set_local_dial_popup,
 )
@@ -32,6 +34,13 @@ def _peer_state_lock(namespace):
 def _call_snapshot(namespace):
     snapshot = getattr(namespace.get("INCOMING_CALL_SESSION"), "snapshot", None)
     return snapshot() if callable(snapshot) else None
+
+
+def _confirm_call_handled(namespace, snapshot):
+    confirm = getattr(namespace.get("INCOMING_CALL_SESSION"), "confirm_handled", None)
+    if callable(confirm):
+        return confirm(getattr(snapshot, "session_token", None))
+    return True
 
 
 def _local_call_session_id(namespace):
@@ -547,6 +556,7 @@ def mark_call_popup_connected_namespace_runtime(
             return False
         if requested_session_id:
             namespace["call_popup_pending_connected_session_id"] = requested_session_id
+        _confirm_call_handled(namespace, snapshot)
 
     def mark_on_ui():
         with _peer_state_lock(namespace):
@@ -685,6 +695,9 @@ def finish_remote_incoming_call_namespace_runtime(
     """Apply an authenticated peer terminal only to its known local lifetime."""
     peer_id = str(session_id or "").strip()
     caller_text = str(caller_num or "").strip()
+    serial = namespace.get("serial_obj")
+    serial_generation = namespace.get("serial_connection_generation", 0)
+    status_token = namespace.get("_status_ui_token")
     with _peer_state_lock(namespace):
         if _is_retired_peer_call(namespace, peer_id):
             return False
@@ -738,7 +751,8 @@ def finish_remote_incoming_call_namespace_runtime(
             )
         if update_status:
             set_status = namespace.get("set_status")
-            if callable(set_status):
+            if (callable(set_status) and namespace.get("_status_ui_token") is status_token
+                    and can_restore_connected_status(namespace, serial, serial_generation)):
                 set_status(format_connected_status(namespace.get("PORT", "")), "green")
 
         def clear_if_current(window):
@@ -910,6 +924,13 @@ def show_call_popup_namespace_runtime(
                 return False
             return mark_incoming_call_handled_namespace_runtime(namespace)
 
+    def confirm_call_handled():
+        serial_lock = namespace.get("serial_lock")
+        with (serial_lock if serial_lock is not None else nullcontext()), _peer_state_lock(namespace):
+            if not is_same_call() or not is_same_connection():
+                return False
+            return _confirm_call_handled(namespace, initial_call)
+
     def dispatch_call_result(callback):
         def apply_on_ui():
             # Hiding a window does not end its modem call. Use the tracked
@@ -980,6 +1001,9 @@ def show_call_popup_namespace_runtime(
         log_error=namespace.get("log_file_only"),
         dispatch_call_result=dispatch_call_result,
         write_guard=write_guard,
+        confirm_call_handled=confirm_call_handled,
+        response_coordinator=namespace.get(
+            "SERIAL_COMMAND_RESPONSE_COORDINATOR", DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR),
     )
 
 

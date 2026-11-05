@@ -54,6 +54,7 @@ def open_serial_debug_window_dialog(
     set_dial_popup=lambda _window: None,
     send_sms=None,
     send_local_command=None,
+    restore_connected_status=None,
 ):
     if current_window is not None and current_window.winfo_exists():
         current_window.deiconify()
@@ -244,11 +245,16 @@ def open_serial_debug_window_dialog(
 
     def send_dial_hangup(popup):
         if send_local_command is not None:
-            def complete(ok, current):
+            def complete(ok, current, *, serial_context=None, status_token=None):
                 if current and ok and get_dial_popup() is popup:
                     port_ui("📞 呼叫已挂断或已取消", "normal")
-                    set_status(format_connected_status(get_port()), "green")
+                    if restore_connected_status is None:
+                        set_status(format_connected_status(get_port()), "green")
                     close_dial_popup(popup)
+                    if restore_connected_status is not None:
+                        restore_connected_status(
+                            get_port(), serial_context=serial_context, status_token=status_token,
+                        )
             return send_local_command(HANGUP_COMMAND, dial_popup=popup, on_result=complete)
         port_ui("📞 已发送挂机指令 (ATH)", "normal")
         set_status(format_connected_status(get_port()), "green")

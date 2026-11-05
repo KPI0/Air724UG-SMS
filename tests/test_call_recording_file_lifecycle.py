@@ -157,6 +157,107 @@ class RecordingIncomingFileTests(unittest.TestCase):
         self.assertEqual(self.aborted, ["save_failed"])
         self.assertEqual(list((self.root / ".incoming").iterdir()), [])
 
+    def test_sidecar_replace_failure_cleans_audio_and_metadata_temp_before_retry(self):
+        self.begin()
+        original_replace = os.replace
+
+        def fail_sidecar(source, target):
+            if str(target).endswith(".amr.json"):
+                raise OSError("synthetic sidecar replace failure")
+            return original_replace(source, target)
+
+        with patch("sms_core.call_recordings.os.replace", side_effect=fail_sidecar):
+            self.end()
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self.aborted, ["save_failed"])
+        self.assertEqual(list((self.root / ".incoming").iterdir()), [])
+        self.assertEqual(list(self.root.rglob("*.amr")), [])
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+        self.assertIsNone(CallRecordingRepository(self.root).find(RECORDING_ID, IMEI_A))
+
+        self.aborted.clear()
+        self.begin()
+        self.end()
+        self.assert_saved()
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+
+    def test_upload_sidecar_replace_failure_preserves_existing_bytes_and_retry(self):
+        self.begin()
+        self.end()
+        record = self.saved[0]
+        sidecar = Path(record.metadata_path)
+        original = sidecar.read_bytes()
+        failure = OSError("synthetic upload state replace failure")
+        with patch("sms_core.call_recordings.os.replace", side_effect=failure):
+            with self.assertRaises(OSError) as raised:
+                self.repository.mark_uploaded(record)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(sidecar.read_bytes(), original)
+        self.assertEqual(Path(record.path).read_bytes(), AMR_PAYLOAD)
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+        self.assertEqual(self.repository.pending(IMEI_A), [record])
+
+        self.assertTrue(self.repository.mark_uploaded(record))
+        self.assertEqual(self.repository.pending(IMEI_A), [])
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+
+    def test_upload_sidecar_fsync_failure_cleans_temp_and_preserves_existing_state(self):
+        self.begin()
+        self.end()
+        record = self.saved[0]
+        sidecar = Path(record.metadata_path)
+        original = sidecar.read_bytes()
+        failure = OSError("synthetic metadata fsync failure")
+        with patch("sms_core.call_recordings.os.fsync", side_effect=failure):
+            with self.assertRaises(OSError) as raised:
+                self.repository.mark_uploading(record)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(sidecar.read_bytes(), original)
+        self.assertEqual(Path(record.path).read_bytes(), AMR_PAYLOAD)
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+        self.assertEqual(self.repository.pending(IMEI_A), [record])
+        self.assertTrue(self.repository.mark_uploading(record))
+
+    def test_metadata_cleanup_failure_logs_only_type_and_preserves_primary_error(self):
+        self.begin()
+        self.end()
+        record = self.saved[0]
+        original = Path(record.metadata_path).read_bytes()
+        errors = []
+        self.repository.log_error = errors.append
+        failure = OSError("synthetic primary replace failure")
+        cleanup_failure = PermissionError("synthetic-private-path-and-metadata")
+        with patch("sms_core.call_recordings.os.replace", side_effect=failure), \
+                patch("sms_core.call_recordings.os.remove", side_effect=cleanup_failure):
+            with self.assertRaises(OSError) as raised:
+                self.repository.mark_pending(record, "synthetic retry")
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(errors, ["Call recording metadata temp cleanup failed: PermissionError"])
+        self.assertEqual(Path(record.metadata_path).read_bytes(), original)
+        self.assertEqual(Path(record.path).read_bytes(), AMR_PAYLOAD)
+        self.assertEqual(len(list(self.root.rglob("*.amr.json.tmp"))), 1)
+        self.assertTrue(self.repository.mark_pending(record, "synthetic retry"))
+        self.assertEqual(list(self.root.rglob("*.amr.json.tmp")), [])
+
+    def test_metadata_open_failure_preserves_preexisting_temp_directory(self):
+        self.begin()
+        self.end()
+        record = self.saved[0]
+        sidecar = Path(record.metadata_path)
+        original = sidecar.read_bytes()
+        temp_directory = Path(str(sidecar) + ".tmp")
+        temp_directory.mkdir()
+        preserved = temp_directory / "synthetic-existing-file"
+        preserved.write_bytes(b"synthetic existing bytes")
+        errors = []
+        self.repository.log_error = errors.append
+        with self.assertRaises(OSError):
+            self.repository.mark_pending(record)
+        self.assertEqual(errors, [])
+        self.assertEqual(sidecar.read_bytes(), original)
+        self.assertTrue(temp_directory.is_dir())
+        self.assertEqual(preserved.read_bytes(), b"synthetic existing bytes")
+
     def test_invalid_audio_releases_guard(self):
         invalid = b"not an AMR file"
         self.receiver.consume_line(begin_frame(RECORDING_ID, payload=invalid, imei=IMEI_A))

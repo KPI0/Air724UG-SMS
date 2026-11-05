@@ -235,6 +235,7 @@ class PeerCallSyncTests(unittest.TestCase):
         self.assertEqual(self.missed, [])
 
     def test_peer_terminal_clears_ring_timer_and_restores_connected_status(self):
+        self.namespace["serial_obj"] = SimpleNamespace(is_open=True)
         popup = self.start("local-1")
         self.assertTrue(self.register("peer-1", "local-1"))
 

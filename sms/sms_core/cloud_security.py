@@ -1,14 +1,18 @@
 import hashlib
 import json
 import re
+import socket
+import ssl
 import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from sms_core.cloud_command_security import (
     cloud_command_batch_error,
     cloud_command_control_char_error,
     sensitive_cloud_command_decision,
 )
+from sms_core.serial_debug import SIM_CREDENTIAL_PARAMETERS_RE
 
 
 SECRET_KEYS = {"secret", "device_secret", "password", "pwd", "token"}
@@ -25,6 +29,16 @@ SECRET_TEXT_RE = re.compile(
     r"([^&\s,;\"'}]+)"
     r"([\"']?)"
 )
+AUTH_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s<>\"']+", re.IGNORECASE)
+
+
+def cloud_auth_message_for_display(value):
+    """Protect server authorization diagnostics without changing the ACK."""
+    if (not isinstance(value, str) or SIM_CREDENTIAL_PARAMETERS_RE.search(value)
+            or SECRET_TEXT_RE.search(value)):
+        return "服务端授权消息（内容已隐藏）"
+    text = AUTH_URL_RE.sub("服务地址（已隐藏）", value)
+    return text if len(text) <= 500 else text[:500] + "..."
 
 
 @dataclass(frozen=True)
@@ -34,10 +48,46 @@ class CloudReplayCheckResult:
     payload: dict | None = None
 
 
+def cloud_connection_target_for_display(url) -> str:
+    """Show only the WebSocket origin; any URL component may contain a secret."""
+    hidden = "WebSocket 地址（已隐藏）"
+    if not isinstance(url, str):
+        return hidden
+    try:
+        value = url.strip()
+        if not value or any(ord(char) <= 32 or ord(char) == 127 for char in value):
+            return hidden
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+        if parsed.scheme not in {"ws", "wss"} or not host or "\\" in host:
+            return hidden
+        if ":" in host:
+            host = f"[{host}]"
+        return f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
+    except (TypeError, ValueError):
+        return hidden
+
+
+def cloud_connection_error_for_display(exc) -> str:
+    """Transport errors can echo the login payload or URL, so omit their text."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return "TLS 服务器证书验证失败"
+    if isinstance(exc, ssl.SSLError):
+        return "TLS 握手失败"
+    if isinstance(exc, TimeoutError):
+        return "连接超时"
+    if isinstance(exc, socket.gaierror):
+        return "DNS 解析失败"
+    return type(exc).__name__
+
+
 def safe_preview(raw: str, limit: int = 500) -> str:
     """Mask common secret fields in JSON text and truncate long previews."""
-    def _mask(obj):
+    def _mask(obj, auth_diagnostic=False):
         if isinstance(obj, dict):
+            auth_diagnostic = auth_diagnostic or str(obj.get("type") or "").strip().lower() in (
+                "device_login_ack", "device_auth", "device_auth_result")
             sms_log = str(obj.get("sms_log") or "").strip().lower()
             command_kind = str(obj.get("command_kind") or "").strip().lower()
             command_value = next(
@@ -74,10 +124,12 @@ def safe_preview(raw: str, limit: int = 500) -> str:
                 elif hide_sms_meta and key_lower in SMS_META_KEYS:
                     masked[key] = HIDDEN_SMS_META
                 else:
-                    masked[key] = _mask(value)
+                    masked[key] = _mask(value, auth_diagnostic)
             return masked
         if isinstance(obj, list):
-            return [_mask(item) for item in obj]
+            return [_mask(item, auth_diagnostic) for item in obj]
+        if auth_diagnostic and isinstance(obj, str):
+            return cloud_auth_message_for_display(obj)
         return obj
 
     try:

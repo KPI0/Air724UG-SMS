@@ -24,6 +24,7 @@ def open_serial_debug_window_runtime(
     open_dialog=open_serial_debug_window_dialog,
     send_sms=None,
     send_local_command=None,
+    restore_connected_status=None,
 ):
     current_window, current_text = get_state("window_refs")
     args = (
@@ -51,6 +52,8 @@ def open_serial_debug_window_runtime(
         kwargs["send_sms"] = send_sms
     if send_local_command is not None:
         kwargs["send_local_command"] = send_local_command
+    if restore_connected_status is not None:
+        kwargs["restore_connected_status"] = restore_connected_status
     if log_error is not None:
         kwargs["log_error"] = log_error
     try:

@@ -3,6 +3,7 @@ import json
 import re
 
 from .config_schema import THIRD_PUSH_DEFAULTS
+from sms_core.credential_policy import push_credential_errors
 from sms_core.third_push_format import apply_vars, format_message, template_vars
 from sms_core.third_push_sender import (
     parse_email_addresses,
@@ -130,7 +131,7 @@ def coerce_text_list(value):
 
 
 def validate_push_settings(channels, settings):
-    missing = []
+    missing = push_credential_errors(settings)
     for channel in channels:
         for key, label in THIRD_PUSH_REQUIRED_FIELDS.get(channel, ()):
             if not str(settings.get(key, "")).strip():
@@ -189,7 +190,7 @@ def dispatch_push_item(item, send_channel_func, format_message_func=None, label_
         try:
             ok, info = send_channel_func(channel, message, settings)
         except Exception as exc:
-            ok, info = False, str(exc)
+            ok, info = False, f"推送发送异常（{type(exc).__name__}）"
         label = label_func(channel)
         if ok:
             ok_channels.append(label)

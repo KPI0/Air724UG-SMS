@@ -1,6 +1,7 @@
 import hmac
 
 from sms_core.cloud_protocol import normalize_imei
+from sms_core.credential_policy import credential_error
 
 
 def command_action(data: dict):
@@ -22,7 +23,7 @@ def incoming_secret(data: dict):
         or data.get("pwd")
         or data.get("token")
         or ""
-    ).strip()
+    )
 
 
 def target_value(data: dict):
@@ -42,13 +43,16 @@ def target_imeis(data: dict):
 
 
 def secret_match_result(data: dict, expected_secret: str):
-    expected = str(expected_secret or "").strip()
+    expected = str(expected_secret or "")
     incoming = incoming_secret(data)
 
     if not expected:
         return False, "已拒绝云端指令：本机云端控制密码为空"
     if not incoming:
         return False, "已拒绝云端指令：缺少密码"
+    error = credential_error(expected, '本机云端控制密码') or credential_error(incoming, '云端指令密码')
+    if error:
+        return False, f'已拒绝云端指令：{error}'
     try:
         matched = hmac.compare_digest(incoming.encode("utf-8"), expected.encode("utf-8"))
     except UnicodeEncodeError:

@@ -638,7 +638,96 @@ class ConfigRuntimeTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(removed, ["config.ini.10.20.tmp"])
-        self.assertIn("disk", logs[0])
+        self.assertEqual(logs, ["配置保存失败: RuntimeError"])
+
+    def _assert_private_parse_failure_preserves_config(self, content, error_type):
+        marker = "SYNTHETIC_PRIVATE_CONFIG_VALUE"
+        logs, released = [], []
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.ini")
+            original = content.format(marker=marker).encode("utf-8")
+            with open(path, "wb") as stream:
+                stream.write(original)
+            with self.assertRaises(error_type):
+                load_config_snapshot(path)
+            config = configparser.ConfigParser(interpolation=None)
+            config["ui"] = {"voice_enabled": "1", "unknown": "keep"}
+            remember_config_snapshot(config)
+            baseline = getattr(config, CONFIG_SNAPSHOT_ATTR)
+            config.set("ui", "voice_enabled", "0")
+            memory = snapshot_config_runtime(config)
+
+            self.assertFalse(safe_save_config_runtime(
+                config=config, config_file=path, config_lock=threading.RLock(),
+                log_error=logs.append,
+                acquire_process_lock=lambda *_args, **_kwargs: ("mutex", 0),
+                release_process_lock=released.append,
+            ))
+            with open(path, "rb") as stream:
+                self.assertEqual(stream.read(), original)
+            self.assertEqual(snapshot_config_runtime(config), memory)
+            self.assertIs(getattr(config, CONFIG_SNAPSHOT_ATTR), baseline)
+            self.assertEqual(released, ["mutex"])
+            self.assertEqual(os.listdir(folder), ["config.ini"])
+        self.assertEqual(logs, [f"配置保存失败: {error_type.__name__}"])
+        self.assertFalse(any(marker in message for message in logs))
+
+    def test_safe_save_missing_header_keeps_private_config_out_of_logs(self):
+        self._assert_private_parse_failure_preserves_config(
+            "device_secret={marker}\n[ui]\nvoice_enabled=1\n",
+            configparser.MissingSectionHeaderError,
+        )
+
+    def test_safe_save_parsing_error_keeps_private_config_out_of_logs(self):
+        self._assert_private_parse_failure_preserves_config(
+            "[cloud_control]\ndevice_secret {marker}\n",
+            configparser.ParsingError,
+        )
+
+    def test_mutex_release_exception_keeps_commit_without_formatting_credentials(self):
+        marker = "SYNTHETIC_PRIVATE_RELEASE_VALUE"
+        formatted = []
+
+        class PrivateReleaseError(RuntimeError):
+            def __str__(self):
+                formatted.append("str")
+                raise AssertionError("Private exception must not be formatted")
+
+            def __repr__(self):
+                formatted.append("repr")
+                raise AssertionError("Private exception must not be formatted")
+
+        for error in (RuntimeError("password=" + marker), PrivateReleaseError(marker)):
+            with self.subTest(error_type=type(error).__name__):
+                logs, released = [], []
+                with tempfile.TemporaryDirectory() as folder:
+                    path = os.path.join(folder, "config.ini")
+                    config = configparser.ConfigParser(interpolation=None)
+                    config["ui"] = {"voice_enabled": "1", "unknown": "keep"}
+                    with open(path, "w", encoding="utf-8") as stream:
+                        config.write(stream)
+                    remember_config_snapshot(config)
+                    config.set("ui", "voice_enabled", "0")
+                    expected = snapshot_config_runtime(config)
+
+                    def release(lock):
+                        released.append(lock)
+                        raise error
+
+                    self.assertTrue(safe_save_config_runtime(
+                        config=config, config_file=path, config_lock=threading.RLock(),
+                        log_error=logs.append,
+                        acquire_process_lock=lambda *_args, **_kwargs: ("mutex", 0),
+                        release_process_lock=release,
+                    ))
+                    self.assertEqual(load_config_snapshot(path), expected)
+                    self.assertEqual(snapshot_config_runtime(config), expected)
+                    self.assertEqual(getattr(config, CONFIG_SNAPSHOT_ATTR), expected)
+                    self.assertEqual(released, ["mutex"])
+                    self.assertEqual(os.listdir(folder), ["config.ini"])
+                self.assertEqual(logs, [f"配置文件跨进程锁释放失败: {type(error).__name__}"])
+                self.assertFalse(any(marker in message for message in logs))
+        self.assertEqual(formatted, [])
 
     def test_safe_save_config_runtime_swallows_cleanup_and_log_errors(self):
         result = safe_save_config_runtime(

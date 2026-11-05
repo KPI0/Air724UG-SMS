@@ -4,6 +4,8 @@ import json
 
 from sms_core.cloud_security import (
     CloudReplayCheckResult,
+    cloud_connection_error_for_display,
+    cloud_connection_target_for_display,
     safe_preview,
     read_unix_timestamp,
     replay_key,
@@ -19,6 +21,38 @@ def json_text(payload):
 
 
 class CloudSecurityTests(unittest.TestCase):
+    def test_connection_target_preview_supports_ipv6_and_hides_all_other_components(self):
+        self.assertEqual(
+            cloud_connection_target_for_display("WSS://user:password@[::1]:8443/private?token=value#fragment"),
+            "wss://[::1]:8443",
+        )
+        self.assertEqual(
+            cloud_connection_target_for_display("ws://example.invalid/private-token"),
+            "ws://example.invalid",
+        )
+
+    def test_connection_target_preview_handles_invalid_input_without_rendering_it(self):
+        class UntrustedValue:
+            def __str__(self):
+                raise RuntimeError("private-value")
+
+        for url in (None, UntrustedValue(), "", "file://example.invalid/private",
+                    "wss:///private", "wss://[broken/private", "wss://example.invalid:70000/private",
+                    "wss://example.invalid\n/private", "wss://example.invalid/\x00private",
+                    "wss://example.invalid\\private"):
+            with self.subTest(input_type=type(url).__name__):
+                self.assertEqual(cloud_connection_target_for_display(url), "WebSocket 地址（已隐藏）")
+
+    def test_connection_error_preview_never_formats_unknown_exception(self):
+        class UntrustedError(Exception):
+            def __str__(self):
+                raise AssertionError("error details must not be formatted")
+
+            def __repr__(self):
+                raise AssertionError("error details must not be formatted")
+
+        self.assertEqual(cloud_connection_error_for_display(UntrustedError()), "UntrustedError")
+
     def test_safe_preview_masks_secret_fields(self):
         """Sensitive fields should be masked in preview output."""
         payload = '{"device_secret": "abc123", "message": "hello", "token": "xyz"}'

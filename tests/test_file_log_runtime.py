@@ -200,7 +200,7 @@ class FileLogWorkerResilienceTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(writes, [{"a.log": ["a1\n"]}])
 
-    def test_write_log_batches_reports_failing_path_and_continues(self):
+    def test_write_log_batches_reports_write_error_and_continues(self):
         # A failing path (e.g. disk full) must be reported, not silently
         # swallowed, and must not abort writes to the remaining paths.
         errors = []
@@ -217,12 +217,13 @@ class FileLogWorkerResilienceTests(unittest.TestCase):
             on_error=errors.append,
         )
 
-        # good.log still written; bad.log reported.
+        # Preserve the other batch and report the error without private paths.
         self.assertEqual(count, 1)
         self.assertEqual(writes, [["y\n"]])
         self.assertEqual(len(errors), 1)
-        self.assertIn("bad.log", errors[0])
-        self.assertIn("disk full", errors[0])
+        self.assertIn("failed to write 1 line(s) (OSError)", errors[0])
+        self.assertNotIn("bad.log", errors[0])
+        self.assertNotIn("disk full", errors[0])
 
     def test_worker_forwards_on_error_to_default_write_batches(self):
         # The worker must forward its on_error into write_log_batches so that
@@ -246,7 +247,9 @@ class FileLogWorkerResilienceTests(unittest.TestCase):
         )
 
         self.assertEqual(len(errors), 1)
-        self.assertIn("bad.log", errors[0])
+        self.assertIn("failed to write 1 line(s) (OSError)", errors[0])
+        self.assertNotIn("bad.log", errors[0])
+        self.assertNotIn("denied", errors[0])
 
     def test_start_file_log_worker_passes_log_error_to_guard(self):
         # If the worker thread dies, the daemon guard must be able to log why.
@@ -297,5 +300,6 @@ class FileLogWorkerResilienceTests(unittest.TestCase):
         )
 
         self.assertEqual(len(errors), 1)
-        self.assertIn("queue failed", errors[0])
+        self.assertIn("queue read failed: RuntimeError", errors[0])
+        self.assertNotIn("queue failed", errors[0])
         self.assertEqual(sleeps, [0.25])

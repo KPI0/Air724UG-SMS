@@ -33,6 +33,7 @@ def cleanup_old_logs_in_dir(log_dir: str, days: int, now=None) -> int:
     except (OverflowError, ValueError):
         return 0
     deleted = 0
+    failed = 0
 
     if not os.path.isdir(log_dir):
         return 0
@@ -54,7 +55,16 @@ def cleanup_old_logs_in_dir(log_dir: str, days: int, now=None) -> int:
             if file_date < cutoff:
                 os.remove(path)
                 deleted += 1
+        except FileNotFoundError:
+            # Another instance may have removed a shared log after discovery.
+            continue
         except Exception:
-            pass
+            failed += 1
+
+    if failed:
+        raise OSError(
+            f"已删除 {deleted} 个旧日志文件，{failed} 个文件清理失败。"
+            "请检查日志目录权限和文件占用；后续仍会按计划执行清理。"
+        ) from None
 
     return deleted

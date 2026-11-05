@@ -59,6 +59,7 @@ class CallState:
     # Keep the same transition de-duplication for outbound calls.  Modems may
     # repeat CALL=1, CONNECT, or active CLCC frames while a call remains up.
     outgoing_connected_session_id: str = ""
+    blocked_call: bool = False
 
 
 @dataclass
@@ -81,6 +82,9 @@ class CallLineDecision:
     end_reason: str = ""
     call_session_id: str = ""
     stop_processing: bool = False
+    outgoing_call_number: str = ""
+    outgoing_call_phase: str = ""
+    blocked_call_ended: bool = False
 
 
 def _begin_call_session(state: CallState, direction: str, number: str, now: float):
@@ -289,6 +293,7 @@ def handle_call_line(
         pending_incoming_connected_until=state.pending_incoming_connected_until,
         incoming_connected_session_id=state.incoming_connected_session_id,
         outgoing_connected_session_id=state.outgoing_connected_session_id,
+        blocked_call=state.blocked_call,
     )
     decision = CallLineDecision(state=next_state)
 
@@ -304,6 +309,19 @@ def handle_call_line(
     if next_state.current_dial_num and not next_state.call_session_id.startswith("outgoing:"):
         _begin_call_session(next_state, "outgoing", next_state.current_dial_num, now)
         next_state.outgoing_connected_session_id = ""
+        next_state.blocked_call = False
+
+    if next_state.blocked_call and is_hangup_event(line):
+        decision.call_session_id = next_state.call_session_id
+        decision.blocked_call_ended = True
+        next_state.blocked_call = False
+        next_state.call_session_id = ""
+        next_state.last_clip_num = ""
+        next_state.last_clip_time = 0.0
+        next_state.ring_timeout_target = 0.0
+        next_state.pending_incoming_connected_until = 0.0
+        next_state.incoming_connected_session_id = ""
+        return decision
 
     if next_state.current_dial_num and is_call_dial_failure_event(line):
         decision.call_session_id = next_state.call_session_id
@@ -329,8 +347,8 @@ def handle_call_line(
             blacklist,
         )
         if (
-            not clip.blocked
-            and state.ring_timeout_target != 0.0
+            ((not clip.blocked and state.ring_timeout_target != 0.0)
+             or (clip.blocked and state.blocked_call))
             and clip.caller_num == state.last_clip_num
         ):
             # Repeated CLIP belongs to the active call, including while it
@@ -353,6 +371,7 @@ def handle_call_line(
             next_state.ring_timeout_target = clip.ring_timeout_target
 
         if clip.new_clip:
+            next_state.blocked_call = clip.blocked
             next_state.last_clip_num = clip.last_clip_num
             next_state.last_clip_time = clip.last_clip_time
             next_state.last_hangup_time = 0.0
@@ -375,6 +394,7 @@ def handle_call_line(
                 next_state.ring_timeout_target = -1.0
 
         if clip.blocked:
+            decision.call_session_id = next_state.call_session_id
             if clip.new_clip:
                 decision.blocked_number = clip.caller_num
                 decision.block_reason = clip.block_reason
@@ -425,6 +445,7 @@ def handle_call_line(
         next_state.current_dial_num = hangup.current_dial_num
         next_state.last_clip_num = hangup.last_clip_num
         next_state.call_session_id = ""
+        next_state.blocked_call = False
         next_state.pending_incoming_connected_until = 0.0
         next_state.incoming_connected_session_id = ""
         next_state.outgoing_connected_session_id = ""
@@ -452,9 +473,21 @@ def handle_call_line(
                 decision.call_session_id = next_state.call_session_id
                 decision.connected_number = connected_num
                 next_state.outgoing_connected_session_id = connection_key
+            decision.call_session_id = next_state.call_session_id
+            decision.outgoing_call_number = connected_num
+            decision.outgoing_call_phase = "connected"
             next_state.ring_timeout_target = 0.0
-        elif (
-            not next_state.current_dial_num
+        else:
+            clcc = parse_clcc_line(line)
+            if (next_state.current_dial_num and clcc is not None and clcc["direction"] == 0
+                    and clcc["status"] in (2, 3)
+                    and _call_numbers_match(clcc.get("number"), next_state.current_dial_num)):
+                decision.call_session_id = next_state.call_session_id
+                decision.outgoing_call_number = next_state.current_dial_num
+                decision.outgoing_call_phase = "dialing" if clcc["status"] == 2 else "alerting"
+        if (
+            not connected_num
+            and not next_state.current_dial_num
             and next_state.ring_timeout_target > 0.0
             and is_call_connected_event(line)
         ):

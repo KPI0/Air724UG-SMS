@@ -38,6 +38,16 @@ def _save_failed_status():
     return "❌ 配置保存失败，已保留原设置"
 
 
+def _voice_generation_failure(result):
+    if result is False or result == "error":
+        return "无法启动语音生成，请稍后重试"
+    if result == "stopped":
+        return "语音生成已停止，请重启软件后重试"
+    if result == "full":
+        return "语音生成队列已满，请稍后重试"
+    return None
+
+
 def _save_ui_values(config, values, safe_save, error_label, log_error=None):
     snapshot = snapshot_config_section(config, "ui")
     try:
@@ -287,14 +297,21 @@ def open_voice_text_dialog_runtime(
     get_values=None,
 ):
     def preview(text):
-        generate_voice(force=True, text=text, play_after=True, preview=True)
+        result = generate_voice(force=True, text=text, play_after=True, preview=True)
+        failure = _voice_generation_failure(result)
+        if failure:
+            system_ui("❌ " + failure, "normal")
+        return result
 
     def save(text):
         if save_ui_config_values(config, {"voice_text": text}, safe_save, log_error=log_error):
             committed = read_startup_config_values(config, default_voice_text=DEFAULT_VOICE_TEXT)
             set_voice_text(committed.voice_text)
-            generate_voice(force=True)
+            result = generate_voice(force=True)
             system_ui("🔊 已更新语音播报内容：" + committed.voice_text, "normal")
+            failure = _voice_generation_failure(result)
+            if failure:
+                system_ui("⚠️ 内容已保存，但" + failure, "normal")
             return True
         else:
             system_ui(_save_failed_status(), "normal")

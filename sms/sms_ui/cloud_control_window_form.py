@@ -1,4 +1,5 @@
 import tkinter as tk
+from sms_core.credential_policy import credential_error, credential_url_error
 from tkinter import messagebox, ttk
 
 from sms_core.cloud_protocol import normalize_cloud_ws_url
@@ -192,7 +193,12 @@ class CloudControlFormController:
     def read(self, force_enabled=False):
         confirmed_url = None
         while True:
-            url = normalize_cloud_ws_url(self.url_field.get())
+            raw_url = getattr(self.url_field, 'get_raw', self.url_field.get)()
+            error = credential_url_error(raw_url, 'WebSocket地址')
+            if error:
+                messagebox.showerror('错误', error, parent=self.win)
+                return None
+            url = normalize_cloud_ws_url(raw_url)
             if url:
                 self.url_field.set_value(url)
             enabled = bool(self.enabled_var.get()) or bool(force_enabled)
@@ -201,6 +207,10 @@ class CloudControlFormController:
                 return None
 
             secret = self.secret_field.get()
+            error = credential_error(secret, '控制密码')
+            if error:
+                messagebox.showerror('错误', error, parent=self.win)
+                return None
             if enabled and not secret:
                 messagebox.showerror("错误", "启用云端控制时，控制密码不能为空。", parent=self.win)
                 return None

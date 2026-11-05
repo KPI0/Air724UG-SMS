@@ -206,7 +206,12 @@ def reload_shared_ui_config_namespace_runtime(
     if voice_text_changed:
         changed_groups.append("语音内容")
         try:
-            namespace["generate_alert_voice"](force=True)
+            result = namespace["generate_alert_voice"](force=True)
+            shutdown = namespace.get("TK_SHUTDOWN")
+            if (result is False or result in ("error", "stopped", "full")) and not (
+                namespace.get("is_exiting") or (shutdown is not None and shutdown.is_set())
+            ):
+                _safe_log(namespace, "Synced voice text retained; alert generation did not start")
         except Exception as exc:
             _safe_log(namespace, f"Regenerate synced voice alert failed: {exc!r}")
 

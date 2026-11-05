@@ -15,6 +15,7 @@ from sms_core.config_schema import (
     normalize_sms_font_size,
 )
 from sms_core.windows_runtime import acquire_named_mutex_lock, release_named_mutex_lock
+from sms_core.credential_policy import CredentialValidationError, validate_config_credentials
 
 
 CONFIG_SNAPSHOT_ATTR = "_sms_last_disk_snapshot"
@@ -205,9 +206,11 @@ def reload_config_runtime(
         restore_config_runtime(staged_config, merged_snapshot)
 
         try:
+            validate_config_credentials(merged_snapshot)
             if prepare_config is not None:
                 prepare_config(staged_config)
             staged_snapshot = snapshot_config_runtime(staged_config)
+            validate_config_credentials(staged_snapshot)
             restore_config_runtime(config, staged_snapshot)
             remember_config_snapshot(config, disk_snapshot)
 
@@ -262,7 +265,7 @@ def initialize_config_runtime(
         try:
             result = save_config()
         except Exception as exc:
-            _safe_log(log_error, f"Config {action} save raised an exception: {exc!r}")
+            _safe_log(log_error, f"Config {action} save raised an exception: {type(exc).__name__}")
             raise ConfigInitializationError(
                 f"配置文件{action}失败，无法写入：{config_file}"
             ) from exc
@@ -300,13 +303,19 @@ def initialize_config_runtime(
                 )
         except Exception as backup_exc:
             config.clear()
-            _safe_log(log_error, f"Config file invalid and backup failed; original preserved: {backup_exc!r}")
+            _safe_log(log_error, f"Config file invalid and backup failed; original preserved: {type(backup_exc).__name__}")
             raise ConfigInitializationError(
                 f"配置文件损坏且备份失败：{config_file}。原文件未修改，请检查权限或备份路径后重试。"
             ) from backup_exc
         load_defaults()
         save_startup_config("修复")
         created = True
+
+    try:
+        validate_config_credentials(snapshot_config_runtime(config))
+    except CredentialValidationError as exc:
+        config.clear()
+        raise ConfigInitializationError(f'{exc}。原配置文件未修改，请修正后重新启动。') from exc
 
     if not created:
         loaded_snapshot = snapshot_config_runtime(config)
@@ -343,7 +352,7 @@ def _read_config_value(label, fallback, reader, log_error=None):
     try:
         return reader()
     except Exception as exc:
-        _safe_log(log_error, f"Config value {label} invalid; using default {fallback!r}: {exc!r}")
+        _safe_log(log_error, f"Config value {label} invalid; using default {fallback!r}: {type(exc).__name__}")
         return fallback
 
 
@@ -356,11 +365,11 @@ def _read_keywords(config, coerce_text_list, log_error=None):
             try:
                 return coerce_text_list(json.loads(raw))
             except Exception as exc:
-                _safe_log(log_error, f"Config value ui.keywords JSON invalid; using pipe fallback: {exc!r}")
+                _safe_log(log_error, f"Config value ui.keywords JSON invalid; using pipe fallback: {type(exc).__name__}")
                 return coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
         return coerce_text_list([x.strip() for x in raw.split("|") if x.strip()])
     except Exception as exc:
-        _safe_log(log_error, f"Config value ui.keywords invalid; using default []: {exc!r}")
+        _safe_log(log_error, f"Config value ui.keywords invalid; using default []: {type(exc).__name__}")
         return []
 
 
@@ -370,7 +379,7 @@ def _read_json_text_list(config, key, coerce_text_list, log_error=None):
         if raw:
             return coerce_text_list(json.loads(raw))
     except Exception as exc:
-        _safe_log(log_error, f"Config value ui.{key} JSON invalid; using default []: {exc!r}")
+        _safe_log(log_error, f"Config value ui.{key} JSON invalid; using default []: {type(exc).__name__}")
     return []
 
 
@@ -583,6 +592,7 @@ def safe_save_config_runtime(
 
             output_config = configparser.ConfigParser(interpolation=None)
             restore_config_runtime(output_config, output_snapshot)
+            validate_config_credentials(output_snapshot)
             with open_file(tmp_file, "w", encoding="utf-8") as file_obj:
                 output_config.write(file_obj)
             replace_file(tmp_file, config_file)
@@ -599,7 +609,7 @@ def safe_save_config_runtime(
                 try:
                     release_process_lock(process_lock)
                 except Exception as exc:
-                    _safe_log(log_error, f"配置文件跨进程锁释放失败: {exc}")
+                    _safe_log(log_error, f"配置文件跨进程锁释放失败: {type(exc).__name__}")
 
     try:
         # Preserve the UI's requested changes while an earlier writer finishes
@@ -638,5 +648,5 @@ def safe_save_config_runtime(
             remember_config_snapshot(config, output_snapshot)
         return True
     except Exception as exc:
-        _safe_log(log_error, f"配置保存失败: {exc}")
+        _safe_log(log_error, f"配置保存失败: {type(exc).__name__}")
         return False

@@ -12,6 +12,7 @@ import threading
 import time
 
 from sms_core.call_recording_files import cleanup_incoming_files, create_incoming_file
+from sms_core.cloud_security import cloud_connection_error_for_display
 
 
 RECORDING_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -209,11 +210,25 @@ class CallRecordingRepository:
     def _write_metadata(self, path, payload):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         temp_path = path + ".tmp"
-        with open(temp_path, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temp_path, path)
+        created = False
+        try:
+            with open(temp_path, "w", encoding="utf-8") as file:
+                created = True
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if created:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    _safe_log(
+                        self.log_error,
+                        "Call recording metadata temp cleanup failed: " + type(exc).__name__,
+                    )
 
     def _read_metadata(self, path):
         try:
@@ -443,7 +458,7 @@ class SerialCallRecordingReceiver:
                 try:
                     self.on_aborted(dict(transfer.metadata), str(reason or "aborted"))
                 except Exception as exc:
-                    _safe_log(self.log_error, "Call recording abort callback failed: {!r}".format(exc))
+                    _safe_log(self.log_error, "Call recording abort callback failed: " + cloud_connection_error_for_display(exc))
         if reason:
             _safe_log(self.log_error, "Call recording serial transfer aborted: " + str(reason))
 
@@ -526,7 +541,7 @@ class SerialCallRecordingReceiver:
             try:
                 self.on_started(dict(self.current.metadata))
             except Exception as exc:
-                _safe_log(self.log_error, "Call recording start callback failed: {!r}".format(exc))
+                _safe_log(self.log_error, "Call recording start callback failed: " + cloud_connection_error_for_display(exc))
 
     def _chunk(self, parts):
         transfer = self.current
@@ -589,7 +604,7 @@ class SerialCallRecordingReceiver:
                 try:
                     self.on_aborted(dict(transfer.metadata), "save_failed")
                 except Exception as exc:
-                    _safe_log(self.log_error, "Call recording save failure callback failed: {!r}".format(exc))
+                    _safe_log(self.log_error, "Call recording save failure callback failed: " + cloud_connection_error_for_display(exc))
             raise
         finally:
             if transfer.lease is not None:
@@ -598,7 +613,7 @@ class SerialCallRecordingReceiver:
             try:
                 self.on_saved(saved)
             except Exception as exc:
-                _safe_log(self.log_error, "Call recording saved callback failed: {!r}".format(exc))
+                _safe_log(self.log_error, "Call recording saved callback failed: " + cloud_connection_error_for_display(exc))
         return saved
 
     def consume_line(self, line):
@@ -658,9 +673,15 @@ class CloudCallRecordingUploader:
     async def _io(self, function, *args, **kwargs):
         # A cancelled upload must settle its file operation before a replacement
         # upload can change the same sidecar or the application closes the loop.
-        work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        def invoke():
+            try:
+                return True, function(*args, **kwargs)
+            except Exception as exc:
+                return False, exc
+
+        work = asyncio.create_task(asyncio.to_thread(invoke))
         try:
-            return await asyncio.shield(work)
+            ok, result = await asyncio.shield(work)
         except asyncio.CancelledError:
             while not work.done():
                 try:
@@ -670,10 +691,16 @@ class CloudCallRecordingUploader:
                 except Exception:
                     break
             try:
-                work.result()
+                ok, result = work.result()
             except Exception as exc:
-                _safe_log(self.log_error, f"Cancelled recording I/O failed: {exc!r}")
+                _safe_log(self.log_error, "Cancelled recording I/O failed: " + cloud_connection_error_for_display(exc))
+            else:
+                if not ok:
+                    _safe_log(self.log_error, "Cancelled recording I/O failed: " + cloud_connection_error_for_display(result))
             raise
+        if not ok:
+            raise result
+        return result
 
     @staticmethod
     def _read_audio(recording):
@@ -736,10 +763,16 @@ class CloudCallRecordingUploader:
                 # timeout expires.  Shield the shared response future so a
                 # delayed ACK/Result can still satisfy the waiter on the next
                 # polling iteration.
-                return await asyncio.wait_for(
+                response = await asyncio.wait_for(
                     asyncio.shield(future),
                     min(0.5, remaining),
-                ), ""
+                )
+                try:
+                    if not is_current(ws):
+                        return None, "connection_changed"
+                except Exception:
+                    return None, "connection_changed"
+                return response, ""
             except asyncio.TimeoutError:
                 continue
 
@@ -752,6 +785,11 @@ class CloudCallRecordingUploader:
         is_current=lambda _ws: True,
     ):
         loop = asyncio.get_running_loop()
+        generation = self._schedule_generation
+
+        def upload_is_current(current_ws):
+            return generation == self._schedule_generation and is_current(current_ws)
+
         identity = dict(identity_payload() or {})
         current_imei = _valid_imei(identity.get("imei") or identity.get("device_imei"))
         if not current_imei or recording.imei != current_imei:
@@ -773,12 +811,14 @@ class CloudCallRecordingUploader:
             **identity,
         }
         try:
+            if not upload_is_current(ws):
+                return False, "connection_changed"
             if not self._send_succeeded(await send_payload(ws, offer)):
                 return False, "offer_send_failed"
             ack, wait_reason = await self._wait_for_response(
                 offer_future,
                 ws,
-                is_current,
+                upload_is_current,
                 CLOUD_RECORDING_OFFER_TIMEOUT_SECONDS,
             )
             if wait_reason == "connection_changed":
@@ -812,7 +852,7 @@ class CloudCallRecordingUploader:
                     **identity,
                 }
                 try:
-                    if not is_current(ws):
+                    if not upload_is_current(ws):
                         return False, "connection_changed"
                 except Exception:
                     return False, "connection_changed"
@@ -833,12 +873,17 @@ class CloudCallRecordingUploader:
                 "source_imei": recording.imei,
                 **identity,
             }
+            try:
+                if not upload_is_current(ws):
+                    return False, "connection_changed"
+            except Exception:
+                return False, "connection_changed"
             if not self._send_succeeded(await send_payload(ws, end_payload)):
                 return False, "end_send_failed"
             result, wait_reason = await self._wait_for_response(
                 result_future,
                 ws,
-                is_current,
+                upload_is_current,
                 CLOUD_RECORDING_RESULT_TIMEOUT_SECONDS,
             )
             if wait_reason == "connection_changed":
@@ -870,7 +915,7 @@ class CloudCallRecordingUploader:
             restored = False
             _safe_log(
                 self.log_error,
-                "Unable to persist pending call recording state: {!r}".format(exc),
+                "Unable to persist pending call recording state: " + cloud_connection_error_for_display(exc),
             )
         if not restored:
             _safe_log(
@@ -948,7 +993,7 @@ class CloudCallRecordingUploader:
         if self._task is not None and not self._task.done():
             self._next_schedule = (schedule_args, generation, imei)
             return
-        self._task = asyncio.get_running_loop().create_task(self._drain(*schedule_args))
+        self._task = asyncio.get_running_loop().create_task(self._drain(*schedule_args, generation=generation))
 
     async def _schedule_retry(self, schedule_args, imei, generation):
         if generation != self._schedule_generation or not self._schedule_is_current(schedule_args, imei):
@@ -965,9 +1010,10 @@ class CloudCallRecordingUploader:
 
         self._retry_handle = asyncio.get_running_loop().call_later(delay, retry)
 
-    async def _drain(self, ws, send_payload, identity_payload, is_current, is_authorized):
+    async def _drain(self, ws, send_payload, identity_payload, is_current, is_authorized, *, generation=None):
         schedule_args = (ws, send_payload, identity_payload, is_current, is_authorized)
-        generation = self._schedule_generation
+        if generation is None:
+            generation = self._schedule_generation
         current_imei = ""
         cancelled = False
         had_pending = False
@@ -1007,9 +1053,9 @@ class CloudCallRecordingUploader:
                     ok, reason = False, "unexpected_upload_error"
                     _safe_log(
                         self.log_error,
-                        "Upload call recording failed for {}: {!r}".format(
+                        "Upload call recording failed for {}: {}".format(
                             recording.recording_id,
-                            exc,
+                            cloud_connection_error_for_display(exc),
                         ),
                     )
                 if ok or reason in TERMINAL_UPLOAD_FAILURE_REASONS:
@@ -1021,9 +1067,9 @@ class CloudCallRecordingUploader:
                     except Exception as exc:
                         _safe_log(
                             self.log_error,
-                            "Persist uploaded call recording state failed for {}: {!r}".format(
+                            "Persist uploaded call recording state failed for {}: {}".format(
                                 recording.recording_id,
-                                exc,
+                                cloud_connection_error_for_display(exc),
                             ),
                         )
                     if ok:
@@ -1033,7 +1079,8 @@ class CloudCallRecordingUploader:
                 # while other ready recordings can continue in this pass.
                 retry_after = (
                     CLOUD_RECORDING_RETRY_SECONDS
-                    if self._schedule_is_current(schedule_args, current_imei)
+                    if (generation == self._schedule_generation
+                        and self._schedule_is_current(schedule_args, current_imei))
                     else 0.0
                 )
                 await self._restore_pending(recording, reason, retry_after=retry_after)
@@ -1041,14 +1088,14 @@ class CloudCallRecordingUploader:
             cancelled = True
             raise
         except Exception as exc:
-            _safe_log(self.log_error, "Upload call recording failed: {!r}".format(exc))
+            _safe_log(self.log_error, "Upload call recording failed: " + cloud_connection_error_for_display(exc))
         finally:
             try:
                 if self._next_schedule is None and not cancelled and current_imei and had_pending:
                     try:
                         await self._schedule_retry(schedule_args, current_imei, generation)
                     except Exception as exc:
-                        _safe_log(self.log_error, "Schedule call recording retry failed: {!r}".format(exc))
+                        _safe_log(self.log_error, "Schedule call recording retry failed: " + cloud_connection_error_for_display(exc))
             finally:
                 next_schedule = self._next_schedule
                 self._next_schedule = None
@@ -1065,5 +1112,5 @@ class CloudCallRecordingUploader:
             loop.call_soon_threadsafe(self._start_schedule, schedule_args, self._schedule_generation)
             return True
         except Exception as exc:
-            _safe_log(self.log_error, "Schedule call recording upload failed: {!r}".format(exc))
+            _safe_log(self.log_error, "Schedule call recording upload failed: " + cloud_connection_error_for_display(exc))
             return False

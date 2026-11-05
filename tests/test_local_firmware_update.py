@@ -347,6 +347,45 @@ class LocalFirmwareUpdateTests(unittest.TestCase):
         self.updater.start()
         self.assertEqual(self.updater.snapshot()["phase"], "failed")
 
+    def test_invalid_commit_receipts_are_unconfirmed_without_retry_or_abort(self):
+        for fields in ({"ok": False, "phase": "accepted"}, {"ok": True, "phase": "failed"},
+                       {"phase": "failed"}, {"ok": 0, "phase": "failed"},
+                       {"ok": "false", "phase": "failed"}):
+            with self.subTest(fields=fields):
+                self.handler = lambda transport, req, reply: fields if req["action"] == "commit" else reply
+                self.install_handler = lambda *_: (_ for _ in ()).throw(RelayError("usb_timeout"))
+                self.ready()
+                self.requests.clear()
+                self.updater.start()
+                self.assertEqual(self.updater.snapshot()["phase"], "unconfirmed")
+                self.assertFalse(self.updater.start())
+                self.assertEqual(sum(req["action"] == "commit" for req in self.requests), 1)
+                self.assertTrue(self.transports[-1].commit_sent)
+                self.assertFalse(self.transports[-1].aborted)
+                self.assertTrue(self.transports[-1].closed)
+
+    def test_invalid_install_results_do_not_claim_failure_or_success(self):
+        for fields in ({"ok": True, "phase": "failed"}, {"ok": False, "phase": "rebooted"},
+                       {"phase": "rebooted"}, {"ok": 0, "phase": "failed"},
+                       {"ok": "true", "phase": "rebooted"}):
+            with self.subTest(fields=fields):
+                self.install_handler = lambda *_: fields
+                self.ready()
+                self.requests.clear()
+                self.updater.start()
+                self.assertEqual(self.updater.snapshot()["phase"], "unconfirmed")
+                self.assertEqual(sum(req["action"] == "commit" for req in self.requests), 1)
+                self.assertTrue(self.transports[-1].commit_sent)
+                self.assertFalse(self.transports[-1].aborted)
+
+    def test_invalid_commit_still_allows_confirmed_reboot_without_resubmission(self):
+        self.handler = lambda transport, req, reply: dict(ok=True, phase="failed") if req["action"] == "commit" else reply
+        self.ready()
+        self.requests.clear()
+        self.updater.start()
+        self.assertEqual(self.updater.snapshot()["phase"], "success")
+        self.assertEqual(sum(req["action"] == "commit" for req in self.requests), 1)
+
     def test_missing_reboot_evidence_is_unconfirmed_and_cannot_restart_automatically(self):
         self.install_handler = lambda *_: (_ for _ in ()).throw(RelayError("usb_timeout"))
         self.ready()

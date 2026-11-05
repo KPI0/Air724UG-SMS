@@ -134,7 +134,8 @@ class UpdateCheckRuntimeTests(unittest.TestCase):
         warnings = [c for c in calls if c[0] == "warning"]
         self.assertEqual(len(warnings), 1)
         self.assertIn("https://example.com/app.zip", warnings[0][2])
-        self.assertIn("no browser", warnings[0][2])
+        self.assertIn("RuntimeError", warnings[0][2])
+        self.assertNotIn("no browser", warnings[0][2])
 
     def test_check_update_and_prompt_runtime_posts_plan_to_ui(self):
         calls = []
@@ -176,7 +177,7 @@ class UpdateCheckRuntimeTests(unittest.TestCase):
             thread_factory=ImmediateThread,
         )
 
-        self.assertEqual(calls, [("error", "检测更新失败", "down")])
+        self.assertEqual(calls, [("error", "检测更新失败", "更新请求失败（RuntimeError），请检查网络及代理设置")])
 
     def test_check_update_worker_is_registered_until_it_finishes(self):
         registry = WorkerThreadRegistry()

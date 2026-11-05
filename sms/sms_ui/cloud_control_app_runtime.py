@@ -10,6 +10,7 @@ from sms_core.cloud_runtime import (
     write_cloud_control_settings,
 )
 from sms_core.config_runtime import restore_config_section, snapshot_config_section
+from sms_core.credential_policy import CredentialValidationError
 from sms_ui.cloud_control_window import open_cloud_control_window_runtime
 
 
@@ -39,23 +40,22 @@ def save_cloud_control_setting_runtime(
     write_settings=write_cloud_control_settings,
 ):
     previous_settings = current_settings()
-    settings = update_settings(
-        previous_settings,
-        enabled=enabled,
-        url=url,
-        reconnect_interval=reconnect_interval,
-        device_secret=device_secret,
-        auto_upload=auto_upload,
-    )
     config_snapshot = snapshot_config_section(config, "cloud_control")
 
     try:
+        settings = update_settings(
+            previous_settings, enabled=enabled, url=url, reconnect_interval=reconnect_interval,
+            device_secret=device_secret, auto_upload=auto_upload,
+        )
         write_settings(config, settings)
         if save_config() is False:
             raise RuntimeError("配置保存失败")
     except Exception as exc:
         restore_config_section(config, "cloud_control", config_snapshot)
-        system_ui(f"❌ 云端控制配置保存失败，请检查配置文件权限及磁盘空间（{type(exc).__name__}）。", "normal")
+        message = str(exc) if isinstance(exc, CredentialValidationError) else (
+            f"云端控制配置保存失败，请检查配置文件权限及磁盘空间（{type(exc).__name__}）。"
+        )
+        system_ui(f"❌ {message}", "normal")
         return None
 
     committed_settings = read_cloud_control_settings(config)

@@ -7,6 +7,7 @@ import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
 from sms_core.call_command_context import SerialCallStateSnapshot, call_with_state_snapshot
+from sms_core.call_recordings import SERIAL_RECORDING_PREFIX
 from sms_core.call_events import (
     CallLineDecision,
     CallState,
@@ -127,6 +128,8 @@ class SerialRuntimeCallbacks:
     call_state_guard: object = nullcontext
     observe_call_command_line: object = lambda _line: None
     start_serial_incoming_call: object = None
+    abort_call_recording_transfer: object = lambda _reason="": None
+    restore_connected_status: object = None
 
 
 def build_sms_diagnostic_log(config, callbacks, now_func=None):
@@ -301,21 +304,43 @@ def handle_serial_runtime_line(
     ignore_repeat_state,
 ):
     snapshot = state.call_state_snapshot
-    call_with_state_snapshot(
-        getattr(callbacks, "observe_call_command_line", lambda _line: None), line,
-        call_state_snapshot=snapshot,
-    )
+    restore_connected_status = getattr(callbacks, "restore_connected_status", None)
+    if restore_connected_status is not None:
+        restore_callback = restore_connected_status
+        restore_connected_status = lambda port: call_with_state_snapshot(
+            restore_callback, port, call_state_snapshot=snapshot, check_current=False,
+        )
+    recording_frame = line.startswith(SERIAL_RECORDING_PREFIX)
+    if recording_frame:
+        try:
+            if callbacks.consume_call_recording_line(line):
+                return SerialRuntimeResult(continue_read=True)
+        except Exception:
+            return SerialRuntimeResult(continue_read=True)
+    sms_decision = None
+    if line:
+        sms_decision = handle_sms_collector_line(
+            state.sms_collector, line, now,
+            lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now),
+        )
+    sms_owned = sms_decision is not None and sms_decision.action in ("start", "consumed")
+    if not sms_owned:
+        call_with_state_snapshot(
+            getattr(callbacks, "observe_call_command_line", lambda _line: None), line,
+            call_state_snapshot=snapshot,
+        )
     if _consume_remote_incoming_end(state, callbacks):
         popup_active = False
-    try:
-        if callbacks.consume_call_recording_line(line):
+    if not sms_owned and not recording_frame:
+        try:
+            if callbacks.consume_call_recording_line(line):
+                return SerialRuntimeResult(continue_read=True)
+        except Exception:
             return SerialRuntimeResult(continue_read=True)
-    except Exception:
-        return SerialRuntimeResult(continue_read=True)
 
     if (
         ring_timeout_expired(state.call_state.ring_timeout_target, now)
-        and not line_confirms_call_presence(line)
+        and (sms_owned or not line_confirms_call_presence(line))
     ):
         timed_out_number = state.call_state.last_clip_num
         timed_out_session_id = state.call_state.call_session_id
@@ -339,6 +364,7 @@ def handle_serial_runtime_line(
             callbacks.close_call_popup,
             callbacks.finish_incoming_call,
             callbacks.show_missed_call_popup,
+            restore_connected_status=restore_connected_status,
         )
         popup_active = False
 
@@ -346,17 +372,23 @@ def handle_serial_runtime_line(
     ready_sms = state.sms_pipeline.observe_line(line, now, log=sms_diagnostic_log)
     if ready_sms is not None:
         process_runtime_sms_items(ready_sms, config, callbacks, ignore_repeat_state)
-    try:
-        call_with_state_snapshot(
-            callbacks.observe_sms_send_line, line,
-            call_state_snapshot=state.received_call_snapshot or snapshot, check_current=False,
-        )
-    except Exception:
-        pass
+    if not sms_owned:
+        try:
+            call_with_state_snapshot(
+                callbacks.observe_sms_send_line, line,
+                call_state_snapshot=state.received_call_snapshot or snapshot, check_current=False,
+            )
+        except Exception:
+            pass
 
     if not line:
         if state.sms_collector.expired(now):
             flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now)
+        return SerialRuntimeResult(continue_read=True)
+
+    if sms_owned:
+        callbacks.push_serial_debug(line)
+        callbacks.send_cloud_serial_log(line)
         return SerialRuntimeResult(continue_read=True)
 
     apply_serial_line_effects(
@@ -406,6 +438,15 @@ def handle_serial_runtime_line(
                 snapshot.commit(state.call_state.ring_timeout_target, state.call_state.current_dial_num)
             call_state_committed = True
 
+    def send_call_state(phone, phase, reason="", **kwargs):
+        if kwargs.get("direction") == "outgoing" and phase in {"dialing", "alerting", "connected"}:
+            if snapshot is not None and not snapshot.is_outgoing_state_current():
+                return False
+            return call_with_state_snapshot(
+                callbacks.send_cloud_call_state, phone, phase, reason,
+                call_state_snapshot=snapshot, **kwargs)
+        return callbacks.send_cloud_call_state(phone, phase, reason, **kwargs)
+
     call_effect = apply_call_decision(
         call_decision,
         current_port,
@@ -421,9 +462,10 @@ def handle_serial_runtime_line(
         callbacks.finish_incoming_call,
         callbacks.show_missed_call_popup,
         callbacks.send_cloud_call_event,
-        callbacks.send_cloud_call_state,
+        send_call_state,
         lambda message: call_with_state_snapshot(
             callbacks.finish_dial_call, message, call_state_snapshot=snapshot, check_incoming=False),
+        restore_connected_status=restore_connected_status,
     )
     if call_effect.stop_processing:
         return SerialRuntimeResult(
@@ -446,14 +488,8 @@ def handle_serial_runtime_line(
 
     push_serial_debug_insights(line, callbacks.push_serial_debug)
 
-    sms_decision = handle_sms_collector_line(
-        state.sms_collector,
-        line,
-        now,
-        lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now),
-    )
     return SerialRuntimeResult(
-        continue_read=sms_decision.continue_read,
+        continue_read=sms_decision.continue_read if sms_decision is not None else False,
         incoming_state_committed=incoming_state_committed,
         call_state_committed=call_state_committed,
     )
@@ -633,5 +669,10 @@ def run_serial_runtime_thread(
             is_stopping=lambda: not should_continue(),
         )
     finally:
-        finish_sms_session()
+        try:
+            finish_sms_session()
+        finally:
+            abort_recording = getattr(callbacks, "abort_call_recording_transfer", None)
+            if abort_recording is not None:
+                abort_recording("serial_stop")
     return state

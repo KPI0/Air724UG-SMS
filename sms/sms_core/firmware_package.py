@@ -43,8 +43,10 @@ REQUIRED_LUA = {
     "socket4G", "websocket", "http", "ntp",
 }
 REQUIRED_AUDIO = {
-    "audio_ring.mp3", "audio_new_sms.mp3", "audio_http_success.mp3",
     "audio_pickup_record.amr", "audio_pickup_hangup.amr",
+}
+ALLOWED_AUDIO = REQUIRED_AUDIO | {
+    "audio_ring.mp3", "audio_new_sms.mp3", "audio_http_success.mp3",
 }
 
 
@@ -194,7 +196,7 @@ def inspect_luadb(data):
                 raise PackageError("LuaDB 完整性校验失败")
         elif re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*\.luac", name):
             _LuaChunk(body).identity()
-        elif name in REQUIRED_AUDIO:
+        elif name in ALLOWED_AUDIO:
             if not body:
                 raise PackageError("音频资源为空")
         elif name != "amcfg.ini":
@@ -203,7 +205,7 @@ def inspect_luadb(data):
         pos += size
     required = {name + ".luac" for name in REQUIRED_LUA} | REQUIRED_AUDIO | {CRC_FILE, "amcfg.ini"}
     if pos != len(data) or not required.issubset(files):
-        raise PackageError("升级包不完整：须包含现行全部模块、OTA 模块和五个音频资源")
+        raise PackageError("升级包不完整：须包含现行全部模块、OTA 模块和两个 AMR 音频资源")
     identity = _LuaChunk(files["main.luac"]).identity()
     try:
         project, version = identity[b"PROJECT"].decode("ascii"), identity[b"VERSION"].decode("ascii")

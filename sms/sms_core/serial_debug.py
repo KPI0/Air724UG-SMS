@@ -1,10 +1,34 @@
 import re
 
+from sms_core.cloud_command_security import sensitive_cloud_command_decision
 from sms_core.phone_numbers import normalize_sms_destination
+from sms_core.credential_policy import CredentialValidationError, serial_credential_error
 
 
 SERIAL_DEBUG_MAX_STORE_LINES = 20000
 SERIAL_DEBUG_MAX_VISIBLE_LINES = 5000
+SIM_CREDENTIAL_DISPLAY_TEXT = "SIM 凭据指令（内容已隐藏）"
+SIM_DISPLAY_COMMAND_RE = re.compile(
+    r"^(?P<prefix>\s*(?:\[串口\]\s*)?(?:>>>[^\r\n:：]*[:：]\s*|"
+    r"\[[IWE]\]-\[ril\.(?:sendat|proatc)\]\s*)?)"
+    r"(?P<command>AT[^\r\n]*|\+\s*(?:CPIN2?|CPWD|CLCK|CPNETAPN)\b[^\r\n]*)",
+    re.IGNORECASE,
+)
+SIM_CREDENTIAL_PARAMETERS_RE = re.compile(r"\+\s*(?:CPIN2?|CPWD|CLCK|CPNETAPN)\s*=(?!\s*\?)", re.IGNORECASE)
+
+
+def redact_sim_credentials_for_display(value):
+    text = str(value or "")
+    match = SIM_DISPLAY_COMMAND_RE.match(text)
+    if match is None:
+        return text
+    commands = (re.sub(r"(?:\\[rn])+$", "", line.strip())
+                for line in text[match.start("command"):].splitlines())
+    if any(SIM_CREDENTIAL_PARAMETERS_RE.search(command) is not None
+           or sensitive_cloud_command_decision(command).category in ("pin", "puk")
+           for command in commands):
+        return match.group("prefix") + SIM_CREDENTIAL_DISPLAY_TEXT
+    return text
 
 COMMON_SERIAL_COMMANDS = [
     ("AT", "测试通信"),
@@ -50,13 +74,19 @@ def quick_command_label(command: str, description: str) -> str:
 
 def build_serial_command_payload(command: str, append_crlf: bool = True):
     text = str(command or "")
+    error = serial_credential_error(text)
+    if error:
+        raise CredentialValidationError(error)
     suffix = "\r\n" if append_crlf else ""
     display_suffix = "\\r\\n" if append_crlf else ""
-    return (text + suffix).encode("utf-8", "ignore"), display_suffix
+    try:
+        return (text + suffix).encode("utf-8"), display_suffix
+    except UnicodeError:
+        raise CredentialValidationError('AT指令包含不可编码字符，未写入串口') from None
 
 
 def _normalize_pin(value, *, puk=False):
-    text = str(value or "").strip()
+    text = str(value or "")
     pattern = r"[0-9]{8}" if puk else r"[0-9]{4,8}"
     if not re.fullmatch(pattern, text):
         raise ValueError("PUK 码必须为 8 位半角数字" if puk else "PIN 码必须为 4-8 位半角数字")

@@ -1,12 +1,19 @@
 from dataclasses import replace
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+from sms_core.call_recordings import CallRecordingRepository, SerialCallRecordingReceiver
 from sms_core.cloud_protocol import parse_sms_callback_head
 from sms_core.long_sms_assembler import LongSmsAssembler
+from sms_core.serial_app_runtime import build_serial_runtime_callbacks
 from sms_core.serial_runtime import run_serial_runtime_thread
 from sms_core.serial_sms import PendingSms
 from sms_core.sms_pdu import ConcatSmsInfo
 from tests.test_serial_runtime import runtime_callbacks, runtime_config
+from tests.test_call_recordings import AMR_PAYLOAD, begin_frame, chunk_frame, end_frame
 from tools.sms_replay import _incoming_ucs2_pdu, _wrap_hex
 
 
@@ -24,6 +31,119 @@ def complete_long_sms_frames(prefix="FIRST"):
 
 
 class SerialSessionFinishTests(unittest.TestCase):
+    def run_recording_session(self, receiver, frames, *, disconnect=False, callbacks=None):
+        state = {"running": True, "reads": 0}
+        closes = []
+        callbacks = callbacks or build_serial_runtime_callbacks({**vars(runtime_callbacks([])),
+            "consume_call_recording_line": receiver.consume_line,
+            "abort_call_recording_transfer": receiver.abort})
+
+        def read():
+            state["reads"] += 1
+            if state["reads"] == 1:
+                return ("\r\n".join(frames) + "\r\n").encode()
+            if disconnect:
+                raise OSError("synthetic serial disconnected")
+            state["running"] = False
+            return b""
+
+        def handle_disconnect(_error, _port):
+            state["running"] = False
+            receiver.abort("serial_disconnect")
+            return False
+
+        run_serial_runtime_thread(parse_callback_head=parse_sms_callback_head,
+            get_runtime_config=runtime_config, callbacks=callbacks, get_call_state=lambda: (0.0, ""),
+            set_call_state=lambda *_args: None, popup_active=lambda: False, ignore_repeat_state={},
+            should_continue=lambda: state["running"], get_target_port=lambda: "TEST",
+            resolve_target_port=lambda: "TEST", set_connecting_status=lambda *_args: None,
+            open_and_initialize_serial=lambda *_args: None, on_connected_port=lambda *_args: None,
+            read_serial_line=read, handle_disconnect=handle_disconnect, wait_before_retry=lambda: None,
+            safe_close_serial=lambda: closes.append(True), settle_wait=lambda _seconds: None)
+        return closes
+
+    def test_normal_stop_releases_partial_recording_before_return(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = CallRecordingRepository(temp)
+            aborted = []
+            receiver = SerialCallRecordingReceiver(repository, on_aborted=lambda _metadata, reason: aborted.append(reason))
+            self.addCleanup(receiver.abort)
+            closes = self.run_recording_session(receiver, [begin_frame("stopped-partial")])
+            self.assertEqual(closes, [True])
+            self.assertIsNone(receiver.current)
+            self.assertEqual(list(Path(repository.incoming_dir).iterdir()), [])
+            self.assertEqual(aborted, ["serial_stop"])
+
+    def test_normal_stop_preserves_completed_recording(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = CallRecordingRepository(temp)
+            saved, aborted = [], []
+            receiver = SerialCallRecordingReceiver(repository, on_saved=saved.append,
+                on_aborted=lambda _metadata, reason: aborted.append(reason))
+            self.addCleanup(receiver.abort)
+            self.run_recording_session(receiver, [begin_frame("completed"),
+                chunk_frame("completed", 1, AMR_PAYLOAD), end_frame("completed", 1)])
+            self.assertEqual(aborted, [])
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(Path(saved[0].path).read_bytes(), AMR_PAYLOAD)
+            self.assertTrue(Path(saved[0].metadata_path).is_file())
+            self.assertEqual(list(Path(repository.incoming_dir).iterdir()), [])
+
+    def test_normal_stop_keeps_custom_callbacks_without_abort_compatible(self):
+        with tempfile.TemporaryDirectory() as temp:
+            receiver = SerialCallRecordingReceiver(CallRecordingRepository(temp))
+            old_callbacks = vars(runtime_callbacks([])).copy()
+            old_callbacks.pop("abort_call_recording_transfer")
+            self.assertEqual(self.run_recording_session(receiver, [],
+                callbacks=SimpleNamespace(**old_callbacks)), [True])
+
+    def test_sms_finish_failure_still_releases_partial_recording(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = CallRecordingRepository(temp)
+            receiver = SerialCallRecordingReceiver(repository)
+            self.addCleanup(receiver.abort)
+            original = RuntimeError("synthetic SMS finish failure")
+            with patch.object(LongSmsAssembler, "finish_session", side_effect=original):
+                with self.assertRaises(RuntimeError) as raised:
+                    self.run_recording_session(receiver, [begin_frame("sms-finish-failure")])
+            self.assertIs(raised.exception, original)
+            self.assertIsNone(receiver.current)
+            self.assertEqual(list(Path(repository.incoming_dir).iterdir()), [])
+
+    def test_abort_callback_failure_retains_sms_finish_exception_context(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = CallRecordingRepository(temp)
+            receiver = SerialCallRecordingReceiver(repository)
+            self.addCleanup(receiver.abort)
+            original = RuntimeError("synthetic SMS finish failure")
+            cleanup_error = ValueError("synthetic recording cleanup failure")
+
+            def abort(reason):
+                receiver.abort(reason)
+                raise cleanup_error
+
+            callbacks = build_serial_runtime_callbacks({**vars(runtime_callbacks([])),
+                "consume_call_recording_line": receiver.consume_line, "abort_call_recording_transfer": abort})
+            with patch.object(LongSmsAssembler, "finish_session", side_effect=original):
+                with self.assertRaises(ValueError) as raised:
+                    self.run_recording_session(receiver, [begin_frame("dual-failure")], callbacks=callbacks)
+            self.assertIs(raised.exception, cleanup_error)
+            self.assertIs(raised.exception.__context__, original)
+            self.assertIsNone(receiver.current)
+            self.assertEqual(list(Path(repository.incoming_dir).iterdir()), [])
+
+    def test_disconnect_then_stop_does_not_report_duplicate_recording_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = CallRecordingRepository(temp)
+            aborted = []
+            receiver = SerialCallRecordingReceiver(repository,
+                on_aborted=lambda _metadata, reason: aborted.append(reason))
+            self.addCleanup(receiver.abort)
+            self.run_recording_session(receiver, [begin_frame("disconnect-partial")], disconnect=True)
+            self.assertEqual(aborted, ["serial_disconnect"])
+            self.assertIsNone(receiver.current)
+            self.assertEqual(list(Path(repository.incoming_dir).iterdir()), [])
+
     def run_session(self, raw, mode, next_raw=None):
         state = {"running": True, "now": 10.0, "reads": 0, "device": 0}
         calls, deliveries, waits = [], [], []

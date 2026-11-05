@@ -80,6 +80,8 @@ def show_call_popup_runtime(
     log_error=None,
     dispatch_call_result=None,
     write_guard=None,
+    confirm_call_handled=None,
+    response_coordinator=None,
 ):
     if popup_exists(current_popup, log_error=log_error):
         return current_popup
@@ -96,11 +98,22 @@ def show_call_popup_runtime(
             return dispatch_call_result(callback)
         return callback()
 
+    def confirm_result(result):
+        if not result.ok or confirm_call_handled is None:
+            return True
+        try:
+            return confirm_call_handled() is not False
+        except Exception as exc:
+            _safe_log(log_error, "Confirm incoming call result failed: " + type(exc).__name__)
+            return False
+
     def answer(mark_connected, restore_answer):
         if mark_handled() is False:
             return
 
         def on_result(result):
+            if not confirm_result(result):
+                return False
             return apply_result(lambda: apply_call_answer_result(
                 result,
                 caller_num,
@@ -115,6 +128,8 @@ def show_call_popup_runtime(
         kwargs = {"on_result": on_result}
         if write_guard is not None:
             kwargs["write_guard"] = write_guard
+        if response_coordinator is not None:
+            kwargs["response_coordinator"] = response_coordinator
         if log_error is not None:
             kwargs["log_error"] = log_error
         send_command_async(serial_lock, serial_getter, "ATA", **kwargs)
@@ -124,6 +139,8 @@ def show_call_popup_runtime(
             return
 
         def on_result(result):
+            if not confirm_result(result):
+                return False
             return apply_result(lambda: apply_call_hangup_result(
                 result,
                 restore_hangup,
@@ -135,6 +152,8 @@ def show_call_popup_runtime(
         kwargs = {"on_result": on_result}
         if write_guard is not None:
             kwargs["write_guard"] = write_guard
+        if response_coordinator is not None:
+            kwargs["response_coordinator"] = response_coordinator
         if log_error is not None:
             kwargs["log_error"] = log_error
         send_command_async(serial_lock, serial_getter, "ATH", **kwargs)
@@ -172,6 +191,8 @@ def show_call_popup_app_runtime(
     log_error=None,
     dispatch_call_result=None,
     write_guard=None,
+    confirm_call_handled=None,
+    response_coordinator=None,
     show_runtime=show_call_popup_runtime,
 ):
     def show_on_ui():
@@ -199,6 +220,10 @@ def show_call_popup_app_runtime(
             kwargs["dispatch_call_result"] = dispatch_call_result
         if write_guard is not None:
             kwargs["write_guard"] = write_guard
+        if confirm_call_handled is not None:
+            kwargs["confirm_call_handled"] = confirm_call_handled
+        if response_coordinator is not None:
+            kwargs["response_coordinator"] = response_coordinator
         return show_runtime(*args, **kwargs)
 
     return run_on_ui_thread(show_on_ui, ui_post)

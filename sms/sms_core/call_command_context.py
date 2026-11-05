@@ -92,6 +92,10 @@ class SerialCallStateSnapshot(tuple):
             result.namespace = namespace
             result.generation = namespace.get("_dial_state_generation")
             result.incoming_token = _incoming_token(namespace)
+            result.call_epoch = namespace.get("_call_command_epoch")
+            result.outgoing_lifetime = namespace.get("_cloud_dial_lifetime")
+            result.serial = namespace.get("serial_obj")
+            result.serial_generation = namespace.get("serial_connection_generation", 0)
             request = namespace.get("_local_dial_request")
             result.request_phase = (
                 (request.submitted, request.finished)
@@ -125,6 +129,15 @@ class SerialCallStateSnapshot(tuple):
         with call_state_lock(self.namespace):
             return (self.is_current(check_incoming=False)
                     and _incoming_token(self.namespace) is self.incoming_token)
+
+    def is_outgoing_state_current(self):
+        with call_state_lock(self.namespace):
+            return (bool(self[1]) and not self.pending and self.is_response_current()
+                    and self.namespace.get("current_dial_num") == self[1]
+                    and self.namespace.get("_call_command_epoch") is self.call_epoch
+                    and self.namespace.get("_cloud_dial_lifetime") is self.outgoing_lifetime
+                    and self.namespace.get("serial_obj") is self.serial
+                    and self.namespace.get("serial_connection_generation", 0) == self.serial_generation)
 
     def commit(self, ring_timeout, dial_number):
         with call_state_lock(self.namespace):
