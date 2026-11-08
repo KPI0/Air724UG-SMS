@@ -39,6 +39,7 @@ from sms_core.cloud_sms_event_runtime import (
     schedule_cloud_sms_event_drain,
 )
 from sms_core.cloud_protocol import cloud_login_ack_matches_imei
+from sms_core.cloud_security import cloud_connection_error_for_display
 from sms_core.serial_debug import build_own_number_commands
 from sms_core.serial_sender import (
     AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
@@ -657,9 +658,14 @@ async def run_registered_cloud_serial_command_namespace_runtime(
 
     def finish(result):
         if not result_future.done():
-            result_future.set_result(
-                apply_cloud_modem_health_namespace_runtime(namespace, result, command_context=command_context)
-            )
+            try:
+                result = apply_cloud_modem_health_namespace_runtime(
+                    namespace, result, command_context=command_context,
+                )
+            except Exception as exc:
+                _safe_log(namespace.get("log_file_only"),
+                          "云端指令健康状态更新失败：" + cloud_connection_error_for_display(exc))
+            result_future.set_result(result)
 
     def worker():
         try:
@@ -669,7 +675,7 @@ async def run_registered_cloud_serial_command_namespace_runtime(
         except Exception as exc:
             if call_context is not None:
                 call_context.finish(False)
-            result = (False, f"发送失败：{exc}")
+            result = (False, "发送失败：" + cloud_connection_error_for_display(exc))
         try:
             loop.call_soon_threadsafe(finish, result)
         except Exception:
@@ -686,7 +692,7 @@ async def run_registered_cloud_serial_command_namespace_runtime(
     except Exception as exc:
         if call_context is not None:
             call_context.finish(False)
-        return False, f"发送失败：{exc}"
+        return False, "发送失败：" + cloud_connection_error_for_display(exc)
 
     return await result_future
 

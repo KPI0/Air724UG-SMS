@@ -117,7 +117,10 @@ def start_shutdown_task_runtime(
     def finish(result):
         nonlocal finished
         if notify_log_errors is not None:
-            notify_log_errors(force=True)
+            try:
+                notify_log_errors(force=True)
+            except Exception as exc:
+                _safe_log(log_error, f"Notify shutdown log errors failed: {type(exc).__name__}")
         finished = True
         progress.close()
         if getattr(result, "status", result) == "exited":

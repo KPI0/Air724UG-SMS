@@ -241,7 +241,7 @@ def restart_software_runtime(
             try:
                 report_progress(message)
             except Exception as exc:
-                _safe_log(log_error, f"Report restart progress failed: {exc!r}")
+                _safe_log(log_error, f"Report restart progress failed: {type(exc).__name__}")
 
     progress("正在准备重启…")
     helper_process = None
@@ -259,12 +259,15 @@ def restart_software_runtime(
             cwd=workdir,
         )
     except Exception as e:
-        message = f"重启尝试失败：{e}"
-        log_error(message)
+        message = f"重启尝试失败：{type(e).__name__}"
+        _safe_log(log_error, message)
         try:
             show_launch_error(e)
         except Exception:
-            system_ui(message, "normal")
+            try:
+                system_ui(message, "normal")
+            except Exception as exc:
+                _safe_log(log_error, f"Report restart launch failure failed: {type(exc).__name__}")
         return RestartRuntimeResult("launch_failed", e)
 
     try:
@@ -283,7 +286,7 @@ def restart_software_runtime(
                 progress("正在确认云端事件并关闭连接…")
                 before_stop_cloud()
         except Exception as exc:
-            _safe_log(log_error, f"Finish received SMS before cloud restart failed: {exc!r}")
+            _safe_log(log_error, f"Finish received SMS before cloud restart failed: {type(exc).__name__}")
             return RestartRuntimeResult("worker_wait_failed", exc)
 
         try:
@@ -296,7 +299,7 @@ def restart_software_runtime(
             threads_to_wait = worker_threads() if callable(worker_threads) else worker_threads
         except Exception as exc:
             try:
-                log_error(f"Snapshot restart worker threads failed: {exc!r}")
+                log_error(f"Snapshot restart worker threads failed: {type(exc).__name__}")
             except Exception:
                 pass
             return RestartRuntimeResult("worker_wait_failed", exc)
@@ -305,7 +308,7 @@ def restart_software_runtime(
             workers_stopped = wait_worker_threads(threads_to_wait, log_error=log_error)
         except Exception as exc:
             try:
-                log_error(f"Wait for producer worker threads during restart raised: {exc!r}")
+                log_error(f"Wait for producer worker threads during restart raised: {type(exc).__name__}")
             except Exception:
                 pass
             return RestartRuntimeResult("worker_wait_failed", exc)
@@ -322,7 +325,7 @@ def restart_software_runtime(
                 final_threads_to_wait = worker_threads()
             except Exception as exc:
                 try:
-                    log_error(f"Snapshot final restart worker threads failed: {exc!r}")
+                    log_error(f"Snapshot final restart worker threads failed: {type(exc).__name__}")
                 except Exception:
                     pass
                 return RestartRuntimeResult("worker_wait_failed", exc)
@@ -338,7 +341,7 @@ def restart_software_runtime(
                     )
                 except Exception as exc:
                     try:
-                        log_error(f"Wait for late producer worker threads during restart raised: {exc!r}")
+                        log_error(f"Wait for late producer worker threads during restart raised: {type(exc).__name__}")
                     except Exception:
                         pass
                     return RestartRuntimeResult("worker_wait_failed", exc)
@@ -364,7 +367,7 @@ def restart_software_runtime(
                 )
             except Exception as exc:
                 try:
-                    log_error(f"Snapshot deferred restart worker threads failed: {exc!r}")
+                    log_error(f"Snapshot deferred restart worker threads failed: {type(exc).__name__}")
                 except Exception:
                     pass
                 return RestartRuntimeResult("worker_wait_failed", exc)
@@ -375,7 +378,7 @@ def restart_software_runtime(
                 )
             except Exception as exc:
                 try:
-                    log_error(f"Wait for deferred worker threads during restart raised: {exc!r}")
+                    log_error(f"Wait for deferred worker threads during restart raised: {type(exc).__name__}")
                 except Exception:
                     pass
                 return RestartRuntimeResult("worker_wait_failed", exc)
@@ -399,7 +402,7 @@ def restart_software_runtime(
             file_log_stopped = wait_file_log_worker(file_log_thread, log_error=log_error)
         except Exception as exc:
             try:
-                log_error(f"Wait for file log worker during restart raised: {exc!r}")
+                log_error(f"Wait for file log worker during restart raised: {type(exc).__name__}")
             except Exception:
                 pass
             return RestartRuntimeResult("file_log_wait_failed", exc)
@@ -429,14 +432,14 @@ def restart_software_runtime(
                 if cancelled is False:
                     _safe_log(log_error, "Cancel pending restart helper returned False")
                     if cleanup_error is not None:
-                        _safe_log(log_error, f"Restart cleanup also failed: {cleanup_error!r}")
+                        _safe_log(log_error, f"Restart cleanup also failed: {type(cleanup_error).__name__}")
                         if not isinstance(cleanup_error, Exception):
                             raise cleanup_error
                     return RestartRuntimeResult("helper_cancel_failed")
             except Exception as exc:
-                _safe_log(log_error, f"Cancel pending restart helper failed: {exc!r}")
+                _safe_log(log_error, f"Cancel pending restart helper failed: {type(exc).__name__}")
                 if cleanup_error is not None:
-                    _safe_log(log_error, f"Restart cleanup also failed: {cleanup_error!r}")
+                    _safe_log(log_error, f"Restart cleanup also failed: {type(cleanup_error).__name__}")
                     if not isinstance(cleanup_error, Exception):
                         raise cleanup_error
                 return RestartRuntimeResult("helper_cancel_failed", exc)

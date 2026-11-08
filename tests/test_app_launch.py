@@ -17,6 +17,13 @@ from sms_core.app_launch import (
 
 
 class AppLaunchRestartTests(unittest.TestCase):
+    class UnformattableRestartError(Exception):
+        def __str__(self):
+            raise RuntimeError("synthetic restart str failure")
+
+        def __repr__(self):
+            raise RuntimeError("synthetic restart repr failure")
+
     def test_process_wait_access_denied_is_reported_instead_of_launching_early(self):
         kernel = SimpleNamespace(OpenProcess=Mock(return_value=0), GetLastError=Mock(return_value=5),
             WaitForSingleObject=Mock(), CloseHandle=Mock())
@@ -241,6 +248,181 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIn(("show_error", "boom"), calls)
         self.assertFalse(any(item[0] == "exit" for item in calls))
 
+    def test_restart_progress_diagnostic_failure_does_not_abort_restart(self):
+        calls = []
+        error = self.UnformattableRestartError()
+
+        def fail(*args, **kwargs):
+            raise error
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, report_progress=fail, log_error=fail))
+
+        self.assertEqual(result.status, "exited")
+        self.assertIn(("exit", 0), calls)
+        self.assertFalse(any(item[0] == "cancel" for item in calls))
+
+    def test_restart_launch_unformattable_error_preserves_original_object(self):
+        calls = []
+        error = self.UnformattableRestartError()
+
+        def fail(*args, **kwargs):
+            raise error
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, launch_process=fail,
+            show_launch_error=lambda value: calls.append(("show_error_object", value))))
+
+        self.assertEqual(result.status, "launch_failed")
+        self.assertIs(result.error, error)
+        self.assertTrue(any(item[0] == "show_error_object" and item[1] is error for item in calls))
+        self.assertTrue(any(item[0] == "log_error" and "UnformattableRestartError" in item[1] for item in calls))
+        self.assertFalse(any(item[0] in {"exiting", "cancel", "exit"} for item in calls))
+
+    def test_restart_launch_logger_failure_still_delivers_original_error(self):
+        calls = []
+        error = OSError("synthetic launch failure")
+
+        def fail_launch(*args, **kwargs):
+            raise error
+
+        def fail_log(*args, **kwargs):
+            raise self.UnformattableRestartError()
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, launch_process=fail_launch, log_error=fail_log,
+            show_launch_error=lambda value: calls.append(("show_error_object", value))))
+
+        self.assertEqual(result.status, "launch_failed")
+        self.assertIs(result.error, error)
+        self.assertTrue(any(item[0] == "show_error_object" and item[1] is error for item in calls))
+        self.assertFalse(any(item[0] == "exiting" for item in calls))
+
+    def test_restart_launch_error_ui_failures_keep_controlled_return(self):
+        calls = []
+        error = OSError("synthetic launch failure")
+
+        def fail_launch(*args, **kwargs):
+            raise error
+
+        def fail_ui(*args, **kwargs):
+            raise self.UnformattableRestartError()
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, launch_process=fail_launch, show_launch_error=fail_ui, system_ui=fail_ui))
+
+        self.assertEqual(result.status, "launch_failed")
+        self.assertIs(result.error, error)
+        self.assertTrue(any(item[0] == "log_error" and "Report restart launch failure failed" in item[1]
+                            for item in calls))
+
+    def test_restart_received_sms_error_keeps_original_return_and_helper_cancel(self):
+        calls = []
+        error = self.UnformattableRestartError()
+
+        def fail(*args, **kwargs):
+            raise error
+
+        result = restart_software_runtime(**self._runtime_kwargs(calls, before_stop_cloud=fail))
+
+        self.assertEqual(result.status, "worker_wait_failed")
+        self.assertIs(result.error, error)
+        self.assertIn(("cancel", "helper-process"), calls)
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_unformattable_helper_cancel_error_keeps_original_object(self):
+        calls = []
+        error = self.UnformattableRestartError()
+
+        def fail(*args, **kwargs):
+            raise error
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, wait_worker_threads=lambda *args, **kwargs: False, cancel_launch=fail))
+
+        self.assertEqual(result.status, "helper_cancel_failed")
+        self.assertIs(result.error, error)
+        self.assertFalse(any(item[0] == "exit" for item in calls))
+
+    def test_restart_unformattable_cleanup_error_is_logged_when_cancel_returns_false(self):
+        calls = []
+        error = self.UnformattableRestartError()
+
+        def fail(*args, **kwargs):
+            raise error
+
+        result = restart_software_runtime(**self._runtime_kwargs(
+            calls, safe_close_serial=fail, cancel_launch=lambda _helper: False))
+
+        self.assertEqual(result.status, "helper_cancel_failed")
+        self.assertTrue(any(item[0] == "log_error" and "Restart cleanup also failed: UnformattableRestartError" in item[1]
+                            for item in calls))
+
+    def test_restart_worker_failure_diagnostics_preserve_original_status_and_error(self):
+        cases = ("snapshot", "final_snapshot", "late_wait", "producer_wait",
+                 "deferred_snapshot", "deferred_wait", "file_wait")
+        for case in cases:
+            with self.subTest(case=case):
+                calls = []
+                error = self.UnformattableRestartError()
+
+                def fail(*args, **kwargs):
+                    raise error
+
+                values = {}
+                status = "worker_wait_failed"
+                if case == "snapshot":
+                    values["worker_threads"] = fail
+                elif case == "final_snapshot":
+                    count = [0]
+                    def snapshot():
+                        count[0] += 1
+                        return ("producer",) if count[0] == 1 else fail()
+                    values["worker_threads"] = snapshot
+                elif case == "late_wait":
+                    count = [0]
+                    def snapshot():
+                        count[0] += 1
+                        return ("producer",) if count[0] == 1 else ("producer", "late")
+                    values["worker_threads"] = snapshot
+                    values["wait_worker_threads"] = lambda threads, **kwargs: fail() if threads == ("late",) else True
+                elif case == "producer_wait":
+                    values["wait_worker_threads"] = fail
+                elif case == "deferred_snapshot":
+                    values["deferred_worker_threads"] = fail
+                elif case == "deferred_wait":
+                    values["deferred_worker_threads"] = ("deferred",)
+                    values["wait_worker_threads"] = lambda threads, **kwargs: fail() if threads == ("deferred",) else True
+                else:
+                    status = "file_log_wait_failed"
+                    values["wait_file_log_worker"] = fail
+
+                result = restart_software_runtime(**self._runtime_kwargs(calls, **values))
+
+                self.assertEqual(result.status, status)
+                self.assertIs(result.error, error)
+                self.assertIn(("cancel", "helper-process"), calls)
+                self.assertFalse(any(item[0] == "exit" for item in calls))
+                self.assertTrue(any(item[0] == "log_error" and "UnformattableRestartError" in item[1]
+                                    for item in calls))
+
+    def test_restart_cancel_diagnostic_failure_preserves_control_exceptions(self):
+        for control_error in (SystemExit(9), KeyboardInterrupt()):
+            with self.subTest(kind=type(control_error).__name__):
+                calls = []
+
+                def fail_cleanup(*args, **kwargs):
+                    raise control_error
+
+                def fail_cancel(*args, **kwargs):
+                    raise self.UnformattableRestartError()
+
+                with self.assertRaises(type(control_error)) as raised:
+                    restart_software_runtime(**self._runtime_kwargs(
+                        calls, safe_close_serial=fail_cleanup, cancel_launch=fail_cancel))
+
+                self.assertIs(raised.exception, control_error)
+
     def test_restart_runtime_success_starts_helper_then_cleans_up_and_exits(self):
         calls = []
         result = restart_software_runtime(**self._runtime_kwargs(calls))
@@ -352,7 +534,7 @@ class AppLaunchRestartTests(unittest.TestCase):
         self.assertIsInstance(result.error, RuntimeError)
         self.assertTrue(
             any(
-                item[0] == "log_error" and "snapshot failed" in item[1]
+                item[0] == "log_error" and "Snapshot restart worker threads failed: RuntimeError" in item[1]
                 for item in calls
             )
         )
@@ -465,7 +647,8 @@ class AppLaunchRestartTests(unittest.TestCase):
             calls, cancel_launch=lambda _helper: False,
             safe_close_serial=lambda: (_ for _ in ()).throw(OSError("synthetic cleanup"))))
         self.assertEqual(result.status, "helper_cancel_failed")
-        self.assertTrue(any(item[0] == "log_error" and "synthetic cleanup" in item[1] for item in calls))
+        self.assertTrue(any(item[0] == "log_error" and "Restart cleanup also failed: OSError" in item[1]
+                            for item in calls))
 
     def test_helper_cancel_failure_does_not_suppress_system_exit(self):
         calls = []

@@ -1,10 +1,10 @@
 pyttsx3==2.99
 pyserial==3.5
 pystray==0.19.5
-pillow==12.2.0
+pillow==13.0.0
 pywin32==311
-setuptools==82.0.1
+setuptools==84.1.0
 pyinstaller==6.20.0
 websockets==16.0
 python-socks[asyncio]==3.2.1
-certifi>=2024.7.4
+certifi>=2026.10.23
