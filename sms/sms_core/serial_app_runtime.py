@@ -332,6 +332,17 @@ def run_serial_reader_namespace_runtime(
         session = current_session()
         if session is not None:
             session.read_boundary()
+        notify = namespace.get("notify_cloud_channel_status")
+        if callable(notify):
+            try:
+                notify(None)
+            except Exception as exc:
+                try:
+                    namespace["log_file_only"](
+                        f"Cloud channel status notification failed: {type(exc).__name__}"
+                    )
+                except Exception:
+                    pass
         return namespace["read_serial_line_safely"]()
 
     def cancel_serial_transactions(error="串口连接已断开"):

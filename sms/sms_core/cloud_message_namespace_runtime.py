@@ -1,5 +1,6 @@
 import asyncio
 from sms_core.cloud_firmware_ota import handle_firmware_ota
+from sms_core.cloud_device_config import handle_device_config
 import inspect
 import threading
 import time
@@ -772,6 +773,7 @@ async def handle_cloud_message_namespace_runtime(
         ),
         handle_device_call_state_message=handle_device_call_state_message,
         handle_firmware_ota_message=lambda data: handle_firmware_ota(namespace, ws, data),
+        handle_device_config_message=lambda data: handle_device_config(namespace, ws, data),
         auth_ack_matches=lambda data: (
             cloud_connection_is_current(namespace, ws)
             and cloud_login_ack_matches_imei(data, namespace["_cloud_runtime_imei"]())

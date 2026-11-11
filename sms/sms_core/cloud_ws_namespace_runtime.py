@@ -1,11 +1,14 @@
 import inspect
 import time
+from contextlib import nullcontext
 from sms_core.call_command_context import call_state_lock
 from sms_core.cloud_firmware_ota import stop_firmware_ota
+from sms_core.cloud_device_config import stop_device_config
 from sms_core.cloud_command_context import (
     cloud_connection_is_current, set_cloud_command_authorized, set_cloud_login_authorized,
 )
 from sms_core.cloud_protocol import cloud_login_ack_matches_imei
+from sms_core.cloud_state_namespace_runtime import cloud_channel_status_snapshot_namespace_runtime
 from sms_core.cloud_sms_event_runtime import interrupt_cloud_sms_event_drain, stop_cloud_sms_event_drain
 
 from sms_core.cloud_message_runtime import (
@@ -51,17 +54,7 @@ async def send_cloud_register_namespace_runtime(
     *,
     send_runtime=send_cloud_register_runtime,
 ):
-    serial_connected = False
-    try:
-        with namespace["serial_lock"]:
-            serial_obj = namespace.get("serial_obj")
-            serial_connected = bool(serial_obj is not None and serial_obj.is_open)
-    except Exception:
-        serial_connected = False
-    try:
-        serial_generation = max(0, int(namespace.get("serial_connection_generation", 0)))
-    except (TypeError, ValueError):
-        serial_generation = 0
+    channel_state_key, channel_status = cloud_channel_status_snapshot_namespace_runtime(namespace)
     # Settings publication uses this lock too: credentials must belong to the
     # still-current connection, including after waiting for the serial lock.
     with call_state_lock(namespace):
@@ -86,9 +79,7 @@ async def send_cloud_register_namespace_runtime(
             runtime_imei=namespace["_cloud_runtime_imei"],
             log=namespace["_cloud_log"],
             previous_session_secret=previous_session_secret,
-            serial_connected=serial_connected,
-            control_available=serial_connected,
-            serial_connection_generation=serial_generation,
+            **channel_status,
         )
     try:
         signature = inspect.signature(send_runtime)
@@ -97,7 +88,7 @@ async def send_cloud_register_namespace_runtime(
             for parameter in signature.parameters.values()
         )
         if not accepts_kwargs:
-            for key in ("serial_connected", "control_available", "serial_connection_generation"):
+            for key in ("serial_connected", "control_available", "serial_connection_generation", "channel_status_revision"):
                 if key not in signature.parameters:
                     send_kwargs.pop(key, None)
     except (TypeError, ValueError):
@@ -115,9 +106,14 @@ async def send_cloud_register_namespace_runtime(
         **send_kwargs,
     )
     if result in (True, "sent"):
-        with call_state_lock(namespace):
-            if cloud_connection_is_current(namespace, ws):
-                namespace["cloud_last_channel_status"] = (ws, serial_generation, serial_connected)
+        current_key, current_status = cloud_channel_status_snapshot_namespace_runtime(namespace)
+        with namespace.get("serial_lock") or nullcontext(), call_state_lock(namespace):
+            if (cloud_connection_is_current(namespace, ws) and current_key == channel_state_key
+                    and current_status["channel_status_revision"] == channel_status["channel_status_revision"]
+                    and namespace.get("_cloud_channel_status_snapshot")
+                    == (channel_state_key, channel_status["channel_status_revision"])):
+                namespace["cloud_last_channel_status"] = (channel_state_key, channel_status["channel_status_revision"])
+                namespace.pop("_cloud_channel_publication_owner", None)
     return result
 
 
@@ -207,6 +203,7 @@ async def cloud_ws_main_namespace_runtime(
         namespace["cloud_ws_conn"] = None
         set_cloud_command_authorized(namespace, False)
         await stop_firmware_ota(namespace)
+        await stop_device_config(namespace)
         await stop_cloud_sms_event_drain(namespace.get("CLOUD_SMS_EVENT_DRAIN_STATE"))
         if uploader is not None:
             await uploader.stop()

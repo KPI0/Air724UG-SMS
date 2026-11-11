@@ -49,6 +49,8 @@ def usb_at_candidates(ports, modem_port):
 
 
 class UsbOtaTransport:
+    reply_type = "firmware_ota_reply"
+
     def __init__(self, context, current, *, serial_factory=None, list_ports=None,
                  clock=time.monotonic, response_timeout=5):
         self.context, self.current = context, current
@@ -101,7 +103,7 @@ class UsbOtaTransport:
                     reply = json.loads(raw)
                 except (ValueError, UnicodeError, RecursionError):
                     continue
-                if (not isinstance(reply, dict) or reply.get("type") != "firmware_ota_reply"
+                if (not isinstance(reply, dict) or reply.get("type") != self.reply_type
                         or reply.get("session") != self.session):
                     continue
                 expected = request if reply.get("request_id") == request.get("request_id") else alternate
@@ -111,6 +113,8 @@ class UsbOtaTransport:
                     raise RelayError("wrong_device")
                 if expected["action"] != "info" and reply.get("job_id") != expected.get("job_id"):
                     continue
+                if not self._reply_matches(expected, reply):
+                    continue
                 self.check()
                 return reply
             if len(self.buffer) > MAX_FRAME:
@@ -118,8 +122,19 @@ class UsbOtaTransport:
             self.buffer.extend(self.port.read(1024))
         raise RelayError("usb_timeout")
 
+    def _reply_matches(self, request, reply):
+        return True
+
+    def _probe_request(self):
+        return dict(type="firmware_ota", action="info", request_id=uuid.uuid4().hex)
+
+    def _probe_capability(self, reply):
+        if reply.get("ok") is not True or not isinstance(reply.get("ota"), dict):
+            raise RelayError("unsupported")
+        return {key: reply["ota"].get(key) for key in CAP_FIELDS}
+
     def _probe(self, deadline=None, *, resync=False):
-        request = dict(type="firmware_ota", action="info", request_id=uuid.uuid4().hex)
+        request = self._probe_request()
         self._write(request, deadline=deadline)
         timeout = self.response_timeout
         if deadline is not None:
@@ -141,9 +156,7 @@ class UsbOtaTransport:
                 reply = self._read(request, max(0, response_deadline - self.clock()))
         else:
             reply = self._read(request, timeout)
-        if reply.get("ok") is not True or not isinstance(reply.get("ota"), dict):
-            raise RelayError("unsupported")
-        self.capability = {key: reply["ota"].get(key) for key in CAP_FIELDS}
+        self.capability = self._probe_capability(reply)
         return self.capability
 
     def connect(self):

@@ -196,7 +196,7 @@ def cloud_status_payload_namespace_runtime(
     *,
     status_runtime=cloud_status_payload_runtime,
 ):
-    return status_runtime(
+    payload = status_runtime(
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: namespace["serial_obj"],
         build_payload=namespace["_cloud_build_status_payload"],
@@ -207,25 +207,61 @@ def cloud_status_payload_namespace_runtime(
         serial_baud=namespace["BAUD"],
         serial_mode=namespace["MODE"],
     )
+    if isinstance(payload, dict):
+        _, channel_status = cloud_channel_status_snapshot_namespace_runtime(namespace)
+        payload.update(channel_status)
+    return payload
+
+
+def cloud_channel_status_snapshot_namespace_runtime(namespace, serial_connected=None):
+    """Separate the open transport from a sender that has confirmed initialization."""
+    with namespace.get("serial_lock") or nullcontext():
+        serial_obj = namespace.get("serial_obj")
+        connected = available = False
+        try:
+            with serial_sender.DEFAULT_SERIAL_WRITE_LOCK:
+                connected = bool(serial_obj is not None and serial_obj.is_open)
+                if serial_connected is not None:
+                    connected = connected and bool(serial_connected)
+                available = connected and not (
+                    serial_sender.serial_initialization_pending(serial_obj)
+                    or serial_sender.serial_sms_recovery_error(serial_obj)
+                    or namespace.get("serial_running", True) is False
+                    or namespace.get("is_exiting")
+                    or any(event is not None and event.is_set() for event in (
+                        namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN"),
+                    ))
+                )
+        except Exception:
+            connected = available = False
+        try:
+            generation = max(0, int(namespace.get("serial_connection_generation", 0)))
+        except (TypeError, ValueError):
+            generation = 0
+        ws = namespace.get("cloud_ws_conn")
+        state_key = (ws, serial_obj, generation, connected, bool(available))
+        previous = namespace.get("_cloud_channel_status_snapshot")
+        if previous is not None and previous[0] == state_key:
+            revision = previous[1]
+        elif previous is not None and previous[0][0] is ws:
+            revision = previous[1] + 1
+        else:
+            revision = 1
+        namespace["_cloud_channel_status_snapshot"] = (state_key, revision)
+        return state_key, {
+            "serial_connected": connected,
+            "control_available": bool(available),
+            "serial_connection_generation": generation,
+            "channel_status_revision": revision,
+        }
 
 
 def notify_cloud_channel_status_namespace_runtime(namespace, serial_connected=None):
     """Publish the desktop transport's serial availability to the server."""
-    if serial_connected is None:
-        try:
-            with namespace["serial_lock"]:
-                serial_obj = namespace.get("serial_obj")
-                serial_connected = bool(serial_obj is not None and serial_obj.is_open)
-        except Exception:
-            serial_connected = False
-    serial_connected = bool(serial_connected)
-    try:
-        generation = max(0, int(namespace.get("serial_connection_generation", 0)))
-    except (TypeError, ValueError):
-        generation = 0
-    ws = namespace.get("cloud_ws_conn")
-    state_key = (ws, generation, serial_connected)
-    if namespace.get("cloud_last_channel_status") == state_key:
+    state_key, channel_status = cloud_channel_status_snapshot_namespace_runtime(namespace, serial_connected)
+    ws = state_key[0]
+    publication_key = (state_key, channel_status["channel_status_revision"])
+    if namespace.get("cloud_last_channel_status") == publication_key:
         return False
     if not namespace.get("cloud_connected") or not namespace.get("cloud_device_authorized"):
         return False
@@ -233,21 +269,53 @@ def notify_cloud_channel_status_namespace_runtime(namespace, serial_connected=No
     payload = build_payload(
         namespace["_cloud_now_ts"](),
         namespace["_cloud_identity_payload"](),
-        serial_connected,
-        serial_connected,
-        generation,
+        channel_status["serial_connected"],
+        channel_status["control_available"],
+        channel_status["serial_connection_generation"],
     )
+    payload["channel_status_revision"] = channel_status["channel_status_revision"]
+    publication_owner = object()
+
+    def release_failed_publication():
+        with namespace.get("serial_lock") or nullcontext():
+            if (namespace.get("_cloud_channel_publication_owner") is publication_owner
+                    and namespace.get("cloud_last_channel_status") == publication_key):
+                namespace["cloud_last_channel_status"] = None
+                namespace.pop("_cloud_channel_publication_owner", None)
+
+    def publication_finished(future):
+        try:
+            succeeded = future.result() in (True, "sent")
+        except Exception:
+            succeeded = False
+        if not succeeded:
+            release_failed_publication()
+
+    def schedule_publication(coro, loop):
+        future = namespace.get("asyncio", asyncio).run_coroutine_threadsafe(coro, loop)
+        add_done_callback = getattr(future, "add_done_callback", None)
+        if callable(add_done_callback):
+            add_done_callback(publication_finished)
+        return future
+
+    with namespace.get("serial_lock") or nullcontext():
+        if (namespace.get("_cloud_channel_status_snapshot") != (state_key, channel_status["channel_status_revision"])
+                or namespace.get("cloud_last_channel_status") == publication_key):
+            return False
+        namespace["cloud_last_channel_status"] = publication_key
+        namespace["_cloud_channel_publication_owner"] = publication_owner
     scheduled = schedule_cloud_payload_runtime(
         payload,
         get_loop=lambda: namespace.get("cloud_ws_loop"),
-        get_ws=lambda: namespace.get("cloud_ws_conn"),
-        is_connected=lambda: namespace.get("cloud_connected") and namespace.get("cloud_device_authorized"),
+        get_ws=lambda: ws,
+        is_connected=lambda: (namespace.get("cloud_ws_conn") is ws
+            and namespace.get("cloud_connected") and namespace.get("cloud_device_authorized")),
         send_payload=namespace["_cloud_send_payload"],
-        run_coroutine_threadsafe=namespace.get("asyncio", asyncio).run_coroutine_threadsafe,
+        run_coroutine_threadsafe=schedule_publication,
         log_error=namespace.get("log_file_only"),
     )
-    if scheduled:
-        namespace["cloud_last_channel_status"] = state_key
+    if not scheduled:
+        release_failed_publication()
     return scheduled
 
 

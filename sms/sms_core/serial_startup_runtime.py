@@ -255,11 +255,23 @@ def open_and_initialize_serial_runtime(
     on_initialized=None,
 ):
     with transaction_lock:
+        session = None
         try:
             with serial_lock:
                 serial_obj = open_serial(target_port, baud)
+                if response_coordinator is not None:
+                    session = SerialInitializationSession(
+                        serial_obj, serial_lock=serial_lock, transaction_lock=transaction_lock,
+                        response_coordinator=response_coordinator, get_serial=get_serial_obj,
+                        get_generation=get_generation, expected_generation=get_generation() + 1,
+                        set_imei_deadline=set_cloud_imei_query_deadline, is_stopping=is_stopping,
+                        report=serial_error_ui, monotonic=monotonic,
+                        on_finished=on_initialized,
+                    )
                 set_serial_obj(serial_obj)
         except Exception as exc:
+            if session is not None:
+                session.close()
             if is_open_denied(str(exc)):
                 serial_error_ui(
                     f"⚠️ 端口占用：{target_port} 已被其他程序或本软件其他实例占用。",
@@ -268,18 +280,13 @@ def open_and_initialize_serial_runtime(
                 set_status("🔴 端口占用，等待释放…", "red")
             raise
 
-        lock_port_mutex(target_port)
-        session = None
-        if response_coordinator is not None:
-            session = SerialInitializationSession(
-                serial_obj, serial_lock=serial_lock, transaction_lock=transaction_lock,
-                response_coordinator=response_coordinator, get_serial=get_serial_obj,
-                get_generation=get_generation, expected_generation=get_generation() + 1,
-                set_imei_deadline=set_cloud_imei_query_deadline, is_stopping=is_stopping,
-                report=serial_error_ui, monotonic=monotonic,
-                on_finished=on_initialized,
-            )
-        else:
+        try:
+            lock_port_mutex(target_port)
+        except BaseException:
+            if session is not None:
+                session.close()
+            raise
+        if response_coordinator is None:
             write_command(serial_obj, "AT+CLIP=1")
             try:
                 set_cloud_imei_query_deadline(monotonic() + 6.0)

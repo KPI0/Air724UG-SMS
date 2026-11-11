@@ -99,6 +99,7 @@ async def send_cloud_register_runtime(
     serial_connected=None,
     control_available=None,
     serial_connection_generation=None,
+    channel_status_revision=None,
 ):
     error = credential_error(secret, '云端控制密码', allow_empty=False) or credential_error(
         previous_session_secret, '原云端控制密码',
@@ -124,6 +125,8 @@ async def send_cloud_register_runtime(
             payload["serial_connected"] = bool(serial_connected)
         if control_available is not None:
             payload["control_available"] = bool(control_available)
+        if channel_status_revision is not None:
+            payload["channel_status_revision"] = max(0, int(channel_status_revision))
         if serial_connection_generation is not None:
             try:
                 payload["serial_connection_generation"] = max(0, int(serial_connection_generation))
@@ -854,8 +857,13 @@ async def handle_cloud_message_runtime(
     prepare_serial_command=None,
     handle_device_event_ack=None,
     handle_firmware_ota_message=None,
+    handle_device_config_message=None,
 ):
     incoming, error_payload = parse_cloud_message(message)
+    if error_payload is None and incoming.msg_type == "device_config":
+        if handle_device_config_message is not None:
+            await handle_device_config_message(incoming.data)
+        return "device_config"
     if error_payload is None and incoming.msg_type == "firmware_ota":
         # OTA frames contain package data and control credentials. Handle them
         # before ordinary command logging and without blocking event ACKs.

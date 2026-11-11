@@ -213,6 +213,8 @@ def inspect_luadb(data):
     if project != PROJECT:
         raise PackageError("升级包不是本项目固件")
     version_tuple(version)
+    if version_tuple(version) >= (1, 0, 18) and "util_device_config.luac" not in files:
+        raise PackageError("1.0.18 及以上固件须包含配置管理模块")
     return {
         "project": project, "version": version, "core": CORE,
         "core_sha256": CORE_SHA256, "format": 1, "capacity": CAPACITY,

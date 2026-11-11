@@ -37,6 +37,7 @@ def build_register_payload(
     payload = {
         "type": "device_login",
         "ota_relay": 1,
+        "config_relay": 1,
         "call_control_guard": 1,
         "channel_type": str(channel_type or "desktop").strip().lower() or "desktop",
         "event": "register" if auto_upload else "hidden",
@@ -77,6 +78,7 @@ def build_channel_status_payload(
         generation = 0
     return {
         "type": "device_channel_status",
+        "config_relay": 1,
         "call_control_guard": 1,
         "channel_type": "desktop",
         "time": time_text or current_time_text(),
