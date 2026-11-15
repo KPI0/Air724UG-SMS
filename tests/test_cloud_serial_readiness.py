@@ -4,7 +4,6 @@ import time
 import unittest
 from concurrent.futures import Future
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from sms_core.cloud_payloads import build_register_payload, build_status_payload
 from sms_core.cloud_connection_runtime import send_cloud_payload_runtime
@@ -13,7 +12,7 @@ from sms_core.cloud_state_namespace_runtime import (
     notify_cloud_channel_status_namespace_runtime,
 )
 from sms_core.cloud_ws_namespace_runtime import send_cloud_register_namespace_runtime
-from sms_core.serial_startup_runtime import open_and_initialize_serial_runtime, SerialInitializationSession
+from sms_core.serial_startup_runtime import open_and_initialize_serial_runtime
 from tests.test_serial_initialization import InitializationHarness
 
 
@@ -42,14 +41,10 @@ def channel_fixture(modem=None):
 
 class CloudSerialReadinessTests(unittest.TestCase):
     def test_registration_distinguishes_open_serial_from_control_readiness(self):
-        for state in ("pending", "quarantined", "recovery", "ready"):
+        for state in ("recovery", "ready"):
             with self.subTest(state=state):
                 ns, _ = channel_fixture()
                 modem = ns["serial_obj"]
-                if state in ("pending", "quarantined"):
-                    modem._serial_initialization_session = SimpleNamespace(
-                        pending=state == "pending", quarantined=state == "quarantined",
-                    )
                 if state == "recovery":
                     modem._sms_recovery_error = "synthetic unconfirmed transaction"
                 sent = []
@@ -66,10 +61,10 @@ class CloudSerialReadinessTests(unittest.TestCase):
     def test_same_connection_readiness_changes_are_sent_with_ordered_revisions(self):
         ns, sent = channel_fixture()
         modem = ns["serial_obj"]
-        modem._serial_initialization_session = SimpleNamespace(pending=True, quarantined=False)
+        modem._sms_recovery_error = "synthetic unconfirmed transaction"
         self.assertTrue(notify_cloud_channel_status_namespace_runtime(ns))
         self.assertFalse(notify_cloud_channel_status_namespace_runtime(ns))
-        modem._serial_initialization_session = None
+        modem._sms_recovery_error = ""
         self.assertTrue(notify_cloud_channel_status_namespace_runtime(ns))
         modem._sms_recovery_error = "synthetic unconfirmed transaction"
         self.assertTrue(notify_cloud_channel_status_namespace_runtime(ns))
@@ -135,33 +130,30 @@ class CloudSerialReadinessTests(unittest.TestCase):
         self.assertTrue(sent[-1]["serial_connected"])
         self.assertFalse(sent[-1]["control_available"])
 
-    def test_new_serial_is_not_observable_as_ready_before_its_initialization_owner_exists(self):
+    def test_new_serial_is_observed_only_after_atomic_handle_installation(self):
         ns, _ = channel_fixture()
         ns["serial_obj"] = None
         modem = SimpleNamespace(is_open=True)
-        constructing, release, finished, cleanup = (threading.Event() for _ in range(4))
+        constructing, release, finished = (threading.Event() for _ in range(3))
         snapshots, errors = [], []
 
-        def initialization(*args, **kwargs):
+        def open_serial(*args):
             constructing.set()
             if not release.wait(2):
                 raise RuntimeError("synthetic construction gate timed out")
-            return SerialInitializationSession(*args, **kwargs)
+            return modem
 
         def opener():
             try:
                 open_and_initialize_serial_runtime(
                     target_port="TEST", baud=115200, mode="Manual", serial_lock=ns["serial_lock"],
-                    open_serial=lambda *args: modem,
+                    open_serial=open_serial,
                     set_serial_obj=lambda serial: ns.__setitem__("serial_obj", serial),
                     set_port=lambda *args: None, lock_port_mutex=lambda *args: None,
                     set_cloud_imei_query_deadline=lambda *args: None,
                     serial_error_ui=lambda *args: None, set_status=lambda *args: None,
-                    response_coordinator=SimpleNamespace(), get_serial_obj=lambda: ns["serial_obj"],
-                    get_generation=lambda: ns["serial_connection_generation"],
+                    write_command=lambda *args: None,
                 )
-                cleanup.wait(2)
-                modem._serial_initialization_session.close()
             except Exception as exc:
                 errors.append(type(exc).__name__)
 
@@ -171,22 +163,22 @@ class CloudSerialReadinessTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        with patch("sms_core.serial_startup_runtime.SerialInitializationSession", initialization):
-            open_thread = threading.Thread(target=opener)
-            open_thread.start()
-            self.assertTrue(constructing.wait(2))
-            observe_thread = threading.Thread(target=observer)
-            observe_thread.start()
-            try:
-                self.assertFalse(finished.wait(0.05), "registration saw an unowned open serial as ready")
-            finally:
-                release.set()
-                observe_thread.join(2)
-                cleanup.set()
-                open_thread.join(2)
+        open_thread = threading.Thread(target=opener)
+        open_thread.start()
+        self.assertTrue(constructing.wait(2))
+        observe_thread = threading.Thread(target=observer)
+        observe_thread.start()
+        try:
+            self.assertFalse(finished.wait(0.05), "registration bypassed the serial installation lock")
+        finally:
+            release.set()
+            observe_thread.join(2)
+            open_thread.join(2)
+        self.assertFalse(observe_thread.is_alive())
+        self.assertFalse(open_thread.is_alive())
         self.assertEqual(errors, [])
         self.assertTrue(snapshots[0]["serial_connected"])
-        self.assertFalse(snapshots[0]["control_available"])
+        self.assertTrue(snapshots[0]["control_available"])
 
     def test_immediately_completed_send_failure_allows_next_read_boundary_to_retry(self):
         ns, _ = channel_fixture()
@@ -287,7 +279,7 @@ class ReaderChannelReadinessTests(unittest.TestCase):
             threading.Event().wait(0.005)
         self.fail("serial reader did not publish the readiness transition")
 
-    def test_normal_initialization_publishes_ready_without_waiting_for_remote_command(self):
+    def test_reader_publishes_ready_without_waiting_for_startup_cnum_reply(self):
         harness = InitializationHarness(hold="AT+CNUM")
         channel_ns, sent = channel_fixture(harness.modem)
         harness.ns.update({key: value for key, value in channel_ns.items() if key not in (
@@ -299,10 +291,8 @@ class ReaderChannelReadinessTests(unittest.TestCase):
         )
         with harness:
             self.assertTrue(harness.wrote["AT+CNUM"].wait(1))
-            self.assertFalse(sent[0]["control_available"])
             self.wait_for(lambda: harness.ns["cloud_imei_verified"])
             harness.ns["cloud_device_authorized"] = True
-            harness.terminal("AT+CNUM")
             self.wait_for(lambda: any(item["control_available"] for item in sent))
             self.assertEqual(harness.errors, [])
 

@@ -1,5 +1,4 @@
 from contextlib import nullcontext
-import threading
 from sms_core.call_command_context import call_with_state_snapshot, observe_call_command_line
 from sms_core.call_send_namespace_runtime import build_auto_call_hangup_callback
 
@@ -299,39 +298,19 @@ def run_serial_reader_namespace_runtime(
         DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
     )
     send_auto_hangup = build_auto_call_hangup_callback(namespace)
-    owner_thread = threading.get_ident()
-    sessions = []
-
-    def register_session(session):
-        sessions[:] = [owned for owned in sessions if owned.pending or owned.lock_held]
-        if session.owner_thread == owner_thread and session not in sessions:
-            sessions.append(session)
-
-    def current_session():
-        session = namespace.get("_serial_initialization_session")
-        return session if session in sessions else None
-
     def observe_sms_send_line(line, *, call_state_snapshot=None):
         connection = namespace.get("serial_obj")
         sms_consumed = sms_send_coordinator.observe_line(
             line,
             connection=connection,
         )
-        try:
-            if not sms_consumed:
-                return call_with_state_snapshot(
-                    command_response_coordinator.observe_line, line, connection=connection,
-                    call_state_snapshot=call_state_snapshot, check_current=False,
-                )
-        finally:
-            session = current_session()
-            if session is not None:
-                session.observe_after_line()
+        if not sms_consumed:
+            return call_with_state_snapshot(
+                command_response_coordinator.observe_line, line, connection=connection,
+                call_state_snapshot=call_state_snapshot, check_current=False,
+            )
 
-    def read_initialized_serial():
-        session = current_session()
-        if session is not None:
-            session.read_boundary()
+    def read_serial_with_status():
         notify = namespace.get("notify_cloud_channel_status")
         if callable(notify):
             try:
@@ -346,28 +325,10 @@ def run_serial_reader_namespace_runtime(
         return namespace["read_serial_line_safely"]()
 
     def cancel_serial_transactions(error="串口连接已断开"):
-        session = current_session()
-        if session is not None:
-            session.close()
         sms_send_coordinator.cancel_active(error)
         return command_response_coordinator.cancel_active(error)
 
-    def run_reader_with_cleanup(**kwargs):
-        namespace["_register_serial_initialization_session"] = register_session
-        previous = namespace.get("_serial_initialization_session")
-        if previous is not None:
-            register_session(previous)
-        try:
-            return run_reader(**kwargs)
-        finally:
-            try:
-                for session in reversed(sessions):
-                    session.close()
-            finally:
-                if namespace.get("_register_serial_initialization_session") is register_session:
-                    namespace.pop("_register_serial_initialization_session", None)
-
-    return run_reader_with_cleanup(
+    return run_reader(
         parse_callback_head=parse_callback_head,
         values={
             "keywords": lambda: namespace["KEYWORDS"],
@@ -467,7 +428,7 @@ def run_serial_reader_namespace_runtime(
         io_callbacks={
             "resolve_target_port": namespace["resolve_serial_target_port"],
             "open_and_initialize_serial": namespace["open_and_initialize_serial"],
-            "read_serial_line": read_initialized_serial,
+            "read_serial_line": read_serial_with_status,
             "safe_close_serial": namespace["safe_close_serial"],
         },
         reconnect_callbacks={

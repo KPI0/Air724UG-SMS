@@ -1,5 +1,7 @@
 from sms_core.serial_app_runtime import run_serial_reader_namespace_runtime
 from sms_core.serial_io_runtime import read_serial_line_safely_runtime, send_call_hangup_runtime
+from sms_core.call_command_context import call_state_lock
+from sms_core.serial_runtime import SerialReadChunk
 from sms_core.namespace_binding import make_namespace_runtime_binder
 from sms_core.serial_namespace_runtime import (
     find_luat_best_port_namespace_runtime,
@@ -63,6 +65,9 @@ def install_serial_namespace_bindings(namespace):
             lambda: namespace["serial_obj"],
             namespace["serial"].SerialException,
             read_lock=namespace.get("serial_read_lock"),
+            read_context_guard=lambda: call_state_lock(namespace),
+            capture_read_chunk=lambda raw: SerialReadChunk(raw, namespace["get_serial_call_state"]()),
+            wait_for_data=getattr(namespace.get("serial_stop_event"), "wait", None),
         )
 
     def try_manual_rebind_after_error(error):

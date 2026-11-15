@@ -62,6 +62,29 @@ class LocalDialRequest:
     command_context: object = None
     serial_context: object = None
 
+    @property
+    def namespace(self):
+        return self.command_context.namespace
+
+    def is_current(self, *, check_incoming=True):
+        if self.command_context is None or self.serial_context is None:
+            return False
+        namespace = self.namespace
+        serial, generation = self.serial_context
+        with call_state_lock(namespace):
+            return (
+                namespace.get("_dial_state_generation") is self
+                and namespace.get("_local_dial_request") is self
+                and not self.finished and self.command_context.is_current()
+                and namespace.get("serial_obj") is serial
+                and namespace.get("serial_connection_generation", 0) == generation
+                and namespace.get("serial_running", True) is not False
+                and not namespace.get("is_exiting", False)
+                and serial is not None and serial.is_open
+                and not any(event is not None and event.is_set() for event in (
+                    namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN")))
+            )
+
 
 def set_local_dial_number(namespace, number):
     with call_state_lock(namespace):
@@ -70,15 +93,24 @@ def set_local_dial_number(namespace, number):
         namespace["_dial_state_generation"] = request if request is not None else object()
         namespace["current_dial_num"] = number
         if request is not None:
-            request.command_context = capture_call_command_context(namespace, "ATH")
+            request.command_context = capture_call_command_context(namespace, f"ATD{request.number};")
+            if request.command_context is not None:
+                request.command_context.local_dial_request = request
+            request.serial_context = (
+                namespace.get("serial_obj"), namespace.get("serial_connection_generation", 0),
+            )
+        return request
 
 
-def set_local_dial_popup(namespace, popup):
+def set_local_dial_popup(namespace, popup, *, call_state_snapshot=None):
     with call_state_lock(namespace):
+        if call_state_snapshot is not None and not call_state_snapshot.is_current():
+            return False
         namespace["current_dial_popup"] = popup
         request = namespace.get("_local_dial_request")
         if request is namespace.get("_dial_state_generation") and request is not None:
             request.popup = popup
+        return True
 
 
 class SerialCallStateSnapshot(tuple):
@@ -146,6 +178,26 @@ class SerialCallStateSnapshot(tuple):
             self.namespace["ring_timeout_target"] = ring_timeout
             self.namespace["current_dial_num"] = dial_number
             return True
+
+
+class IncomingCallStatusSnapshot:
+    """Bind a positive incoming UI state to its tracked call and serial."""
+
+    def __init__(self, namespace):
+        with call_state_lock(namespace):
+            self.namespace = namespace
+            self.incoming_token = _incoming_token(namespace)
+            self.serial = namespace.get("serial_obj")
+            self.serial_generation = namespace.get("serial_connection_generation", 0)
+
+    def is_current(self, *, check_incoming=True):
+        with call_state_lock(self.namespace):
+            return (
+                self.incoming_token is not None
+                and _incoming_token(self.namespace) is self.incoming_token
+                and self.namespace.get("serial_obj") is self.serial
+                and self.namespace.get("serial_connection_generation", 0) == self.serial_generation
+            )
 
 
 def call_with_state_snapshot(

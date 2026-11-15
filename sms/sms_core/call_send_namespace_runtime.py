@@ -291,6 +291,7 @@ def send_local_serial_command_namespace_runtime(
     response_timeout=AT_COMMAND_RESPONSE_DEFAULT_TIMEOUT,
     dial_popup=None,
     on_result=None,
+    dial_request=None,
 ):
     raw_command = str(command or "")
     match = VOICE_DIAL_RE.fullmatch(raw_command)
@@ -307,14 +308,24 @@ def send_local_serial_command_namespace_runtime(
         )
 
     with namespace["serial_lock"]:
-        serial = namespace.get("serial_obj")
-        generation = namespace.get("serial_connection_generation", 0)
+        if dial_request is not None:
+            serial, generation = dial_request.serial_context
+        else:
+            serial = namespace.get("serial_obj")
+            generation = namespace.get("serial_connection_generation", 0)
         identity = dict(namespace["_cloud_identity_payload"]())
         imei = str(identity.get("imei") or "").strip()
     source_id = "desktop_dial_" + uuid.uuid4().hex
     with call_state_lock(namespace):
-        call_context = capture_call_command_context(namespace, raw_command)
-        request = namespace.get("_local_dial_request")
+        if dial_request is not None:
+            if (dial_request.number != match.group(1) or dial_request.queued
+                    or not dial_request.is_current()):
+                return None
+            call_context = dial_request.command_context
+            request = dial_request
+        else:
+            call_context = capture_call_command_context(namespace, raw_command)
+            request = namespace.get("_local_dial_request")
         if (request is not None and request is namespace.get("_dial_state_generation")
                 and not request.queued and not request.finished
                 and request.number == match.group(1)):

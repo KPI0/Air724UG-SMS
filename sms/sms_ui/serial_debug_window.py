@@ -13,6 +13,7 @@ from sms_core.serial_sender import (
     send_command_sequence_async,
     send_text_sms_pdu_async,
 )
+from sms_core.call_command_context import call_with_state_snapshot
 from sms_ui.call_popup import open_dial_call_popup
 from sms_ui.call_popup_runtime import close_call_popup_runtime, popup_exists
 from sms_ui.serial_debug_panel import (
@@ -167,7 +168,7 @@ def open_serial_debug_window_dialog(
         row=0, column=0, padx=(0, 8), sticky="w",
     )
 
-    def send_cmd(_event=None):
+    def send_cmd(_event=None, *, dial_request=None):
         if not enabled_var.get():
             return "break"
         cmd = send_var.get()
@@ -175,7 +176,8 @@ def open_serial_debug_window_dialog(
             return "break"
 
         if send_local_command is not None:
-            send_local_command(cmd, append_crlf=crlf_var.get())
+            kwargs = {"dial_request": dial_request} if dial_request is not None else {}
+            send_local_command(cmd, append_crlf=crlf_var.get(), **kwargs)
         else:
             send_command_async(
                 serial_lock,
@@ -190,9 +192,9 @@ def open_serial_debug_window_dialog(
     btn_send = ttk.Button(send_actions, text="发送", width=8, command=send_cmd)
     btn_send.grid(row=0, column=2)
 
-    def quick_send(cmd):
+    def quick_send(cmd, *, dial_request=None):
         send_var.set(cmd)
-        send_cmd()
+        send_cmd(dial_request=dial_request)
 
     def send_serial_command_sequence(commands, delay_sec=0.3):
         send_command_sequence_async(
@@ -270,11 +272,22 @@ def open_serial_debug_window_dialog(
 
     def dial_phone(phone):
         phone = normalize_dial_number(phone)
-        set_current_dial_num(phone)
+        dial_request = set_current_dial_num(phone)
+        dial_snapshot = dial_request if callable(getattr(dial_request, "is_current", None)) else None
+
+        def launch_is_current():
+            return dial_snapshot is None or dial_snapshot.is_current()
+
         port_ui(f"📞 主动呼叫：拨打号码 {phone}", "normal")
-        set_status(f"📞 呼叫中：{phone}", "blue")
+        if not launch_is_current():
+            return
+        call_with_state_snapshot(
+            set_status, f"📞 呼叫中：{phone}", "blue", call_state_snapshot=dial_snapshot,
+        )
         if popup_exists(get_dial_popup(), log_error=log_error):
             close_dial_popup()
+        if not launch_is_current():
+            return
         holder = {}
         popup = open_dial_call_popup(
             win, phone, center_window,
@@ -282,8 +295,24 @@ def open_serial_debug_window_dialog(
             lambda: close_dial_popup(holder.get("popup")),
         )
         holder["popup"] = popup
-        set_dial_popup(popup)
-        quick_send(build_dial_command(phone))
+        if not launch_is_current():
+            close_dial_popup(popup)
+            return
+        call_with_state_snapshot(set_dial_popup, popup, call_state_snapshot=dial_snapshot)
+        if not launch_is_current():
+            close_dial_popup(popup)
+            return
+        quick_send(build_dial_command(phone), dial_request=dial_snapshot)
+        if not launch_is_current():
+            request_state = getattr(dial_snapshot, "namespace", {})
+            current_failure = (
+                getattr(dial_snapshot, "queued", False) and getattr(dial_snapshot, "finished", False)
+                and request_state.get("_dial_state_generation") is dial_snapshot
+                and request_state.get("_local_dial_request") is dial_snapshot
+                and get_dial_popup() is popup
+            )
+            if not current_failure:
+                close_dial_popup(popup)
 
     def hangup_dialed_phone():
         close_active_dial_call()

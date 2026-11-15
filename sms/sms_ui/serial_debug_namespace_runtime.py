@@ -30,6 +30,10 @@ def set_serial_debug_state_namespace_runtime(namespace, name, *values):
         if len(actual) < count:
             raise ValueError(f"{name} requires {count} value(s), got {len(actual)}")
 
+    if name == "current_dial_num":
+        _require_values(1, values)
+        return set_local_dial_number(namespace, values[0])
+
     # Dispatch table: cleaner than 6-level if-elif nesting
     handlers = {
         "window_refs": lambda: (
@@ -52,10 +56,6 @@ def set_serial_debug_state_namespace_runtime(namespace, name, *values):
         "drop_count": lambda: (
             _require_values(1, values),
             namespace.__setitem__("serial_debug_drop_count", int(values[0])),
-        ),
-        "current_dial_num": lambda: (
-            _require_values(1, values),
-            set_local_dial_number(namespace, values[0]),
         ),
     }
 
@@ -92,10 +92,8 @@ def open_serial_debug_window_namespace_runtime(
             namespace, command, append_crlf=append_crlf, **kwargs,
         ),
         get_dial_popup=lambda: namespace.get("current_dial_popup"),
-        set_dial_popup=lambda window: set_serial_debug_state_namespace_runtime(
-            namespace,
-            "dial_popup",
-            window,
+        set_dial_popup=lambda window, call_state_snapshot=None: set_local_dial_popup(
+            namespace, window, call_state_snapshot=call_state_snapshot,
         ),
     )
 

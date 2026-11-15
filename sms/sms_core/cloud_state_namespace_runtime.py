@@ -1,11 +1,10 @@
 import asyncio
 import threading
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from sms_core.cloud_command_context import set_cloud_command_authorized
 
 from sms_core.cloud_imei_runtime import (
-    IMEI_QUERY_WINDOW_SECONDS,
     maybe_capture_cloud_device_imei_runtime,
     notify_cloud_identity_changed_runtime,
     request_cloud_device_imei_runtime,
@@ -82,82 +81,62 @@ def request_cloud_device_imei_namespace_runtime(
     *,
     request_runtime=request_cloud_device_imei_runtime,
 ):
-    def confirmed_imei_query():
-        with serial_sender.DEFAULT_SERIAL_TRANSACTION_LOCK:
-            with namespace["serial_lock"]:
-                serial_obj = namespace.get("serial_obj")
-                generation = namespace.get("serial_connection_generation", 0)
-            attempted = False
-            query_deadline = None
-            responses = []
-            window_owner = object()
-            invalidated = False
-            unconfirmed_error = "IMEI查询结果未获确认，已暂停此串口发送，请重启设备后重新连接"
+    with namespace["serial_lock"]:
+        original_serial = namespace.get("serial_obj")
+        generation = namespace.get("serial_connection_generation", 0)
+    window_owner = object()
+    invalidated = False
 
-            def get_original_serial():
-                nonlocal invalidated
-                invalidated = invalidated or bool(
-                    namespace.get("serial_obj") is not serial_obj
-                    or namespace.get("serial_connection_generation", 0) != generation
-                    or namespace.get("serial_running", True) is False
-                    or namespace.get("is_exiting")
-                    or any(event is not None and event.is_set() for event in (
-                        namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN"),
-                    ))
-                )
-                return None if invalidated else serial_obj
+    def get_original_serial():
+        nonlocal invalidated
+        invalidated = invalidated or bool(
+            namespace.get("serial_obj") is not original_serial
+            or namespace.get("serial_connection_generation", 0) != generation
+            or namespace.get("serial_running", True) is False
+            or namespace.get("is_exiting")
+            or any(event is not None and event.is_set() for event in (
+                namespace.get("serial_stop_event"), namespace.get("TK_SHUTDOWN"),
+            ))
+        )
+        return None if invalidated else original_serial
 
-            def before_write():
-                nonlocal attempted, query_deadline
-                if get_original_serial() is not serial_obj or serial_obj is None:
-                    return False
-                query_deadline = namespace.get("time", time).monotonic() + IMEI_QUERY_WINDOW_SECONDS
-                namespace["_cloud_imei_query_owner"] = window_owner
-                namespace["cloud_imei_query_deadline"] = query_deadline
-                attempted = True
-                return True
+    def set_query_deadline(deadline):
+        if deadline:
+            if get_original_serial() is None:
+                return
+            namespace["_cloud_imei_query_owner"] = window_owner
+            namespace["cloud_imei_query_deadline"] = deadline
+        elif namespace.get("_cloud_imei_query_owner") is window_owner:
+            namespace["cloud_imei_query_deadline"] = 0.0
+            namespace.pop("_cloud_imei_query_owner", None)
 
-            try:
-                result = serial_sender.write_serial_command_confirmed_locked(
-                    namespace["serial_lock"], get_original_serial, "AT+CGSN",
-                    response_coordinator=namespace.get(
-                        "SERIAL_COMMAND_RESPONSE_COORDINATOR",
-                        serial_sender.DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR,
-                    ),
-                    response_timeout=IMEI_QUERY_WINDOW_SECONDS,
-                    before_write=before_write, on_modem_response=responses.append,
-                    isolate_unconfirmed=True, unconfirmed_error=unconfirmed_error,
-                )
-            except Exception as exc:
-                result = serial_sender.SerialCommandResult(False, f"读取IMEI失败：{type(exc).__name__}")
-            finally:
-                with namespace["serial_lock"], serial_sender.DEFAULT_SERIAL_WRITE_LOCK:
-                    if (namespace.get("_cloud_imei_query_owner") is window_owner
-                            and namespace.get("cloud_imei_query_deadline") == query_deadline):
-                        namespace["cloud_imei_query_deadline"] = 0.0
-                    if namespace.get("_cloud_imei_query_owner") is window_owner:
-                        namespace.pop("_cloud_imei_query_owner", None)
-                    # Keep the transaction owned until an uncertain query can
-                    # no longer lend its delayed terminal to the next command.
-                    if attempted and not any(getattr(response, "line", "") for response in responses):
-                        serial_obj._sms_recovery_error = unconfirmed_error
-            recovery_error = serial_sender.serial_sms_recovery_error(serial_obj)
-            if not result.ok and recovery_error and recovery_error not in result.error:
-                return serial_sender.SerialCommandResult(False, f"{result.error}；{recovery_error}")
-            return result
+    def get_query_deadline():
+        if namespace.get("_cloud_imei_query_owner") is window_owner:
+            return namespace["cloud_imei_query_deadline"]
+        return None
+
+    def write_query(serial_obj, command):
+        @contextmanager
+        def write_guard():
+            yield (original_serial is not None
+                and serial_obj is original_serial
+                and get_original_serial() is original_serial)
+
+        return namespace["write_serial_command_result"](
+            serial_obj, command, write_guard=write_guard,
+        )
 
     return request_runtime(
         serial_lock=namespace["serial_lock"],
-        get_serial=lambda: namespace["serial_obj"],
-        write_command_result=namespace["write_serial_command_result"],
-        set_query_deadline=lambda deadline: namespace.__setitem__("cloud_imei_query_deadline", deadline),
-        get_query_deadline=lambda: namespace["cloud_imei_query_deadline"],
+        get_serial=get_original_serial,
+        write_command_result=write_query,
+        set_query_deadline=set_query_deadline,
+        get_query_deadline=get_query_deadline,
         cloud_log=namespace["_cloud_log"],
         monotonic=namespace.get("time", time).monotonic,
         push_serial_debug=namespace["_push_serial_debug"],
         thread_factory=namespace.get("threading", threading).Thread,
         thread_registry=namespace["SERIAL_COMMAND_THREAD_REGISTRY"],
-        confirmed_imei_query=confirmed_imei_query,
     )
 
 
@@ -167,13 +146,17 @@ def maybe_capture_cloud_device_imei_namespace_runtime(
     *,
     capture_runtime=maybe_capture_cloud_device_imei_runtime,
 ):
-    # Keep reading and consuming the window atomic with query creation or
-    # rollback. A stale capture must not clear a newer request's deadline.
+    def clear_query_deadline(value):
+        namespace["cloud_imei_query_deadline"] = value
+        if not value:
+            namespace.pop("_cloud_imei_query_owner", None)
+
+    # Keep capture atomic with creating or rolling back its query window.
     with namespace["serial_lock"]:
         return capture_runtime(
             line,
             query_deadline=namespace["cloud_imei_query_deadline"],
-            set_query_deadline=lambda value: namespace.__setitem__("cloud_imei_query_deadline", value),
+            set_query_deadline=clear_query_deadline,
             imei_regex=namespace["IMEI_REGEX"],
             set_device_imei=namespace["_set_cloud_device_imei"],
             monotonic=namespace.get("time", time).monotonic,
@@ -214,7 +197,7 @@ def cloud_status_payload_namespace_runtime(
 
 
 def cloud_channel_status_snapshot_namespace_runtime(namespace, serial_connected=None):
-    """Separate the open transport from a sender that has confirmed initialization."""
+    """Report the open transport separately from sender recovery and shutdown."""
     with namespace.get("serial_lock") or nullcontext():
         serial_obj = namespace.get("serial_obj")
         connected = available = False
@@ -224,8 +207,7 @@ def cloud_channel_status_snapshot_namespace_runtime(namespace, serial_connected=
                 if serial_connected is not None:
                     connected = connected and bool(serial_connected)
                 available = connected and not (
-                    serial_sender.serial_initialization_pending(serial_obj)
-                    or serial_sender.serial_sms_recovery_error(serial_obj)
+                    serial_sender.serial_sms_recovery_error(serial_obj)
                     or namespace.get("serial_running", True) is False
                     or namespace.get("is_exiting")
                     or any(event is not None and event.is_set() for event in (

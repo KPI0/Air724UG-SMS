@@ -5,8 +5,7 @@ from sms_core.config_schema import (
     DEFAULT_UI_CONFIG,
     normalize_sms_font_size,
 )
-from sms_core.connected_log_runtime import can_restore_connected_status
-from sms_core.status_text import format_connected_status
+from sms_core.connected_log_runtime import serial_idle_status_update
 from sms_ui.device_reset_runtime import send_reset_command_runtime
 from sms_ui.main_status_runtime import (
     apply_sms_font_style_runtime,
@@ -222,9 +221,10 @@ def restore_connected_status_namespace_runtime(
         status_token = namespace.get("_status_ui_token")
 
     def restore_on_ui():
-        if (namespace.get("_status_ui_token") is status_token
-                and can_restore_connected_status(namespace, serial, generation)):
-            return namespace["set_status"](format_connected_status(port), "green")
+        if namespace.get("_status_ui_token") is status_token:
+            update = serial_idle_status_update(namespace, serial, generation, port)
+            if update is not None:
+                return namespace["set_status"](*update)
         return False
 
     return namespace["run_on_ui_thread"](restore_on_ui, namespace["ui_post"])

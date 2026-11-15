@@ -112,6 +112,76 @@ class UsbDeviceConfigTests(unittest.TestCase):
                 self.assertEqual([item["action"] for item in usb.requests], ["info"])
                 self.assertTrue(usb.closed)
 
+    def test_usb_info_preserves_cellular_target_and_active_state_from_device(self):
+        for active in (True, False):
+            with self.subTest(active=active):
+                def handler(req, reply):
+                    reply = config_reply(req, reply)
+                    reply.update(supported_fields=["CELLULAR_DATA_ENABLE"], file_only={},
+                        values={"CELLULAR_DATA_ENABLE": not active},
+                        effective_values={"CELLULAR_DATA_ENABLE": active},
+                        cellular_data_enabled=active, restart_required=True)
+                    return reply
+                transport, usb = self.transport(handler, partial=True)
+                reply = transport.exchange(request(supported_fields=["PIN_CODE"],
+                    file_only=["CELLULAR_DATA_ENABLE"], cellular_data_enabled=not active))
+                self.assertEqual(reply["supported_fields"], ["CELLULAR_DATA_ENABLE"])
+                self.assertEqual(reply["file_only"], [])
+                self.assertIs(reply["values"]["CELLULAR_DATA_ENABLE"], not active)
+                self.assertIs(reply["effective_values"]["CELLULAR_DATA_ENABLE"], active)
+                self.assertIs(reply["cellular_data_enabled"], active)
+                self.assertTrue(reply["restart_required"])
+                self.assertEqual([item["action"] for item in usb.requests], ["info"])
+                for item in usb.requests:
+                    self.assertFalse({"supported_fields", "file_only", "cellular_data_enabled"} & item.keys())
+                self.assertTrue(usb.closed)
+
+    def test_usb_cellular_save_and_restart_keep_current_state_until_device_applies_it(self):
+        for active in (True, False):
+            with self.subTest(active=active):
+                def handler(req, reply):
+                    reply = config_reply(req, reply)
+                    reply.update(supported_fields=["CELLULAR_DATA_ENABLE"], file_only=[],
+                        effective_values={"CELLULAR_DATA_ENABLE": active}, cellular_data_enabled=active,
+                        values={"CELLULAR_DATA_ENABLE": not active}, applied=False,
+                        restart_required=True)
+                    if req["action"] == "restart":
+                        reply.update(accepted=True, revision=3)
+                    return reply
+                transport, usb = self.transport(handler, partial=True)
+                reply = transport.exchange(request("set", configs={"CELLULAR_DATA_ENABLE": not active}))
+                self.assertTrue(reply["saved"])
+                self.assertEqual(reply["revision"], 3)
+                self.assertFalse(reply["applied"])
+                self.assertTrue(reply["restart_required"])
+                self.assertIs(reply["values"]["CELLULAR_DATA_ENABLE"], not active)
+                self.assertIs(reply["effective_values"]["CELLULAR_DATA_ENABLE"], active)
+                self.assertIs(reply["cellular_data_enabled"], active)
+                self.assertEqual([item["action"] for item in usb.requests], ["info", "set"])
+                self.assertEqual(usb.requests[1]["configs"], {"CELLULAR_DATA_ENABLE": not active})
+                self.assertTrue(usb.closed)
+                restart, restart_usb = self.transport(handler, partial=True)
+                receipt = restart.exchange(request("restart", expected_revision=3))
+                self.assertTrue(receipt["accepted"])
+                self.assertEqual(receipt["phase"], "accepted")
+                self.assertFalse(receipt["applied"])
+                self.assertIs(receipt["cellular_data_enabled"], active)
+                self.assertEqual([item["action"] for item in restart_usb.requests], ["info", "restart"])
+                self.assertEqual(restart_usb.requests[1]["expected_revision"], 3)
+                self.assertTrue(restart_usb.closed)
+
+    def test_usb_old_firmware_never_gains_cellular_support_from_request_metadata(self):
+        transport, usb = self.transport(partial=True)
+        reply = transport.exchange(request(supported_fields=["CELLULAR_DATA_ENABLE"],
+            file_only=[], effective_values={"CELLULAR_DATA_ENABLE": True}))
+        self.assertNotIn("supported_fields", reply)
+        self.assertNotIn("file_only", reply)
+        self.assertNotIn("effective_values", reply)
+        self.assertNotIn("CELLULAR_DATA_ENABLE", reply["values"])
+        self.assertEqual([item["action"] for item in usb.requests], ["info"])
+        self.assertFalse({"supported_fields", "file_only", "effective_values"} & usb.requests[0].keys())
+        self.assertTrue(usb.closed)
+
     def test_bad_server_batch_capability_stops_before_submitting_config(self):
         def handler(req, reply):
             reply = config_reply(req, reply)

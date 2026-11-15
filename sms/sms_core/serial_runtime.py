@@ -6,7 +6,9 @@ import re
 import time
 
 from sms_core.call_effects import apply_call_decision, apply_ring_timeout_expired
-from sms_core.call_command_context import SerialCallStateSnapshot, call_with_state_snapshot
+from sms_core.call_command_context import (
+    IncomingCallStatusSnapshot, SerialCallStateSnapshot, call_with_state_snapshot,
+)
 from sms_core.call_recordings import SERIAL_RECORDING_PREFIX
 from sms_core.call_events import (
     CallLineDecision,
@@ -322,6 +324,7 @@ def handle_serial_runtime_line(
         sms_decision = handle_sms_collector_line(
             state.sms_collector, line, now,
             lambda: flush_runtime_pending_sms(state, config, callbacks, ignore_repeat_state, now=now),
+            diagnostic_callback=build_sms_diagnostic_log(config, callbacks),
         )
     sms_owned = sms_decision is not None and sms_decision.action in ("start", "consumed")
     if not sms_owned:
@@ -404,6 +407,7 @@ def handle_serial_runtime_line(
     incoming_state_committed = False
     call_state_committed = False
     start_result = True
+    incoming_status_snapshot = None
     with getattr(callbacks, "call_state_guard", nullcontext)():
         # A peer terminal can arrive during SMS/log callbacks above. Consume
         # its generation and commit the next pure call transition atomically.
@@ -438,6 +442,10 @@ def handle_serial_runtime_line(
                 snapshot.commit(state.call_state.ring_timeout_target, state.call_state.current_dial_num)
             call_state_committed = True
 
+        if (snapshot is not None
+                and (call_decision.incoming_number or call_decision.incoming_connected_number)):
+            incoming_status_snapshot = IncomingCallStatusSnapshot(snapshot.namespace)
+
     def send_call_state(phone, phase, reason="", **kwargs):
         if kwargs.get("direction") == "outgoing" and phase in {"dialing", "alerting", "connected"}:
             if snapshot is not None and not snapshot.is_outgoing_state_current():
@@ -455,7 +463,8 @@ def handle_serial_runtime_line(
         callbacks.port_ui,
         lambda text, color: call_with_state_snapshot(
             callbacks.set_status, text, color,
-            call_state_snapshot=snapshot if snapshot is not None and snapshot[1] else None),
+            call_state_snapshot=(incoming_status_snapshot
+                or (snapshot if snapshot is not None and snapshot[1] else None))),
         callbacks.show_call_popup,
         callbacks.close_call_popup,
         lambda _number: start_result,
@@ -635,6 +644,8 @@ def run_serial_runtime_thread(
 
     def read_call_scoped_chunk():
         raw = read_serial_line()
+        if isinstance(raw, SerialReadChunk):
+            return raw
         return SerialReadChunk(raw, get_call_state())
 
     def finish_sms_session():

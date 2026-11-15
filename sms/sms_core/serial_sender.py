@@ -64,7 +64,7 @@ _OTA_RESERVATIONS = {}
 
 def reserve_serial_for_ota(serial_obj, owner, *, seconds=150, wait_timeout=0, before_reserve=None):
     with DEFAULT_SERIAL_WRITE_LOCK:
-        if serial_initialization_pending(serial_obj) or serial_sms_recovery_error(serial_obj):
+        if serial_sms_recovery_error(serial_obj):
             return False
         previous = _OTA_RESERVATIONS.get(id(serial_obj))
         if previous and previous[2] > time.monotonic():
@@ -81,7 +81,7 @@ def reserve_serial_for_ota(serial_obj, owner, *, seconds=150, wait_timeout=0, be
         if before_reserve is not None:
             before_reserve()
         with DEFAULT_SERIAL_WRITE_LOCK:
-            if serial_initialization_pending(serial_obj) or serial_sms_recovery_error(serial_obj):
+            if serial_sms_recovery_error(serial_obj):
                 return False
             now = time.monotonic()
             for key, (_, _, expiry) in list(_OTA_RESERVATIONS.items()):
@@ -308,22 +308,22 @@ class AtCommandResponseWaiter:
         with self._lock:
             if not self._write_started:
                 return
-        body = _modem_response_body(line)
-        if not body or not _is_trusted_modem_line(line, body):
-            return
+            body = _modem_response_body(line)
+            if not body or not _is_trusted_modem_line(line, body):
+                return
 
-        upper = body.upper()
-        # ATD has valid modem-level terminal responses that are not reported
-        # as ERROR. Restrict this to ATD so an unrelated unsolicited call URC
-        # cannot fail another command's waiter.
-        if self.command.upper().startswith("ATD") and CALL_TERMINAL_RESPONSE_RE.fullmatch(body):
-            self._complete(AtCommandResponse(False, body, str(line or "")))
-            return
-        if upper == "ERROR" or MODEM_ERROR_RE.fullmatch(body):
-            self._complete(AtCommandResponse(False, body, str(line or "")))
-            return
-        if _is_final_ok_line(line, body):
-            self._complete(AtCommandResponse(True, "", str(line or "")))
+            upper = body.upper()
+            # ATD has valid modem-level terminal responses that are not reported
+            # as ERROR. Restrict this to ATD so an unrelated unsolicited call URC
+            # cannot fail another command's waiter.
+            if self.command.upper().startswith("ATD") and CALL_TERMINAL_RESPONSE_RE.fullmatch(body):
+                self._complete(AtCommandResponse(False, body, str(line or "")))
+                return
+            if upper == "ERROR" or MODEM_ERROR_RE.fullmatch(body):
+                self._complete(AtCommandResponse(False, body, str(line or "")))
+                return
+            if _is_final_ok_line(line, body):
+                self._complete(AtCommandResponse(True, "", str(line or "")))
 
     def done(self):
         return self._event.is_set()
@@ -575,7 +575,6 @@ def _write_sms_pdu_after_prompt(waiter, writer):
 def _write_serial_obj_bytes(
     serial_obj, payload, debug_message=None, push_debug=None, *,
     write_guard=None, before_write=None, after_write=None, sms_waiter=None, flush_output=True,
-    initialization_owner=None,
 ):
     command_text = payload.decode("utf-8", "replace")
     private_credentials = redact_sim_credentials_for_display(command_text) != command_text
@@ -584,12 +583,6 @@ def _write_serial_obj_bytes(
     with DEFAULT_SERIAL_WRITE_LOCK, (write_guard() if write_guard else nullcontext(True)) as allowed:
         if not allowed:
             return SerialCommandResult(False, "指令所属状态已变化，已取消发送")
-        initialization = getattr(serial_obj, "_serial_initialization_session", None)
-        if serial_initialization_pending(serial_obj) and initialization_owner is not initialization:
-            error = "串口初始化尚未完成，指令未提交，请稍后再试"
-            if push_debug:
-                push_debug(f">>> 发送失败: {error}")
-            return SerialCommandResult(False, error)
         credential_error = serial_credential_error(command_text)
         if credential_error:
             if push_debug:
@@ -642,18 +635,10 @@ def _write_serial_obj_bytes(
     return SerialCommandResult(True)
 
 
-def serial_initialization_pending(serial_obj):
-    session = getattr(serial_obj, "_serial_initialization_session", None)
-    return getattr(session, "pending", False) is True
-
-
 def serial_sms_recovery_error(serial_obj):
     error = getattr(serial_obj, "_sms_recovery_error", "")
     if isinstance(error, str) and error:
         return error
-    session = getattr(serial_obj, "_serial_initialization_session", None)
-    if getattr(session, "quarantined", False) is True:
-        return "串口初始化结果未获确认，已暂停此串口发送，请重启设备后重新连接"
     return ""
 
 
@@ -896,7 +881,6 @@ def _write_bytes_locked(
     call_write_guard=None,
     sms_waiter=None,
     flush_output=True,
-    initialization_owner=None,
 ):
     with serial_lock:
         serial_obj = get_serial()
@@ -928,7 +912,6 @@ def _write_bytes_locked(
             after_write=after_write,
             sms_waiter=sms_waiter,
             flush_output=flush_output,
-            initialization_owner=initialization_owner,
         )
 
 

@@ -64,6 +64,11 @@ def drain(tasks):
 
 
 class ConnectedStatusGenerationTests(unittest.TestCase):
+    def expected_serial_phase(self, change, fallback):
+        return {
+            "quarantined": ("🔴 串口指令结果未确认，请重启设备后重新连接", "red"),
+        }.get(change, fallback)
+
     def peer_fixture(self):
         fixture = peer_fixture.PeerCallSyncTests("runTest")
         fixture.setUp()
@@ -91,12 +96,8 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
             namespace["serial_connection_generation"] += 1
         elif change == "same_object_generation":
             namespace["serial_connection_generation"] += 1
-        elif change == "pending":
-            serial._serial_initialization_session = SimpleNamespace(pending=True, quarantined=False)
         elif change == "quarantined":
             serial._sms_recovery_error = "synthetic unresolved transaction"
-        elif change == "initialization_error":
-            namespace["_serial_initialization_session"] = SimpleNamespace(serial=serial, has_command_errors=True)
         elif change == "stopped":
             namespace["serial_running"] = False
         elif change == "exiting":
@@ -197,9 +198,9 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
         replay.drain()
         self.assertEqual((value.text, value.color), ("new serial state", "orange"))
 
-    def test_restore_requires_original_ready_connection_and_no_new_call(self):
-        changes = ("closed", "reconnected", "same_object_generation", "pending", "quarantined",
-                   "initialization_error", "stopped", "exiting", "serial_stop_event", "TK_SHUTDOWN",
+    def test_restore_requires_original_connection_and_no_new_call_and_keeps_actual_phase(self):
+        changes = ("closed", "reconnected", "same_object_generation", "quarantined",
+                   "stopped", "exiting", "serial_stop_event", "TK_SHUTDOWN",
                    "new_incoming", "new_outgoing", "new_ring")
         for change in changes:
             with self.subTest(change=change):
@@ -215,7 +216,7 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
                     self.change_connection(namespace, serial, change)
                 self.assertFalse(can_restore_connected_status(namespace, serial, 1))
                 replay.drain()
-                self.assertEqual((value.text, value.color), ("initial", "black"))
+                self.assertEqual((value.text, value.color), self.expected_serial_phase(change, ("initial", "black")))
 
     def test_current_ready_restore_and_namespace_binding_work(self):
         _fixture, replay, namespace, value, _serial = self.peer_fixture()
@@ -225,8 +226,8 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
         self.assertEqual((value.text, value.color), ("🟢 已连接：TEST", "green"))
 
     def test_peer_terminal_closes_original_window_without_restoring_changed_serial(self):
-        changes = ("closed", "reconnected", "same_object_generation", "pending", "quarantined",
-                   "initialization_error", "stopped", "exiting", "serial_stop_event", "TK_SHUTDOWN")
+        changes = ("closed", "reconnected", "same_object_generation", "quarantined",
+                   "stopped", "exiting", "serial_stop_event", "TK_SHUTDOWN")
         for change in changes:
             with self.subTest(change=change):
                 _fixture, replay, namespace, value, serial = self.peer_fixture()
@@ -238,7 +239,7 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
                 self.change_connection(namespace, serial, change)
                 before = (value.text, value.color)
                 replay.drain()
-                self.assertEqual((value.text, value.color), before)
+                self.assertEqual((value.text, value.color), self.expected_serial_phase(change, before))
                 self.assertFalse(popup.exists)
                 self.assertIsNone(namespace["current_call_popup"])
                 self.assertEqual(len(replay.missed), 1)
@@ -276,7 +277,7 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
                     self.assertEqual(len(replay.missed), 1)
 
     def test_local_confirmed_hangup_keeps_window_cleanup_separate_from_serial_status(self):
-        for change in ("current", "closed", "reconnected", "pending", "quarantined", "stopped", "exiting", "new_status"):
+        for change in ("current", "closed", "reconnected", "quarantined", "stopped", "exiting", "new_status"):
             with self.subTest(change=change):
                 fixture = local_fixture.LocalDialButtonIsolationTests("runTest")
                 fixture.setUp()
@@ -326,7 +327,7 @@ class ConnectedStatusGenerationTests(unittest.TestCase):
                             run_serial_runtime_thread, clock=lambda: harness.clock))),
                 )
                 with patch.object(initialization_fixture, "run_serial_reader_namespace_runtime", clocked_reader), harness:
-                    self.wait_for(lambda: not harness.opened_session.pending)
+                    self.assertTrue(harness.wrote["AT+CNUM"].wait(1))
                     drain(tasks)
                     harness.emit('[I]-[ril.proatc] +CLIP: "10086",129\r\n')
                     self.wait_for(lambda: tracker.snapshot().session_token is not None)

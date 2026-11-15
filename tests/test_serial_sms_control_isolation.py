@@ -29,12 +29,16 @@ class SerialSmsControlIsolationTests(unittest.TestCase):
             time.sleep(0.005)
         self.fail("Virtual reader did not process the expected input")
 
-    def test_callback_body_cannot_complete_startup_waiter_but_real_terminal_can(self):
+    def test_callback_body_cannot_complete_control_waiter_but_real_terminal_can(self):
         for terminal in ("OK", "ERROR"):
             with self.subTest(terminal=terminal), InitializationHarness(hold="AT+CNUM") as harness:
                 self.wait_for(lambda: harness.wrote["AT+CNUM"].is_set())
-                session = harness.opened_session
-                waiter = session.waiter
+                harness.emit("[I]-[probe] STARTUP_END\r\n")
+                self.wait_for(lambda: "[I]-[probe] STARTUP_END" in harness.lines)
+                coordinator = harness.ns["SERIAL_COMMAND_RESPONSE_COORDINATOR"]
+                waiter = coordinator.begin("ATH", connection=harness.modem)
+                self.assertTrue(waiter.mark_write_started())
+                self.assertEqual(harness.modem.write(b"ATH\r\n"), 5)
                 observed = threading.Event()
                 harness.on_line = lambda line: observed.set() if line == terminal else None
                 harness.emit(
@@ -43,14 +47,10 @@ class SerialSmsControlIsolationTests(unittest.TestCase):
                 )
                 self.assertTrue(observed.wait(2))
                 self.assertFalse(waiter.done(), "SMS body was accepted as a Modem terminal")
-                self.assertTrue(session.pending)
-                self.assertTrue(session.lock_held)
-                self.assertEqual(session.index, 2)
-                harness.terminal("AT+CNUM", response=terminal)
-                self.wait_for(lambda: not session.pending)
-                self.assertEqual(session.index, 3)
-                self.assertFalse(session.lock_held)
-                self.assertEqual(session.has_command_errors, terminal == "ERROR")
+                harness.emit("[I]-[ril.proatc] " + terminal + "\r\n")
+                self.wait_for(waiter.done)
+                self.assertEqual(waiter.wait(0).ok, terminal == "OK")
+                coordinator.finish(waiter)
                 self.assertEqual(harness.errors, [])
 
     def incoming_harness(self):
@@ -74,7 +74,8 @@ class SerialSmsControlIsolationTests(unittest.TestCase):
         coordinator = SmsPduSendCoordinator()
         harness.ns["SMS_SEND_COORDINATOR"] = coordinator
         with harness:
-            self.wait_for(lambda: not harness.opened_session.pending)
+            harness.emit("[I]-[probe] STARTUP_END\r\n")
+            self.wait_for(lambda: "[I]-[probe] STARTUP_END" in harness.lines)
             waiter = coordinator.begin_segment(connection=harness.modem, cmgs_len=1)
             try:
                 harness.emit(
@@ -98,7 +99,8 @@ class SerialSmsControlIsolationTests(unittest.TestCase):
     def test_callback_body_does_not_change_live_call_but_prefixed_terminal_does(self):
         harness, tracker, terminals, missed, connected = self.incoming_harness()
         with harness:
-            self.wait_for(lambda: not harness.opened_session.pending)
+            harness.emit("[I]-[probe] STARTUP_END\r\n")
+            self.wait_for(lambda: "[I]-[probe] STARTUP_END" in harness.lines)
             harness.emit('[I]-[ril.proatc] +CLIP: "10000",129\r\n')
             self.wait_for(lambda: bool(tracker.snapshot().caller_num))
             token = tracker.snapshot().session_token

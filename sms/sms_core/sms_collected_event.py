@@ -21,9 +21,21 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
     if collected is None:
         return None
 
-    original_text = str(getattr(collected, "callback_text", "") or "").strip()
+    framed_body = getattr(collected, "framed_body", None)
+    original_text = str(getattr(collected, "callback_text", "") or "")
+    if framed_body is None:
+        original_text = original_text.strip()
     if not original_text:
         return None
+    original_parser = parse_callback_head
+    if framed_body is not None:
+        transport_body = str(framed_body)
+
+        def parse_framed_callback(text):
+            sender, parsed_body = original_parser(text)
+            return sender, transport_body if text == original_text else parsed_body
+
+        parse_callback_head = parse_framed_callback
 
     corrected_text = _correct_single_pdu_callback_text(
         correction_cache,
@@ -62,6 +74,13 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
             )
 
     sender, body = parse_callback_head(corrected_text)
+    if framed_body is not None:
+        _original_sender, original_body = original_parser(original_text)
+        _corrected_sender, corrected_body = original_parser(corrected_text)
+        if not corrected or corrected_body == original_body:
+            body = str(framed_body)
+        else:
+            framed_body = None
     raw_lines = list(getattr(collected, "raw_lines", []) or getattr(collected, "follow_lines", []) or [])
     if concat_part is not None:
         segment_pendings = _segment_pendings_from_part(
@@ -89,7 +108,7 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
                     if matched_segment is not None:
                         return [matched_segment]
                 return segment_pendings
-            fallback_body = _callback_body_with_segment_anchors(
+            fallback_body = str(framed_body) if framed_body is not None else _callback_body_with_segment_anchors(
                 body,
                 raw_lines,
                 segment_pendings,
@@ -112,6 +131,7 @@ def pending_from_collected(collected, parse_callback_head, correction_cache=None
     full_msg = (
         str(full_msg_override)
         if full_msg_override is not None
+        else str(framed_body) if framed_body is not None and concat_part is None
         else _full_message_from_callback(corrected_text, body, message_lines, concat_part)
     )
     display_lines = ["📩 收到短信：", corrected_text] + message_lines

@@ -1,11 +1,11 @@
 import time
 from contextlib import contextmanager, nullcontext
 
-from sms_core.status_text import format_connected_status
-from sms_core.connected_log_runtime import can_restore_connected_status
+from sms_core.connected_log_runtime import serial_idle_status_update
 from sms_core.serial_sender import DEFAULT_AT_COMMAND_RESPONSE_COORDINATOR
 from sms_core.call_command_context import (
-    SerialCallStateSnapshot, call_state_lock, invalidate_call_commands, set_local_dial_popup,
+    IncomingCallStatusSnapshot, SerialCallStateSnapshot, call_state_lock,
+    call_with_state_snapshot, invalidate_call_commands, set_local_dial_popup,
 )
 
 from sms_ui.call_popup_runtime import (
@@ -557,10 +557,15 @@ def mark_call_popup_connected_namespace_runtime(
         if requested_session_id:
             namespace["call_popup_pending_connected_session_id"] = requested_session_id
         _confirm_call_handled(namespace, snapshot)
+        status_snapshot = (
+            IncomingCallStatusSnapshot(namespace) if hasattr(snapshot, "session_token") else None
+        )
 
     def mark_on_ui():
         with _peer_state_lock(namespace):
             if call_guard is not None and not call_guard():
+                return False
+            if status_snapshot is not None and not status_snapshot.is_current():
                 return False
             if not _same_local_call(namespace, local_id, snapshot):
                 return False
@@ -576,7 +581,10 @@ def mark_call_popup_connected_namespace_runtime(
         if update_status:
             set_status = namespace.get("set_status")
             if callable(set_status):
-                set_status(f"📞 通话中：{current_caller or caller_text}", "blue")
+                call_with_state_snapshot(
+                    set_status, f"📞 通话中：{current_caller or caller_text}", "blue",
+                    call_state_snapshot=status_snapshot,
+                )
         current_popup = namespace.get("current_call_popup")
         if current_popup is None:
             return True
@@ -751,9 +759,10 @@ def finish_remote_incoming_call_namespace_runtime(
             )
         if update_status:
             set_status = namespace.get("set_status")
-            if (callable(set_status) and namespace.get("_status_ui_token") is status_token
-                    and can_restore_connected_status(namespace, serial, serial_generation)):
-                set_status(format_connected_status(namespace.get("PORT", "")), "green")
+            if callable(set_status) and namespace.get("_status_ui_token") is status_token:
+                update = serial_idle_status_update(namespace, serial, serial_generation)
+                if update is not None:
+                    set_status(*update)
 
         def clear_if_current(window):
             if namespace.get("current_call_popup") is current_popup:
@@ -847,6 +856,9 @@ def show_call_popup_namespace_runtime(
         initial_call = _call_snapshot(namespace)
         call_serial = namespace.get("serial_obj")
         serial_generation = namespace.get("serial_connection_generation", 0)
+        status_snapshot = (
+            IncomingCallStatusSnapshot(namespace) if hasattr(initial_call, "session_token") else None
+        )
         token = getattr(initial_call, "session_token", None)
         if initial_call is not None and hasattr(initial_call, "session_token") and token is None:
             return "disabled"
@@ -991,7 +1003,9 @@ def show_call_popup_namespace_runtime(
         serial_lock=namespace["serial_lock"],
         get_serial=lambda: call_serial,
         port_ui=namespace["port_ui"],
-        set_status=namespace["set_status"],
+        set_status=lambda text, color="black": call_with_state_snapshot(
+            namespace["set_status"], text, color, call_state_snapshot=status_snapshot,
+        ),
         ui_post=namespace["ui_post"],
         close_popup=close_popup,
         set_ring_timeout=set_ring_timeout,
